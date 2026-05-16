@@ -203,6 +203,7 @@ def main() -> None:
         model_name=args.model_path,
         device=accelerator.device,
         max_new_tokens=args.max_qa_tokens,
+        attn_implementation=os.environ.get("ATTN_IMPLEMENTATION", "flash_attention_2"),
     )
 
     with accelerator.split_between_processes(backward_anno) as local_backward:

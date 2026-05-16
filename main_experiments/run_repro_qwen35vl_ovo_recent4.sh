@@ -13,6 +13,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-$(command -v python || command -v python3)}"
 NUM_PROCESSES="${NUM_PROCESSES:-4}"
 MAIN_PROCESS_PORT="${MAIN_PROCESS_PORT:-29535}"
+ATTN_IMPLEMENTATION="${ATTN_IMPLEMENTATION:-sdpa}"
 
 OVO_ANNO_PATH="${REPO_ROOT}/data/ovo_bench/ovo_bench_new.json"
 OVO_CHUNKED_DIR="${REPO_ROOT}/data/ovo_bench/chunked_videos"
@@ -57,9 +58,11 @@ fi
 
 echo "[INFO] Using PYTHON_BIN=${PYTHON_BIN}"
 echo "[INFO] Using CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}"
+echo "[INFO] Using ATTN_IMPLEMENTATION=${ATTN_IMPLEMENTATION}"
 echo "[INFO] Results: ${OVO_RESULT_DIR}"
 
 CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES}" \
+ATTN_IMPLEMENTATION="${ATTN_IMPLEMENTATION}" \
 "${PYTHON_BIN}" -m accelerate.commands.launch \
     --num_processes "${NUM_PROCESSES}" \
     --main_process_port "${MAIN_PROCESS_PORT}" \

@@ -36,10 +36,12 @@ class RecentWindowQAModel(_Qwen3RecentWindowQAModel):
         )
 
     def _flatten_vision_features(self, features):
-        if hasattr(features, "last_hidden_state") and isinstance(features.last_hidden_state, torch.Tensor):
-            tensor = features.last_hidden_state
-        elif hasattr(features, "pooler_output") and isinstance(features.pooler_output, torch.Tensor):
+        # Qwen3.5 returns BaseModelOutputWithPooling where last_hidden_state is
+        # pre-merge and pooler_output matches the image_grid_thw token count.
+        if hasattr(features, "pooler_output") and isinstance(features.pooler_output, torch.Tensor):
             tensor = features.pooler_output
+        elif hasattr(features, "last_hidden_state") and isinstance(features.last_hidden_state, torch.Tensor):
+            tensor = features.last_hidden_state
         else:
             return super()._flatten_vision_features(features)
 

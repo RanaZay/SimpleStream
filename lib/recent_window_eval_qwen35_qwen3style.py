@@ -79,6 +79,31 @@ class RecentWindowQAModel(_BaseRecentWindowQAModel):
         self.im_end_id = self.processor.tokenizer.convert_tokens_to_ids("<|im_end|>")
         self.merge_size = self.model.model.visual.spatial_merge_size
 
+    def _flatten_vision_features(self, features):
+        if isinstance(features, torch.Tensor):
+            return features
+
+        if hasattr(features, "last_hidden_state") and features.last_hidden_state is not None:
+            return features.last_hidden_state
+
+        if hasattr(features, "pooler_output") and features.pooler_output is not None:
+            raise TypeError(
+                "Qwen3.5 vision output only exposed pooler_output here. "
+                "pooler_output is a single pooled vector, not the per-token "
+                "vision features required by the Qwen3 cached-vision path."
+            )
+
+        if isinstance(features, (tuple, list)):
+            if features and all(isinstance(item, torch.Tensor) for item in features):
+                return torch.cat(list(features), dim=0)
+            first = features[0] if features else None
+            if isinstance(first, torch.Tensor):
+                return first
+            if isinstance(first, (tuple, list)) and first and all(isinstance(item, torch.Tensor) for item in first):
+                return torch.cat(list(first), dim=0)
+
+        raise TypeError(f"Unexpected vision feature type: {type(features)}")
+
     @torch.inference_mode()
     def encode_vision(self, frames: list[Image.Image]) -> tuple[torch.Tensor, torch.Tensor]:
         """Keep official preprocessing, but expose encoded vision for explicit input building."""

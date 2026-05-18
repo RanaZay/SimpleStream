@@ -124,6 +124,8 @@ class RecentWindowQAModel(_BaseRecentWindowQAModel):
         image_embeds = self._flatten_vision_features(
             self._get_image_feature_model().get_image_features(pixel_values, image_grid_thw)
         )
+        if image_embeds.ndim != 2:
+            raise ValueError(f"Expected 2D vision embeddings, got shape {tuple(image_embeds.shape)}")
 
         del pixel_values
         if torch.cuda.is_available():
@@ -175,6 +177,8 @@ class RecentWindowQAModel(_BaseRecentWindowQAModel):
             image_embeds = self._flatten_vision_features(
                 self._get_image_feature_model().get_image_features(pixel_values, image_grid_thw)
             )
+            if image_embeds.ndim != 2:
+                raise ValueError(f"Expected 2D vision embeddings, got shape {tuple(image_embeds.shape)}")
 
             frame_token_counts = [
                 max(1, int(row[0].item() * row[1].item() * row[2].item()) // merge_area)

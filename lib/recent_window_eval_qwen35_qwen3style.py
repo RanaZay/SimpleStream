@@ -300,10 +300,12 @@ class RecentWindowQAModel(_BaseRecentWindowQAModel):
 
         input_ids = torch.tensor([input_ids_list], dtype=torch.long, device=device)
         attention_mask = torch.ones_like(input_ids)
+        mm_token_type_ids = torch.zeros_like(input_ids, dtype=torch.int32)
+        image_mask = input_ids == self.image_token_id
+        mm_token_type_ids[image_mask] = 1
 
         inputs_embeds = text_model.get_input_embeddings()(input_ids)
         vision_embeds = vision_embeds.to(inputs_embeds.device, inputs_embeds.dtype)
-        image_mask = input_ids == self.image_token_id
         image_mask_expanded = image_mask.unsqueeze(-1).expand_as(inputs_embeds)
         inputs_embeds = inputs_embeds.masked_scatter(image_mask_expanded, vision_embeds)
 
@@ -312,6 +314,7 @@ class RecentWindowQAModel(_BaseRecentWindowQAModel):
             image_grid_thw=grid_rows,
             video_grid_thw=None,
             attention_mask=attention_mask,
+            mm_token_type_ids=mm_token_type_ids,
         )
 
         return self._generate_from_model_inputs(

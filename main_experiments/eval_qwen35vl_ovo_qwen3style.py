@@ -25,7 +25,7 @@ from tqdm import tqdm
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from ovo_constants import BACKWARD_TASKS, FORWARD_TASKS, REAL_TIME_TASKS
-from lib.recent_window_eval_qwen35_qwen3style import (
+from lib.recent_window_eval_qwen35_default import (
     RecentWindowQAModel,
     evaluate_ovo_backward_realtime,
     evaluate_ovo_forward,

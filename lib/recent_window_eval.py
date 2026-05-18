@@ -672,11 +672,18 @@ def load_jsonl_results(path: str) -> tuple[list[dict[str, Any]], set[str]]:
     if not os.path.exists(path):
         return results, done_keys
     with open(path) as handle:
-        for line in handle:
+        for line_number, line in enumerate(handle, start=1):
             line = line.strip()
             if not line:
                 continue
-            item = json.loads(line)
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError as exc:
+                print(
+                    f"[WARNING] Skipping malformed JSONL row in {path}:{line_number}: {exc}",
+                    flush=True,
+                )
+                continue
             results.append(item)
             key = item.get("_key")
             if isinstance(key, str) and key:

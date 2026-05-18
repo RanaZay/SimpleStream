@@ -46,6 +46,11 @@ MODEL_LABEL = "MiniCPM-V-4.6"
 def main() -> None:
     parser = argparse.ArgumentParser(description="OVO-Bench recent-window evaluation for MiniCPM-V-4.6")
     parser.add_argument("--model_path", default="openbmb/MiniCPM-V-4.6")
+    parser.add_argument(
+        "--qa_device",
+        default=None,
+        help="Device map for MiniCPM. Use 'auto' to shard the model over visible GPUs.",
+    )
     parser.add_argument("--anno_path", default="data/ovo_bench/ovo_bench_new.json")
     parser.add_argument("--chunked_dir", default="data/ovo_bench/chunked_videos")
     parser.add_argument("--result_dir", default="results/ovo_bench_recent_window_minicpmv46")
@@ -96,7 +101,7 @@ def main() -> None:
 
     evaluator = RecentWindowQAModel(
         model_name=args.model_path,
-        device=accelerator.device,
+        device=args.qa_device or accelerator.device,
         max_new_tokens=args.max_qa_tokens,
         attn_implementation=os.environ.get("ATTN_IMPLEMENTATION", "sdpa"),
     )
@@ -177,6 +182,7 @@ def main() -> None:
                 {
                     "config": {
                         "model_path": args.model_path,
+                        "qa_device": args.qa_device or str(accelerator.device),
                         "recent_frames_only": args.recent_frames_only,
                         "chunk_duration": args.chunk_duration,
                         "fps": args.fps,

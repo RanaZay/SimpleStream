@@ -109,16 +109,31 @@ class RecentWindowQAModel:
         content.append({"type": "text", "text": question})
         messages = [{"role": "user", "content": content}]
 
-        inputs = self.processor.apply_chat_template(
-            messages,
-            tokenize=True,
-            add_generation_prompt=True,
-            return_dict=True,
-            return_tensors="pt",
-            downsample_mode=self.downsample_mode,
-            max_slice_nums=self.max_slice_nums,
-            use_image_id=False,
-        )
+        template_kwargs: dict[str, Any] = {
+            "tokenize": True,
+            "add_generation_prompt": True,
+            "return_dict": True,
+            "return_tensors": "pt",
+        }
+        processor_kwargs: dict[str, Any] = {
+            "downsample_mode": self.downsample_mode,
+            "max_slice_nums": self.max_slice_nums,
+            "use_image_id": False,
+        }
+        try:
+            inputs = self.processor.apply_chat_template(
+                messages,
+                **template_kwargs,
+                processor_kwargs=processor_kwargs,
+            )
+        except TypeError:
+            # Older Transformers releases used the MiniCPM processor kwargs
+            # directly on apply_chat_template.
+            inputs = self.processor.apply_chat_template(
+                messages,
+                **template_kwargs,
+                **processor_kwargs,
+            )
         inputs = inputs.to(self.model.device)
 
         self._last_num_vision_frames = len(frames)

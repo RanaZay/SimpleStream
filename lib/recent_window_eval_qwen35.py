@@ -3,11 +3,13 @@ from __future__ import annotations
 import copy
 import os
 import time
+from typing import Any
 
 import torch
 from PIL import Image
 
 from lib.recent_window_eval import (
+    _TTFTStreamer,
     RecentWindowResult,
     build_ovo_prompt,
     decode_video_to_chunks_qwen,
@@ -33,6 +35,7 @@ class RecentWindowQAModel(_Qwen3RecentWindowQAModel):
         device: str | torch.device = "auto",
         max_new_tokens: int = 256,
         attn_implementation: str | None = None,
+        enable_thinking: bool | None = None,
     ) -> None:
         super().__init__(
             model_name=model_name,
@@ -40,6 +43,48 @@ class RecentWindowQAModel(_Qwen3RecentWindowQAModel):
             max_new_tokens=max_new_tokens,
             attn_implementation=attn_implementation or os.environ.get("ATTN_IMPLEMENTATION", "sdpa"),
         )
+        if enable_thinking is None:
+            enable_thinking = os.environ.get("QWEN35_ENABLE_THINKING", "").strip().lower() in {"1", "true", "yes", "on"}
+        self.enable_thinking = bool(enable_thinking)
+
+    @torch.inference_mode()
+    def _generate_from_model_inputs(self, prompt_length: int, **generate_kwargs: Any) -> str:
+        """Run Qwen3.5 generation, optionally using thinking-mode sampling."""
+        t0 = time.perf_counter()
+        streamer = _TTFTStreamer(t0)
+        generation_config: dict[str, Any] = {
+            "max_new_tokens": self.max_new_tokens,
+            "streamer": streamer,
+        }
+        if self.enable_thinking:
+            generation_config.update(
+                {
+                    "do_sample": True,
+                    "temperature": float(os.environ.get("QWEN35_TEMPERATURE", "1.0")),
+                    "top_p": float(os.environ.get("QWEN35_TOP_P", "0.95")),
+                    "top_k": int(os.environ.get("QWEN35_TOP_K", "20")),
+                }
+            )
+        else:
+            generation_config["do_sample"] = False
+
+        generated_ids = self.model.generate(**generate_kwargs, **generation_config)
+        self._last_ttft_seconds = (
+            streamer.ttft_seconds
+            if streamer.ttft_seconds is not None
+            else (time.perf_counter() - t0)
+        )
+
+        trimmed = [
+            generated_ids[0][prompt_length:]
+            if generated_ids.shape[1] > prompt_length
+            else generated_ids[0]
+        ]
+        return self.processor.batch_decode(
+            trimmed,
+            skip_special_tokens=True,
+            clean_up_tokenization_spaces=False,
+        )[0].strip()
 
     @torch.inference_mode()
     def generate_from_frames(self, frames: list[Image.Image], question: str) -> str:
@@ -47,13 +92,15 @@ class RecentWindowQAModel(_Qwen3RecentWindowQAModel):
         content.append({"type": "text", "text": question})
         messages = [{"role": "user", "content": content}]
 
-        inputs = self.processor.apply_chat_template(
-            messages,
-            tokenize=True,
-            add_generation_prompt=True,
-            return_dict=True,
-            return_tensors="pt",
-        )
+        chat_template_kwargs = {
+            "tokenize": True,
+            "add_generation_prompt": True,
+            "return_dict": True,
+            "return_tensors": "pt",
+        }
+        if self.enable_thinking:
+            chat_template_kwargs["enable_thinking"] = True
+        inputs = self.processor.apply_chat_template(messages, **chat_template_kwargs)
         inputs = inputs.to(self.model.device)
 
         image_grid_thw = inputs.get("image_grid_thw")

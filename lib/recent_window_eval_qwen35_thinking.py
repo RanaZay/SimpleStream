@@ -90,10 +90,16 @@ class RecentWindowQAModel(_BaseRecentWindowQAModel):
             )
             assistant_marker = "<|im_start|>assistant\n"
             if assistant_marker in rendered:
-                return tokenizer.encode(rendered.rsplit(assistant_marker, 1)[1], add_special_tokens=False)
+                thinking_start_ids = tokenizer.encode(rendered.rsplit(assistant_marker, 1)[1], add_special_tokens=False)
+                if os.environ.get("QWEN35_DEBUG_THINKING_PREFIX"):
+                    print("THINKING START TEXT:", repr(tokenizer.decode(thinking_start_ids)), flush=True)
+                return thinking_start_ids
         except TypeError:
             pass
-        return tokenizer.encode("<think>\n", add_special_tokens=False)
+        thinking_start_ids = tokenizer.encode("<think>\n", add_special_tokens=False)
+        if os.environ.get("QWEN35_DEBUG_THINKING_PREFIX"):
+            print("THINKING START TEXT:", repr(tokenizer.decode(thinking_start_ids)), flush=True)
+        return thinking_start_ids
 
     def _flatten_vision_features(self, features):
         if isinstance(features, torch.Tensor):

@@ -129,7 +129,10 @@ class RecentWindowQAModel(_BaseRecentWindowQAModel):
                 raise AttributeError(
                     "Qwen3.5 returned raw vision tokens, but visual.merger was not found."
                 )
-            image_embeds = merger(image_embeds)
+            try:
+                image_embeds = merger(image_embeds)
+            except TypeError:
+                image_embeds = merger(image_embeds, image_grid_thw)
             if isinstance(image_embeds, tuple):
                 image_embeds = image_embeds[0]
             image_embeds = self._flatten_vision_features(image_embeds)

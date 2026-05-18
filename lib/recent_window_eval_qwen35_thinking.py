@@ -76,7 +76,24 @@ class RecentWindowQAModel(_BaseRecentWindowQAModel):
         self.im_start_id = self.processor.tokenizer.convert_tokens_to_ids("<|im_start|>")
         self.im_end_id = self.processor.tokenizer.convert_tokens_to_ids("<|im_end|>")
         self.merge_size = self.model.model.visual.spatial_merge_size
-        self.thinking_start_ids = self.processor.tokenizer.encode("<think>\n", add_special_tokens=False)
+        self.thinking_start_ids = self._build_thinking_start_ids()
+
+    def _build_thinking_start_ids(self) -> list[int]:
+        tokenizer = self.processor.tokenizer
+        messages = [{"role": "user", "content": [{"type": "text", "text": "."}]}]
+        try:
+            rendered = self.processor.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+                enable_thinking=True,
+            )
+            assistant_marker = "<|im_start|>assistant\n"
+            if assistant_marker in rendered:
+                return tokenizer.encode(rendered.rsplit(assistant_marker, 1)[1], add_special_tokens=False)
+        except TypeError:
+            pass
+        return tokenizer.encode("<think>\n", add_special_tokens=False)
 
     def _flatten_vision_features(self, features):
         if isinstance(features, torch.Tensor):

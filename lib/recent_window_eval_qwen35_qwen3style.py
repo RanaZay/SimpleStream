@@ -104,6 +104,46 @@ class RecentWindowQAModel(_BaseRecentWindowQAModel):
 
         raise TypeError(f"Unexpected vision feature type: {type(features)}")
 
+    def _get_merged_image_embeds(
+        self,
+        pixel_values: torch.Tensor,
+        image_grid_thw: torch.Tensor,
+    ) -> torch.Tensor:
+        features = self._get_image_feature_model().get_image_features(
+            pixel_values,
+            image_grid_thw,
+        )
+        image_embeds = self._flatten_vision_features(features)
+        if image_embeds.ndim != 2:
+            raise ValueError(f"Expected 2D vision embeddings, got shape {tuple(image_embeds.shape)}")
+
+        merge_area = max(1, int(self.merge_size)) ** 2
+        expected_tokens = int((image_grid_thw.prod(dim=-1) // merge_area).sum().item())
+        if int(image_embeds.shape[0]) == expected_tokens:
+            return image_embeds
+
+        raw_tokens = int(image_grid_thw.prod(dim=-1).sum().item())
+        if int(image_embeds.shape[0]) == raw_tokens:
+            merger = getattr(self._visual, "merger", None)
+            if merger is None:
+                raise AttributeError(
+                    "Qwen3.5 returned raw vision tokens, but visual.merger was not found."
+                )
+            image_embeds = merger(image_embeds)
+            if isinstance(image_embeds, tuple):
+                image_embeds = image_embeds[0]
+            image_embeds = self._flatten_vision_features(image_embeds)
+            if image_embeds.ndim != 2:
+                raise ValueError(f"Expected 2D merged vision embeddings, got shape {tuple(image_embeds.shape)}")
+
+        if int(image_embeds.shape[0]) != expected_tokens:
+            raise ValueError(
+                "vision token count mismatch after merge: "
+                f"embeds={int(image_embeds.shape[0])} vs grid={expected_tokens}"
+            )
+
+        return image_embeds
+
     @torch.inference_mode()
     def encode_vision(self, frames: list[Image.Image]) -> tuple[torch.Tensor, torch.Tensor]:
         """Keep official preprocessing, but expose encoded vision for explicit input building."""
@@ -121,11 +161,7 @@ class RecentWindowQAModel(_BaseRecentWindowQAModel):
 
         pixel_values = inputs["pixel_values"].to(self.model.device)
         image_grid_thw = inputs["image_grid_thw"].to(self.model.device)
-        image_embeds = self._flatten_vision_features(
-            self._get_image_feature_model().get_image_features(pixel_values, image_grid_thw)
-        )
-        if image_embeds.ndim != 2:
-            raise ValueError(f"Expected 2D vision embeddings, got shape {tuple(image_embeds.shape)}")
+        image_embeds = self._get_merged_image_embeds(pixel_values, image_grid_thw)
 
         del pixel_values
         if torch.cuda.is_available():
@@ -174,11 +210,7 @@ class RecentWindowQAModel(_BaseRecentWindowQAModel):
             )
             pixel_values = inputs["pixel_values"].to(self.model.device)
             image_grid_thw = inputs["image_grid_thw"].to(self.model.device)
-            image_embeds = self._flatten_vision_features(
-                self._get_image_feature_model().get_image_features(pixel_values, image_grid_thw)
-            )
-            if image_embeds.ndim != 2:
-                raise ValueError(f"Expected 2D vision embeddings, got shape {tuple(image_embeds.shape)}")
+            image_embeds = self._get_merged_image_embeds(pixel_values, image_grid_thw)
 
             frame_token_counts = [
                 max(1, int(row[0].item() * row[1].item() * row[2].item()) // merge_area)

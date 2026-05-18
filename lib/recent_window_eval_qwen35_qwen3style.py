@@ -300,7 +300,7 @@ class RecentWindowQAModel(_BaseRecentWindowQAModel):
 
         input_ids = torch.tensor([input_ids_list], dtype=torch.long, device=device)
         attention_mask = torch.ones_like(input_ids)
-        mm_token_type_ids = torch.zeros_like(input_ids, dtype=torch.int32)
+        mm_token_type_ids = torch.zeros_like(input_ids)
         image_mask = input_ids == self.image_token_id
         mm_token_type_ids[image_mask] = 1
 

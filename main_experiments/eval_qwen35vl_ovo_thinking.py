@@ -53,7 +53,7 @@ def main() -> None:
     parser.add_argument("--recent_frames_only", type=int, default=4)
     parser.add_argument("--chunk_duration", type=float, default=1.0)
     parser.add_argument("--fps", type=float, default=1.0)
-    parser.add_argument("--max_qa_tokens", type=int, default=256)
+    parser.add_argument("--max_qa_tokens", type=int, default=1024)
     parser.add_argument(
         "--max_samples_per_split",
         type=int,

@@ -31,7 +31,7 @@ class RecentWindowQAModel(_BaseRecentWindowQAModel):
         self,
         model_name: str,
         device: str | torch.device = "auto",
-        max_new_tokens: int = 256,
+        max_new_tokens: int = 1024,
         attn_implementation: str = "flash_attention_2",
     ) -> None:
         from transformers import AutoModelForImageTextToText, AutoProcessor
@@ -371,6 +371,13 @@ def _combine_window_embeddings(
     return combined_embeds, combined_grid_thw
 
 
+def _strip_thinking(text: str) -> str:
+    text = str(text).strip()
+    if "</think>" in text:
+        return text.split("</think>", 1)[1].strip()
+    return text
+
+
 def query_recent_window(
     qa: RecentWindowQAModel,
     video_path: str,
@@ -414,25 +421,25 @@ def query_recent_window(
     encoded_window: deque[EncodedChunk] = deque(encoded_chunks, maxlen=window_size)
     t0 = time.perf_counter()
     combined_embeds, combined_grid_thw = _combine_window_embeddings(encoded_window, qa.model.device)
-    answer = qa.generate_with_vision_features(combined_embeds, combined_grid_thw, prompt)
+    raw_answer = qa.generate_with_vision_features(combined_embeds, combined_grid_thw, prompt)
+    answer = _strip_thinking(raw_answer)
     generate_time = time.perf_counter() - t0
     ttft_seconds = getattr(qa, "_last_ttft_seconds", 0.0) or 0.0
     num_vision_tokens = qa._last_num_vision_tokens
     num_frames = qa._last_num_vision_frames
 
-    return (
-        RecentWindowResult(
-            answer=answer,
-            final_chunk_ids=[item.chunk_index for item in encoded_window],
-            generate_time=generate_time,
-            ttft_seconds=ttft_seconds,
-            num_vision_tokens=num_vision_tokens,
-            num_vision_tokens_before=num_vision_tokens,
-            num_vision_tokens_after=num_vision_tokens,
-            num_frames=num_frames,
-        ),
-        decode_backend,
+    result = RecentWindowResult(
+        answer=answer,
+        final_chunk_ids=[item.chunk_index for item in encoded_window],
+        generate_time=generate_time,
+        ttft_seconds=ttft_seconds,
+        num_vision_tokens=num_vision_tokens,
+        num_vision_tokens_before=num_vision_tokens,
+        num_vision_tokens_after=num_vision_tokens,
+        num_frames=num_frames,
     )
+    result.raw_response = raw_answer
+    return result, decode_backend
 
 
 def evaluate_ovo_backward_realtime(
@@ -457,6 +464,7 @@ def evaluate_ovo_backward_realtime(
         )
         response = result.answer
         metadata = {
+            "raw_response": getattr(result, "raw_response", result.answer),
             "decode_backend": decode_backend,
             "final_chunk_ids": result.final_chunk_ids,
             "generate_time": result.generate_time,
@@ -500,6 +508,7 @@ def evaluate_ovo_forward(
             recent_frames_only=recent_frames_only,
         )
         test_info["response"] = result.answer
+        test_info["raw_response"] = getattr(result, "raw_response", result.answer)
         test_info["decode_backend"] = decode_backend
         test_info["final_chunk_ids"] = result.final_chunk_ids
         test_info["generate_time"] = result.generate_time

@@ -372,9 +372,11 @@ def _combine_window_embeddings(
 
 
 def _strip_thinking(text: str) -> str:
-    text = str(text).strip()
+    text = str(text or "").strip()
     if "</think>" in text:
         return text.split("</think>", 1)[1].strip()
+    if "<think>" in text:
+        return ""
     return text
 
 

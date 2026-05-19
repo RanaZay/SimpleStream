@@ -266,7 +266,7 @@ class RecentWindowQAModel(_BaseRecentWindowQAModel):
         vision_grid_thw: torch.Tensor,
         question: str,
     ) -> str:
-        device = self.model.device
+        device = self._get_text_input_device()
         tokenizer = self.processor.tokenizer
         text_model = self._get_text_model()
 
@@ -306,6 +306,7 @@ class RecentWindowQAModel(_BaseRecentWindowQAModel):
 
         inputs_embeds = text_model.get_input_embeddings()(input_ids)
         vision_embeds = vision_embeds.to(inputs_embeds.device, inputs_embeds.dtype)
+        image_mask = image_mask.to(inputs_embeds.device)
         image_mask_expanded = image_mask.unsqueeze(-1).expand_as(inputs_embeds)
         inputs_embeds = inputs_embeds.masked_scatter(image_mask_expanded, vision_embeds)
 

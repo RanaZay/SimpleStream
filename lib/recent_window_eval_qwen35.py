@@ -56,9 +56,8 @@ class RecentWindowQAModel(_Qwen3RecentWindowQAModel):
             "add_generation_prompt": True,
             "return_dict": True,
             "return_tensors": "pt",
+            "enable_thinking": self.enable_thinking,
         }
-        if self.enable_thinking:
-            chat_template_kwargs["enable_thinking"] = True
         inputs = self.processor.apply_chat_template(messages, **chat_template_kwargs)
         inputs = inputs.to(self.model.device)
 

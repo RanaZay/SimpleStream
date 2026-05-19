@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Safe StreamingBench evaluation for Qwen3.5-2B:
+# Safe StreamingBench evaluation for Qwen3.5-2B using the official HF path:
 # top_k=0, recent_frames_only=4, chunk_duration=1.0, fps=1.0.
 #
 # This script only uses benchmark data inside this repo:
@@ -52,5 +52,16 @@ echo "[INFO] Using PYTHON_BIN=${PYTHON_BIN}"
 echo "[INFO] Using CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}"
 echo "[INFO] Using ATTN_IMPLEMENTATION=${ATTN_IMPLEMENTATION}"
 echo "[INFO] Results: ${SB_RESULT_DIR}"
+echo "[INFO] Implementation: lib/recent_window_eval_qwen35.py"
 
-CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES}" "${PYTHON_BIN}" main_experiments/eval_qwen35vl_streamingbench.py     --anno-path "${SB_ANNO_PATH}"     --video-dir "${SB_VIDEO_DIR}"     --qa-model "Qwen/Qwen3.5-2B"     --qa-device auto     --top-k 0     --recent-frames-only 4     --chunk-duration 1.0     --fps 1.0     --max-qa-tokens 256     --output-dir "${SB_RESULT_DIR}"
+CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES}" "${PYTHON_BIN}" main_experiments/eval_qwen35vl_streamingbench.py \
+    --anno-path "${SB_ANNO_PATH}" \
+    --video-dir "${SB_VIDEO_DIR}" \
+    --qa-model "Qwen/Qwen3.5-2B" \
+    --qa-device auto \
+    --top-k 0 \
+    --recent-frames-only 4 \
+    --chunk-duration 1.0 \
+    --fps 1.0 \
+    --max-qa-tokens 256 \
+    --output-dir "${SB_RESULT_DIR}"

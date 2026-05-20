@@ -124,15 +124,15 @@ class RecentWindowQAModel:
             inputs = self.processor.apply_chat_template(
                 messages,
                 **template_kwargs,
-                processor_kwargs=processor_kwargs,
+                **processor_kwargs,
             )
         except TypeError:
-            # Older Transformers releases used the MiniCPM processor kwargs
-            # directly on apply_chat_template.
+            # Some processor versions route MiniCPM image/video options through
+            # this nested argument instead of accepting them directly.
             inputs = self.processor.apply_chat_template(
                 messages,
                 **template_kwargs,
-                **processor_kwargs,
+                processor_kwargs=processor_kwargs,
             )
         inputs = inputs.to(self.model.device)
 

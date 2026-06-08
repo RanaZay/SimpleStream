@@ -25,6 +25,7 @@ from lib.recent_window_eval import (
     load_jsonl_results,
     save_json,
 )
+from lib.cdas_sampler import CDASConfig
 from lib.recent_window_eval_minicpm import RecentWindowQAModel, query_recent_window
 
 logging.basicConfig(
@@ -140,6 +141,7 @@ def run_benchmark(
     max_qa_tokens: int,
     recent_frames_only: int,
     context_time: int,
+    cdas_config: CDASConfig | None = None,
 ) -> None:
     if top_k != 0:
         raise ValueError(
@@ -163,6 +165,16 @@ def run_benchmark(
 
     total_questions = sum(len(items) for items in video_questions.values())
     logger.info("Loaded %d videos and %d questions", len(video_questions), total_questions)
+    if cdas_config is not None and cdas_config.enabled:
+        cdas_config.validate()
+        logger.info(
+            "CDAS enabled: mode=%s skip=%.4f high=%.4f anchor=%.2fs min_fps=%.3f",
+            cdas_config.mode,
+            cdas_config.skip_threshold,
+            cdas_config.high_threshold,
+            cdas_config.anchor_seconds,
+            cdas_config.min_accepted_fps,
+        )
 
     os.makedirs(output_dir, exist_ok=True)
     ckpt_path = os.path.join(output_dir, "results_incremental.jsonl")
@@ -220,6 +232,7 @@ def run_benchmark(
                         recent_frames_only=effective_recent_chunks,
                         video_start=video_start,
                         video_end=ts_sec + 1e-4,
+                        cdas_config=cdas_config,
                     )
                     response = result.answer
                     pred = extract_mcq_answer(response)
@@ -243,14 +256,22 @@ def run_benchmark(
                         "num_vision_tokens_before": result.num_vision_tokens_before,
                         "num_vision_tokens_after": result.num_vision_tokens_after,
                     }
+                    cdas_metadata = getattr(result, "cdas_metadata", None)
+                    if cdas_metadata is not None:
+                        record["cdas"] = cdas_metadata
                     logger.info(
-                        "  [%d/%d] %s %s -> %s (gt=%s)",
+                        "  [%d/%d] %s %s -> %s (gt=%s%s)",
                         processed,
                         total_questions,
                         question["time_stamp"],
                         question.get("task_type", ""),
                         response[:80] if response else "None",
                         answer_gt,
+                        (
+                            f", cdas={cdas_metadata['selected_frames']}/{cdas_metadata['decoded_frames']}"
+                            if cdas_metadata is not None
+                            else ""
+                        ),
                     )
                 except Exception as exc:
                     record = {
@@ -289,6 +310,7 @@ def run_benchmark(
                 "attn_implementation": os.environ.get("ATTN_IMPLEMENTATION", "sdpa"),
                 "downsample_mode": os.environ.get("MINICPM_DOWNSAMPLE_MODE", "16x"),
                 "max_slice_nums": os.environ.get("MINICPM_MAX_SLICE_NUMS", "1"),
+                "cdas": cdas_config.__dict__ if cdas_config is not None else {"enabled": False},
             },
             "summary": summary,
             "results": all_results,
@@ -312,10 +334,36 @@ def main() -> None:
     parser.add_argument("--max-qa-tokens", type=int, default=256)
     parser.add_argument("--recent-frames-only", "--recent-frames-buffer", dest="recent_frames_only", type=int, default=4)
     parser.add_argument("--context-time", type=int, default=-1)
+    parser.add_argument("--cdas-enable", action="store_true", help="Enable Content-Density Adaptive Sampling.")
+    parser.add_argument("--cdas-mode", choices=["binary", "three_level"], default="three_level")
+    parser.add_argument("--cdas-skip-threshold", type=float, default=0.03)
+    parser.add_argument("--cdas-high-threshold", type=float, default=0.12)
+    parser.add_argument("--cdas-anchor-seconds", type=float, default=2.0)
+    parser.add_argument("--cdas-min-accepted-fps", type=float, default=0.25)
+    parser.add_argument("--cdas-gray-weight", type=float, default=0.50)
+    parser.add_argument("--cdas-edge-weight", type=float, default=0.30)
+    parser.add_argument("--cdas-hist-weight", type=float, default=0.20)
+    parser.add_argument("--cdas-resize", type=int, default=96)
+    parser.add_argument("--cdas-log-scores", action="store_true")
     args = parser.parse_args()
 
     if args.clip_model or args.clip_device:
         logger.info("CLIP arguments are ignored in the release recent-window baseline.")
+
+    cdas_config = CDASConfig(
+        enabled=bool(args.cdas_enable),
+        mode=args.cdas_mode,
+        skip_threshold=args.cdas_skip_threshold,
+        high_threshold=args.cdas_high_threshold,
+        anchor_seconds=args.cdas_anchor_seconds,
+        min_accepted_fps=args.cdas_min_accepted_fps,
+        gray_weight=args.cdas_gray_weight,
+        edge_weight=args.cdas_edge_weight,
+        hist_weight=args.cdas_hist_weight,
+        resize=args.cdas_resize,
+        log_scores=bool(args.cdas_log_scores),
+    )
+    cdas_config.validate()
 
     if args.output_dir:
         output_dir = args.output_dir
@@ -341,6 +389,7 @@ def main() -> None:
         max_qa_tokens=args.max_qa_tokens,
         recent_frames_only=args.recent_frames_only,
         context_time=args.context_time,
+        cdas_config=cdas_config,
     )
 
 

@@ -15,6 +15,7 @@ from lib.recent_window_eval import (
     decode_video_to_chunks_qwen,
     print_ovo_results,
 )
+from lib.cdas_sampler import CDASConfig, select_recent_frames_cdas
 
 
 class RecentWindowQAModel:
@@ -42,6 +43,7 @@ class RecentWindowQAModel:
         self._last_ttft_seconds: float = 0.0
         self._last_num_vision_tokens: int = 0
         self._last_num_vision_frames: int = 0
+        self._last_downsample_mode: str = self.downsample_mode
 
         self.processor = AutoProcessor.from_pretrained(model_name)
 
@@ -76,12 +78,19 @@ class RecentWindowQAModel:
         return 0
 
     @torch.inference_mode()
-    def _generate_from_model_inputs(self, prompt_length: int, **generate_kwargs: Any) -> str:
+    def _generate_from_model_inputs(
+        self,
+        prompt_length: int,
+        downsample_mode: str | None = None,
+        **generate_kwargs: Any,
+    ) -> str:
+        effective_downsample_mode = downsample_mode or self.downsample_mode
+        self._last_downsample_mode = effective_downsample_mode
         t0 = time.perf_counter()
         streamer = _TTFTStreamer(t0)
         generated_ids = self.model.generate(
             **generate_kwargs,
-            downsample_mode=self.downsample_mode,
+            downsample_mode=effective_downsample_mode,
             max_new_tokens=self.max_new_tokens,
             do_sample=False,
             streamer=streamer,
@@ -104,7 +113,13 @@ class RecentWindowQAModel:
         )[0].strip()
 
     @torch.inference_mode()
-    def generate_from_frames(self, frames: list[Image.Image], question: str) -> str:
+    def generate_from_frames(
+        self,
+        frames: list[Image.Image],
+        question: str,
+        downsample_mode: str | None = None,
+    ) -> str:
+        effective_downsample_mode = downsample_mode or self.downsample_mode
         content = [{"type": "image", "image": frame} for frame in frames]
         content.append({"type": "text", "text": question})
         messages = [{"role": "user", "content": content}]
@@ -116,7 +131,7 @@ class RecentWindowQAModel:
             "return_tensors": "pt",
         }
         processor_kwargs: dict[str, Any] = {
-            "downsample_mode": self.downsample_mode,
+            "downsample_mode": effective_downsample_mode,
             "max_slice_nums": self.max_slice_nums,
             "use_image_id": False,
         }
@@ -140,7 +155,11 @@ class RecentWindowQAModel:
         self._last_num_vision_tokens = self._estimate_vision_tokens(inputs)
 
         prompt_length = int(inputs["input_ids"].shape[1])
-        return self._generate_from_model_inputs(prompt_length=prompt_length, **inputs)
+        return self._generate_from_model_inputs(
+            prompt_length=prompt_length,
+            downsample_mode=effective_downsample_mode,
+            **inputs,
+        )
 
 
 def query_recent_window(
@@ -152,6 +171,7 @@ def query_recent_window(
     recent_frames_only: int,
     video_start: float | None = None,
     video_end: float | None = None,
+    cdas_config: CDASConfig | None = None,
 ) -> tuple[RecentWindowResult, str]:
     chunks, decode_backend = decode_video_to_chunks_qwen(
         video_path=video_path,
@@ -165,31 +185,53 @@ def query_recent_window(
         raise ValueError(f"No chunks decoded from video: {video_path}")
 
     window_size = max(1, int(recent_frames_only))
-    recent_chunks = chunks[-window_size:]
-    recent_frames = [frame for chunk in recent_chunks for frame in chunk.frames]
+    cdas_metadata: dict[str, Any] | None = None
+    selected_downsample_mode: str | None = None
+    if cdas_config is not None and cdas_config.enabled:
+        selection = select_recent_frames_cdas(
+            chunks=chunks,
+            window_size=window_size,
+            config=cdas_config,
+            default_downsample_mode=qa.downsample_mode,
+        )
+        recent_chunks = []
+        recent_frames = selection.frames
+        final_chunk_ids = selection.final_chunk_ids
+        selected_downsample_mode = selection.downsample_mode
+        cdas_metadata = selection.metadata
+    else:
+        recent_chunks = chunks[-window_size:]
+        recent_frames = [frame for chunk in recent_chunks for frame in chunk.frames]
+        final_chunk_ids = [chunk.chunk_index for chunk in recent_chunks]
     if not recent_frames:
         raise ValueError(f"No frames decoded from video: {video_path}")
 
     t0 = time.perf_counter()
-    answer = qa.generate_from_frames(recent_frames, prompt)
+    answer = qa.generate_from_frames(
+        recent_frames,
+        prompt,
+        downsample_mode=selected_downsample_mode,
+    )
     generate_time = time.perf_counter() - t0
     ttft_seconds = getattr(qa, "_last_ttft_seconds", 0.0) or 0.0
     num_vision_tokens = getattr(qa, "_last_num_vision_tokens", 0) or 0
     num_frames = getattr(qa, "_last_num_vision_frames", 0) or len(recent_frames)
-
-    return (
-        RecentWindowResult(
-            answer=answer,
-            final_chunk_ids=[chunk.chunk_index for chunk in recent_chunks],
-            generate_time=generate_time,
-            ttft_seconds=ttft_seconds,
-            num_vision_tokens=num_vision_tokens,
-            num_vision_tokens_before=num_vision_tokens,
-            num_vision_tokens_after=num_vision_tokens,
-            num_frames=num_frames,
-        ),
-        decode_backend,
+    result = RecentWindowResult(
+        answer=answer,
+        final_chunk_ids=final_chunk_ids,
+        generate_time=generate_time,
+        ttft_seconds=ttft_seconds,
+        num_vision_tokens=num_vision_tokens,
+        num_vision_tokens_before=num_vision_tokens,
+        num_vision_tokens_after=num_vision_tokens,
+        num_frames=num_frames,
     )
+    if cdas_metadata is not None:
+        cdas_metadata["actual_vision_tokens"] = num_vision_tokens
+        cdas_metadata["actual_vision_frames"] = num_frames
+        cdas_metadata["actual_downsample_mode"] = getattr(qa, "_last_downsample_mode", qa.downsample_mode)
+        result.cdas_metadata = cdas_metadata
+    return result, decode_backend
 
 
 def evaluate_ovo_backward_realtime(
@@ -199,6 +241,7 @@ def evaluate_ovo_backward_realtime(
     chunk_duration: float,
     fps: float,
     recent_frames_only: int,
+    cdas_config: CDASConfig | None = None,
 ) -> dict:
     video_path = os.path.join(chunked_dir, f"{anno['id']}.mp4")
     response = None
@@ -211,6 +254,7 @@ def evaluate_ovo_backward_realtime(
             chunk_duration=chunk_duration,
             fps=fps,
             recent_frames_only=recent_frames_only,
+            cdas_config=cdas_config,
         )
         response = result.answer
         metadata = {
@@ -223,6 +267,9 @@ def evaluate_ovo_backward_realtime(
             "num_vision_tokens_after": result.num_vision_tokens_after,
             "num_frames": result.num_frames,
         }
+        cdas_metadata = getattr(result, "cdas_metadata", None)
+        if cdas_metadata is not None:
+            metadata["cdas"] = cdas_metadata
     return {
         "id": anno["id"],
         "video": anno["video"],
@@ -241,6 +288,7 @@ def evaluate_ovo_forward(
     chunk_duration: float,
     fps: float,
     recent_frames_only: int,
+    cdas_config: CDASConfig | None = None,
 ) -> dict:
     result_anno = copy.deepcopy(anno)
     for index, test_info in enumerate(result_anno["test_info"]):
@@ -255,6 +303,7 @@ def evaluate_ovo_forward(
             chunk_duration=chunk_duration,
             fps=fps,
             recent_frames_only=recent_frames_only,
+            cdas_config=cdas_config,
         )
         test_info["response"] = result.answer
         test_info["decode_backend"] = decode_backend
@@ -265,4 +314,7 @@ def evaluate_ovo_forward(
         test_info["num_vision_tokens_before"] = result.num_vision_tokens_before
         test_info["num_vision_tokens_after"] = result.num_vision_tokens_after
         test_info["num_frames"] = result.num_frames
+        cdas_metadata = getattr(result, "cdas_metadata", None)
+        if cdas_metadata is not None:
+            test_info["cdas"] = cdas_metadata
     return result_anno

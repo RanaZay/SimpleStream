@@ -29,6 +29,7 @@ from lib.recent_window_eval_minicpm import (
     evaluate_ovo_forward,
     print_ovo_results,
 )
+from lib.cdas_sampler import CDASConfig
 from main_experiments.eval_qwen3vl_ovo import (
     append_checkpoint_row,
     get_checkpoint_path,
@@ -58,6 +59,17 @@ def main() -> None:
     parser.add_argument("--chunk_duration", type=float, default=1.0)
     parser.add_argument("--fps", type=float, default=1.0)
     parser.add_argument("--max_qa_tokens", type=int, default=256)
+    parser.add_argument("--cdas_enable", action="store_true", help="Enable Content-Density Adaptive Sampling.")
+    parser.add_argument("--cdas_mode", choices=["binary", "three_level"], default="three_level")
+    parser.add_argument("--cdas_skip_threshold", type=float, default=0.03)
+    parser.add_argument("--cdas_high_threshold", type=float, default=0.12)
+    parser.add_argument("--cdas_anchor_seconds", type=float, default=2.0)
+    parser.add_argument("--cdas_min_accepted_fps", type=float, default=0.25)
+    parser.add_argument("--cdas_gray_weight", type=float, default=0.50)
+    parser.add_argument("--cdas_edge_weight", type=float, default=0.30)
+    parser.add_argument("--cdas_hist_weight", type=float, default=0.20)
+    parser.add_argument("--cdas_resize", type=int, default=96)
+    parser.add_argument("--cdas_log_scores", action="store_true")
     parser.add_argument(
         "--max_samples_per_split",
         type=int,
@@ -65,6 +77,20 @@ def main() -> None:
         help="Optional sample cap applied independently to backward/realtime/forward after shuffle.",
     )
     args = parser.parse_args()
+    cdas_config = CDASConfig(
+        enabled=bool(args.cdas_enable),
+        mode=args.cdas_mode,
+        skip_threshold=args.cdas_skip_threshold,
+        high_threshold=args.cdas_high_threshold,
+        anchor_seconds=args.cdas_anchor_seconds,
+        min_accepted_fps=args.cdas_min_accepted_fps,
+        gray_weight=args.cdas_gray_weight,
+        edge_weight=args.cdas_edge_weight,
+        hist_weight=args.cdas_hist_weight,
+        resize=args.cdas_resize,
+        log_scores=bool(args.cdas_log_scores),
+    )
+    cdas_config.validate()
 
     accelerator = Accelerator()
 
@@ -95,6 +121,15 @@ def main() -> None:
         f"Window: recent_frames_only={args.recent_frames_only}, "
         f"chunk_duration={args.chunk_duration}, fps={args.fps}"
     )
+    if cdas_config.enabled:
+        accelerator.print(
+            "CDAS: "
+            f"mode={cdas_config.mode}, "
+            f"skip={cdas_config.skip_threshold}, "
+            f"high={cdas_config.high_threshold}, "
+            f"anchor={cdas_config.anchor_seconds}, "
+            f"min_fps={cdas_config.min_accepted_fps}"
+        )
     if args.max_samples_per_split is not None:
         accelerator.print(f"Sample cap per split: {args.max_samples_per_split}")
     accelerator.print(f"{'=' * 60}\n")
@@ -131,6 +166,7 @@ def main() -> None:
                 chunk_duration=args.chunk_duration,
                 fps=args.fps,
                 recent_frames_only=args.recent_frames_only,
+                cdas_config=cdas_config,
             )
             backward_results.append(result)
             done_keys.add(key)
@@ -147,6 +183,7 @@ def main() -> None:
                 chunk_duration=args.chunk_duration,
                 fps=args.fps,
                 recent_frames_only=args.recent_frames_only,
+                cdas_config=cdas_config,
             )
             realtime_results.append(result)
             done_keys.add(key)
@@ -163,6 +200,7 @@ def main() -> None:
                 chunk_duration=args.chunk_duration,
                 fps=args.fps,
                 recent_frames_only=args.recent_frames_only,
+                cdas_config=cdas_config,
             )
             forward_results.append(result)
             done_keys.add(key)
@@ -191,6 +229,7 @@ def main() -> None:
                         "attn_implementation": os.environ.get("ATTN_IMPLEMENTATION", "sdpa"),
                         "downsample_mode": os.environ.get("MINICPM_DOWNSAMPLE_MODE", "16x"),
                         "max_slice_nums": os.environ.get("MINICPM_MAX_SLICE_NUMS", "1"),
+                        "cdas": cdas_config.__dict__,
                     },
                     "backward": all_backward,
                     "realtime": all_realtime,

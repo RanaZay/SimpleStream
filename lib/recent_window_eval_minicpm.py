@@ -40,6 +40,35 @@ def _profile_cuda_device_indices() -> list[int]:
         return [0]
 
 
+def _visible_gpu_count_from_env() -> int:
+    for env_key in ("CUDA_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES"):
+        raw_value = os.environ.get(env_key, "").strip()
+        if raw_value:
+            return len([item for item in raw_value.split(",") if item.strip()])
+    try:
+        return int(torch.cuda.device_count()) if torch.cuda.is_available() else 0
+    except Exception:
+        return 0
+
+
+def _auto_device_max_memory() -> dict[int | str, str] | None:
+    per_gpu = os.environ.get("MINICPM_AUTO_MAX_MEMORY_PER_GPU", "").strip()
+    if not per_gpu:
+        return None
+
+    visible_gpu_count = _visible_gpu_count_from_env()
+    if visible_gpu_count <= 0:
+        return None
+
+    max_memory: dict[int | str, str] = {
+        device_index: per_gpu for device_index in range(visible_gpu_count)
+    }
+    cpu_memory = os.environ.get("MINICPM_AUTO_MAX_MEMORY_CPU", "").strip()
+    if cpu_memory:
+        max_memory["cpu"] = cpu_memory
+    return max_memory
+
+
 def _capture_gpu_memory() -> dict[str, Any]:
     if not torch.cuda.is_available():
         return {"available": False, "devices": [], "summary": {}}
@@ -377,6 +406,13 @@ class RecentWindowQAModel:
         }
         if device == "auto":
             model_kwargs["device_map"] = "auto"
+            auto_max_memory = _auto_device_max_memory()
+            if auto_max_memory:
+                model_kwargs["max_memory"] = auto_max_memory
+                print(
+                    f"[MiniCPM] Using explicit max_memory for device_map=auto: {auto_max_memory}",
+                    flush=True,
+                )
         else:
             model_kwargs["device_map"] = str(device)
 

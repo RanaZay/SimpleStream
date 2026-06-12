@@ -400,22 +400,11 @@ class RecentWindowQAModel:
 
         self.processor = AutoProcessor.from_pretrained(model_name)
 
-        load_mode = os.environ.get("MINICPM_LOAD_MODE", "device_map").strip().lower()
-        load_on_cpu_then_move = load_mode in {"cpu_then_move", "cpu_then_gpu", "cpu"}
         model_kwargs: dict[str, Any] = {
             "dtype": torch.bfloat16,
             "attn_implementation": attn_implementation or os.environ.get("ATTN_IMPLEMENTATION", "sdpa"),
         }
-        target_device = str(device)
-        if load_on_cpu_then_move:
-            model_kwargs["low_cpu_mem_usage"] = False
-            if target_device == "auto":
-                target_device = os.environ.get("MINICPM_CPU_THEN_MOVE_DEVICE", "cuda:0")
-            print(
-                f"[MiniCPM] Loading on CPU first, then moving model to {target_device}",
-                flush=True,
-            )
-        elif device == "auto":
+        if device == "auto":
             model_kwargs["device_map"] = "auto"
             auto_max_memory = _auto_device_max_memory()
             if auto_max_memory:
@@ -433,9 +422,6 @@ class RecentWindowQAModel:
         finally:
             if _saved_ws is not None:
                 os.environ["WORLD_SIZE"] = _saved_ws
-
-        if load_on_cpu_then_move and target_device not in {"cpu", "none"}:
-            self.model.to(torch.device(target_device))
 
         self.model.eval()
         self._component_profile_targets = self._find_component_profile_targets()

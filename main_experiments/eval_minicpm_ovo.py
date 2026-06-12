@@ -1,8 +1,9 @@
 """
-OVO-Bench recent-window evaluation for MiniCPM-V-4.6.
+OVO-Bench evaluation for MiniCPM-V-4.6.
 
-This keeps the same SimpleStream recent-window protocol used for Qwen models:
-recent 4 frames, 1 second chunks, 1 FPS, and 256 answer tokens by default.
+By default this keeps the same SimpleStream recent-window protocol used for
+Qwen models. Use --frame_selection all to evaluate every decoded 1 FPS frame
+from each OVO clip.
 """
 
 from __future__ import annotations
@@ -45,7 +46,7 @@ MODEL_LABEL = "MiniCPM-V-4.6"
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="OVO-Bench recent-window evaluation for MiniCPM-V-4.6")
+    parser = argparse.ArgumentParser(description="OVO-Bench evaluation for MiniCPM-V-4.6")
     parser.add_argument("--model_path", default="openbmb/MiniCPM-V-4.6")
     parser.add_argument(
         "--qa_device",
@@ -55,6 +56,12 @@ def main() -> None:
     parser.add_argument("--anno_path", default="data/ovo_bench/ovo_bench_new.json")
     parser.add_argument("--chunked_dir", default="data/ovo_bench/chunked_videos")
     parser.add_argument("--result_dir", default="results/ovo_bench_recent_window_minicpmv46")
+    parser.add_argument(
+        "--frame_selection",
+        choices=["recent", "all"],
+        default="recent",
+        help="recent = SimpleStream recent-window; all = use every decoded 1 FPS frame in each clip.",
+    )
     parser.add_argument("--recent_frames_only", type=int, default=4)
     parser.add_argument("--chunk_duration", type=float, default=1.0)
     parser.add_argument("--fps", type=float, default=1.0)
@@ -113,14 +120,18 @@ def main() -> None:
         forward_anno = forward_anno[: args.max_samples_per_split]
 
     accelerator.print(f"\n{'=' * 60}")
-    accelerator.print(f"OVO-Bench Recent-Window Evaluation ({MODEL_LABEL})")
+    run_mode = "All-Frames" if args.frame_selection == "all" else "Recent-Window"
+    accelerator.print(f"OVO-Bench {run_mode} Evaluation ({MODEL_LABEL})")
     accelerator.print(f"{'=' * 60}")
     accelerator.print(f"Backward: {len(backward_anno)}, Realtime: {len(realtime_anno)}, Forward: {len(forward_anno)}")
     accelerator.print(f"Processes: {accelerator.num_processes}")
     accelerator.print(
-        f"Window: recent_frames_only={args.recent_frames_only}, "
+        f"Frame selection: {args.frame_selection}, "
+        f"recent_frames_only={args.recent_frames_only}, "
         f"chunk_duration={args.chunk_duration}, fps={args.fps}"
     )
+    if args.frame_selection == "all" and cdas_config.enabled:
+        accelerator.print("CDAS is ignored when --frame_selection all is used.")
     if cdas_config.enabled:
         accelerator.print(
             "CDAS: "
@@ -167,6 +178,7 @@ def main() -> None:
                 fps=args.fps,
                 recent_frames_only=args.recent_frames_only,
                 cdas_config=cdas_config,
+                frame_selection=args.frame_selection,
             )
             backward_results.append(result)
             done_keys.add(key)
@@ -184,6 +196,7 @@ def main() -> None:
                 fps=args.fps,
                 recent_frames_only=args.recent_frames_only,
                 cdas_config=cdas_config,
+                frame_selection=args.frame_selection,
             )
             realtime_results.append(result)
             done_keys.add(key)
@@ -201,6 +214,7 @@ def main() -> None:
                 fps=args.fps,
                 recent_frames_only=args.recent_frames_only,
                 cdas_config=cdas_config,
+                frame_selection=args.frame_selection,
             )
             forward_results.append(result)
             done_keys.add(key)
@@ -221,6 +235,7 @@ def main() -> None:
                     "config": {
                         "model_path": args.model_path,
                         "qa_device": args.qa_device or str(accelerator.device),
+                        "frame_selection": args.frame_selection,
                         "recent_frames_only": args.recent_frames_only,
                         "chunk_duration": args.chunk_duration,
                         "fps": args.fps,

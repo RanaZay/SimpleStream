@@ -1,8 +1,9 @@
 """
-StreamingBench recent-window evaluation for MiniCPM-V-4.6.
+StreamingBench evaluation for MiniCPM-V-4.6.
 
-This keeps the SimpleStream recent-window protocol and swaps only the model
-backend to MiniCPM-V-4.6.
+By default this keeps the SimpleStream recent-window protocol and swaps only
+the model backend to MiniCPM-V-4.6. Use --frame-selection all to evaluate all
+1 FPS frames available up to each question timestamp.
 """
 
 from __future__ import annotations
@@ -26,7 +27,7 @@ from lib.recent_window_eval import (
     save_json,
 )
 from lib.cdas_sampler import CDASConfig
-from lib.recent_window_eval_minicpm import RecentWindowQAModel, query_recent_window
+from lib.recent_window_eval_minicpm import RecentWindowQAModel, query_all_frames, query_recent_window
 
 logging.basicConfig(
     level=logging.INFO,
@@ -116,10 +117,11 @@ def compute_summary(results: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def print_summary(results: list[dict[str, Any]]) -> None:
+def print_summary(results: list[dict[str, Any]], frame_selection: str = "recent") -> None:
     summary = compute_summary(results)
     print("\n" + "=" * 60)
-    print("StreamingBench Recent-Window Results (MiniCPM-V-4.6)")
+    label = "All-Frames" if frame_selection == "all" else "Recent-Window"
+    print(f"StreamingBench {label} Results (MiniCPM-V-4.6)")
     print("=" * 60)
     for row in summary["tasks"]:
         print(f"  {row['task_type']}: {row['accuracy']:.2f}% ({row['correct']}/{row['total']})")
@@ -141,6 +143,7 @@ def run_benchmark(
     max_qa_tokens: int,
     recent_frames_only: int,
     context_time: int,
+    frame_selection: str,
     cdas_config: CDASConfig | None = None,
 ) -> None:
     if top_k != 0:
@@ -165,6 +168,13 @@ def run_benchmark(
 
     total_questions = sum(len(items) for items in video_questions.values())
     logger.info("Loaded %d videos and %d questions", len(video_questions), total_questions)
+    logger.info(
+        "Frame selection: %s (fps=%.3f, chunk_duration=%.3f, context_time=%s)",
+        frame_selection,
+        fps,
+        chunk_duration,
+        context_time,
+    )
     if cdas_config is not None and cdas_config.enabled:
         cdas_config.validate()
         logger.info(
@@ -214,30 +224,47 @@ def run_benchmark(
                     continue
 
                 ts_sec = float(timestamp_to_seconds(question["time_stamp"]))
-                window_seconds = float(context_time) if context_time > 0 else float(recent_frames_only) * float(chunk_duration)
-                video_start = max(0.0, ts_sec - max(window_seconds, float(chunk_duration)))
-                effective_recent_chunks = max(
-                    int(recent_frames_only),
-                    int(math.ceil(window_seconds / max(float(chunk_duration), 1e-6))),
-                )
                 prompt = build_prompt(question)
 
                 try:
-                    result, decode_backend = query_recent_window(
-                        qa=qa,
-                        video_path=video_path,
-                        prompt=prompt,
-                        chunk_duration=chunk_duration,
-                        fps=fps,
-                        recent_frames_only=effective_recent_chunks,
-                        video_start=video_start,
-                        video_end=ts_sec + 1e-4,
-                        cdas_config=cdas_config,
-                    )
+                    if frame_selection == "all":
+                        video_start = (
+                            max(0.0, ts_sec - max(float(context_time), float(chunk_duration)))
+                            if context_time > 0
+                            else 0.0
+                        )
+                        result, decode_backend = query_all_frames(
+                            qa=qa,
+                            video_path=video_path,
+                            prompt=prompt,
+                            chunk_duration=chunk_duration,
+                            fps=fps,
+                            video_start=video_start,
+                            video_end=ts_sec + 1e-4,
+                        )
+                    else:
+                        window_seconds = float(context_time) if context_time > 0 else float(recent_frames_only) * float(chunk_duration)
+                        video_start = max(0.0, ts_sec - max(window_seconds, float(chunk_duration)))
+                        effective_recent_chunks = max(
+                            int(recent_frames_only),
+                            int(math.ceil(window_seconds / max(float(chunk_duration), 1e-6))),
+                        )
+                        result, decode_backend = query_recent_window(
+                            qa=qa,
+                            video_path=video_path,
+                            prompt=prompt,
+                            chunk_duration=chunk_duration,
+                            fps=fps,
+                            recent_frames_only=effective_recent_chunks,
+                            video_start=video_start,
+                            video_end=ts_sec + 1e-4,
+                            cdas_config=cdas_config,
+                        )
                     response = result.answer
                     pred = extract_mcq_answer(response)
                     answer_gt = extract_mcq_answer(str(question.get("answer", ""))) or str(question.get("answer", "")).strip().upper()
                     correct = bool(pred is not None and pred == answer_gt)
+                    profile_metadata = getattr(result, "profile_metadata", None)
                     record = {
                         "_key": make_key(video_basename, question, question_limit=80),
                         "video": video_basename,
@@ -255,7 +282,44 @@ def run_benchmark(
                         "num_vision_tokens": result.num_vision_tokens,
                         "num_vision_tokens_before": result.num_vision_tokens_before,
                         "num_vision_tokens_after": result.num_vision_tokens_after,
+                        "num_frames": result.num_frames,
                     }
+                    if profile_metadata is not None:
+                        record["profile"] = profile_metadata
+                        record["decode_time"] = profile_metadata.get("decode_time_seconds")
+                        record["end_to_end_time"] = profile_metadata.get("end_to_end_time_seconds")
+                        record["model_generate_time"] = profile_metadata.get("model_generate_time_seconds")
+                        record["preprocess_time"] = profile_metadata.get("preprocess_time_seconds")
+                        record["vision_preprocess_time_ms"] = profile_metadata.get("vision_preprocess_time_ms")
+                        record["vision_encoder_time_ms"] = profile_metadata.get("vision_encoder_time_ms")
+                        record["vision_resampler_time_ms"] = profile_metadata.get("vision_resampler_time_ms")
+                        record["vision_projector_time_ms"] = profile_metadata.get("vision_projector_time_ms")
+                        record["vision_hook_subtask_time_ms"] = profile_metadata.get("vision_hook_subtask_time_ms")
+                        record["vision_total_frontend_time_ms"] = profile_metadata.get("vision_total_frontend_time_ms")
+                        record["non_vision_generate_time_ms"] = profile_metadata.get("non_vision_generate_time_ms")
+                        record["prefill_forward_time_ms"] = profile_metadata.get("prefill_forward_time_ms")
+                        record["decode_forward_time_ms"] = profile_metadata.get("decode_forward_time_ms")
+                        record["prefill_kv_time_ms"] = profile_metadata.get("prefill_kv_time_ms")
+                        record["generate_first_token_time_ms"] = profile_metadata.get("generate_first_token_time_ms")
+                        record["generate_tokens_time_ms"] = profile_metadata.get("generate_tokens_time_ms")
+                        record["streamingtom_timeline_ms"] = profile_metadata.get("streamingtom_timeline_ms")
+                        record["st_vision_tower_ms"] = profile_metadata.get("st_vision_tower_ms")
+                        record["st_projector_ms"] = profile_metadata.get("st_projector_ms")
+                        record["st_compress_features_ms"] = profile_metadata.get("st_compress_features_ms")
+                        record["st_prefill_kv_ms"] = profile_metadata.get("st_prefill_kv_ms")
+                        record["st_store_kv_ms"] = profile_metadata.get("st_store_kv_ms")
+                        record["st_retrieval_forward_ms"] = profile_metadata.get("st_retrieval_forward_ms")
+                        record["st_reconstruct_kv_ms"] = profile_metadata.get("st_reconstruct_kv_ms")
+                        record["st_generate_first_token_ms"] = profile_metadata.get("st_generate_first_token_ms")
+                        record["st_generate_tokens_ms"] = profile_metadata.get("st_generate_tokens_ms")
+                        record["component_profile_enabled"] = profile_metadata.get("component_profile_enabled")
+                        record["gpu_peak_allocated_mb"] = profile_metadata.get("gpu_peak_allocated_mb")
+                        record["gpu_peak_reserved_mb"] = profile_metadata.get("gpu_peak_reserved_mb")
+                        record["gpu_peak_extra_allocated_mb"] = profile_metadata.get("gpu_peak_extra_allocated_mb")
+                        record["gpu_peak_extra_reserved_mb"] = profile_metadata.get("gpu_peak_extra_reserved_mb")
+                    full_frame_metadata = getattr(result, "full_frame_metadata", None)
+                    if full_frame_metadata is not None:
+                        record["full_frames"] = full_frame_metadata
                     cdas_metadata = getattr(result, "cdas_metadata", None)
                     if cdas_metadata is not None:
                         record["cdas"] = cdas_metadata
@@ -293,7 +357,7 @@ def run_benchmark(
                 ckpt_file.write(json.dumps(record, ensure_ascii=False) + "\n")
                 ckpt_file.flush()
 
-    print_summary(all_results)
+    print_summary(all_results, frame_selection=frame_selection)
     summary = compute_summary(all_results)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     save_json(
@@ -306,6 +370,7 @@ def run_benchmark(
                 "top_k": top_k,
                 "recent_frames_only": recent_frames_only,
                 "context_time": context_time,
+                "frame_selection": frame_selection,
                 "cache_enabled": False,
                 "attn_implementation": os.environ.get("ATTN_IMPLEMENTATION", "sdpa"),
                 "downsample_mode": os.environ.get("MINICPM_DOWNSAMPLE_MODE", "16x"),
@@ -320,7 +385,7 @@ def run_benchmark(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="StreamingBench recent-window evaluation for MiniCPM-V-4.6")
+    parser = argparse.ArgumentParser(description="StreamingBench evaluation for MiniCPM-V-4.6")
     parser.add_argument("--anno-path", required=True)
     parser.add_argument("--video-dir", required=True)
     parser.add_argument("--output-dir", default=None)
@@ -334,6 +399,12 @@ def main() -> None:
     parser.add_argument("--max-qa-tokens", type=int, default=256)
     parser.add_argument("--recent-frames-only", "--recent-frames-buffer", dest="recent_frames_only", type=int, default=4)
     parser.add_argument("--context-time", type=int, default=-1)
+    parser.add_argument(
+        "--frame-selection",
+        choices=["recent", "all"],
+        default="recent",
+        help="recent = SimpleStream recent-window; all = all decoded 1 FPS frames up to each question timestamp.",
+    )
     parser.add_argument("--cdas-enable", action="store_true", help="Enable Content-Density Adaptive Sampling.")
     parser.add_argument("--cdas-mode", choices=["binary", "three_level"], default="three_level")
     parser.add_argument("--cdas-skip-threshold", type=float, default=0.03)
@@ -371,6 +442,7 @@ def main() -> None:
         root_dir = Path(__file__).resolve().parents[3]
         run_tag = (
             f"streamingbench_release_minicpmv46"
+            f"_{args.frame_selection}"
             f"_recent{int(args.recent_frames_only)}"
             f"_chunk{str(args.chunk_duration).replace('.', 'p')}"
             f"_fps{str(args.fps).replace('.', 'p')}"
@@ -389,6 +461,7 @@ def main() -> None:
         max_qa_tokens=args.max_qa_tokens,
         recent_frames_only=args.recent_frames_only,
         context_time=args.context_time,
+        frame_selection=args.frame_selection,
         cdas_config=cdas_config,
     )
 

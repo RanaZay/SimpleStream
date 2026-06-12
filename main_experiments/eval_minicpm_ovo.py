@@ -13,6 +13,7 @@ import json
 import os
 import random
 import sys
+import time
 from datetime import datetime
 
 os.environ.setdefault("NCCL_TIMEOUT", "7200")
@@ -154,14 +155,29 @@ def main() -> None:
         )
 
     if os.environ.get("MINICPM_SERIALIZE_MODEL_LOAD", "").strip().lower() in {"1", "true", "yes", "on"}:
-        evaluator = None
-        for rank in range(accelerator.num_processes):
-            if accelerator.process_index == rank:
-                accelerator.print(f"[rank {rank}] Loading MiniCPM-V model")
-                evaluator = build_evaluator()
-            accelerator.wait_for_everyone()
-        if evaluator is None:
-            raise RuntimeError("Failed to initialize MiniCPM evaluator")
+        load_job_id = os.environ.get("SLURM_JOB_ID", "local")
+        load_marker_dir = os.path.join(
+            args.result_dir,
+            f".minicpm_model_load_{load_job_id}_{accelerator.num_processes}",
+        )
+        os.makedirs(load_marker_dir, exist_ok=True)
+        previous_marker = os.path.join(load_marker_dir, f"rank_{accelerator.process_index - 1}.done")
+        current_marker = os.path.join(load_marker_dir, f"rank_{accelerator.process_index}.done")
+        timeout_seconds = float(os.environ.get("MINICPM_MODEL_LOAD_TIMEOUT", "7200"))
+
+        if accelerator.process_index > 0:
+            wait_start = time.perf_counter()
+            while not os.path.exists(previous_marker):
+                if time.perf_counter() - wait_start > timeout_seconds:
+                    raise TimeoutError(
+                        f"Timed out waiting for previous MiniCPM load marker: {previous_marker}"
+                    )
+                time.sleep(2.0)
+
+        print(f"[rank {accelerator.process_index}] Loading MiniCPM-V model", flush=True)
+        evaluator = build_evaluator()
+        with open(current_marker, "w") as marker:
+            marker.write(datetime.now().isoformat() + "\n")
     else:
         evaluator = build_evaluator()
 

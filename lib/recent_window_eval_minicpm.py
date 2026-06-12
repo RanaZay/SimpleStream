@@ -846,26 +846,39 @@ def evaluate_ovo_backward_realtime(
     metadata: dict = {}
     if os.path.exists(video_path):
         prompt = build_ovo_prompt(anno["task"], anno)
-        if frame_selection == "all":
-            result, decode_backend = query_all_frames(
-                qa=qa,
-                video_path=video_path,
-                prompt=prompt,
-                chunk_duration=chunk_duration,
-                fps=fps,
-            )
-        else:
-            result, decode_backend = query_recent_window(
-                qa=qa,
-                video_path=video_path,
-                prompt=prompt,
-                chunk_duration=chunk_duration,
-                fps=fps,
-                recent_frames_only=recent_frames_only,
-                cdas_config=cdas_config,
-            )
-        response = result.answer
-        metadata = _result_metadata(result, decode_backend)
+        try:
+            if frame_selection == "all":
+                result, decode_backend = query_all_frames(
+                    qa=qa,
+                    video_path=video_path,
+                    prompt=prompt,
+                    chunk_duration=chunk_duration,
+                    fps=fps,
+                )
+            else:
+                result, decode_backend = query_recent_window(
+                    qa=qa,
+                    video_path=video_path,
+                    prompt=prompt,
+                    chunk_duration=chunk_duration,
+                    fps=fps,
+                    recent_frames_only=recent_frames_only,
+                    cdas_config=cdas_config,
+                )
+            response = result.answer
+            metadata = _result_metadata(result, decode_backend)
+        except Exception as exc:
+            metadata = {
+                "error": str(exc),
+                "error_type": type(exc).__name__,
+                "video_path": video_path,
+            }
+    else:
+        metadata = {
+            "error": f"Missing video: {video_path}",
+            "error_type": "FileNotFoundError",
+            "video_path": video_path,
+        }
     return {
         "id": anno["id"],
         "video": anno["video"],
@@ -892,26 +905,34 @@ def evaluate_ovo_forward(
         video_path = os.path.join(chunked_dir, f"{anno['id']}_{index}.mp4")
         if not os.path.exists(video_path):
             test_info["response"] = None
+            test_info["error"] = f"Missing video: {video_path}"
+            test_info["error_type"] = "FileNotFoundError"
             continue
         prompt = build_ovo_prompt(anno["task"], anno, index=index)
-        if frame_selection == "all":
-            result, decode_backend = query_all_frames(
-                qa=qa,
-                video_path=video_path,
-                prompt=prompt,
-                chunk_duration=chunk_duration,
-                fps=fps,
-            )
-        else:
-            result, decode_backend = query_recent_window(
-                qa=qa,
-                video_path=video_path,
-                prompt=prompt,
-                chunk_duration=chunk_duration,
-                fps=fps,
-                recent_frames_only=recent_frames_only,
-                cdas_config=cdas_config,
-            )
-        test_info["response"] = result.answer
-        test_info.update(_result_metadata(result, decode_backend))
+        try:
+            if frame_selection == "all":
+                result, decode_backend = query_all_frames(
+                    qa=qa,
+                    video_path=video_path,
+                    prompt=prompt,
+                    chunk_duration=chunk_duration,
+                    fps=fps,
+                )
+            else:
+                result, decode_backend = query_recent_window(
+                    qa=qa,
+                    video_path=video_path,
+                    prompt=prompt,
+                    chunk_duration=chunk_duration,
+                    fps=fps,
+                    recent_frames_only=recent_frames_only,
+                    cdas_config=cdas_config,
+                )
+            test_info["response"] = result.answer
+            test_info.update(_result_metadata(result, decode_backend))
+        except Exception as exc:
+            test_info["response"] = None
+            test_info["error"] = str(exc)
+            test_info["error_type"] = type(exc).__name__
+            test_info["video_path"] = video_path
     return result_anno

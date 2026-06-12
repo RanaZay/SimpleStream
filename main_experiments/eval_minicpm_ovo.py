@@ -145,12 +145,25 @@ def main() -> None:
         accelerator.print(f"Sample cap per split: {args.max_samples_per_split}")
     accelerator.print(f"{'=' * 60}\n")
 
-    evaluator = RecentWindowQAModel(
-        model_name=args.model_path,
-        device=args.qa_device or accelerator.device,
-        max_new_tokens=args.max_qa_tokens,
-        attn_implementation=os.environ.get("ATTN_IMPLEMENTATION", "sdpa"),
-    )
+    def build_evaluator() -> RecentWindowQAModel:
+        return RecentWindowQAModel(
+            model_name=args.model_path,
+            device=args.qa_device or accelerator.device,
+            max_new_tokens=args.max_qa_tokens,
+            attn_implementation=os.environ.get("ATTN_IMPLEMENTATION", "sdpa"),
+        )
+
+    if os.environ.get("MINICPM_SERIALIZE_MODEL_LOAD", "").strip().lower() in {"1", "true", "yes", "on"}:
+        evaluator = None
+        for rank in range(accelerator.num_processes):
+            if accelerator.process_index == rank:
+                accelerator.print(f"[rank {rank}] Loading MiniCPM-V model")
+                evaluator = build_evaluator()
+            accelerator.wait_for_everyone()
+        if evaluator is None:
+            raise RuntimeError("Failed to initialize MiniCPM evaluator")
+    else:
+        evaluator = build_evaluator()
 
     with accelerator.split_between_processes(backward_anno) as local_backward:
         local_backward = list(local_backward)

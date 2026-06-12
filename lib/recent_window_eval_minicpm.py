@@ -22,11 +22,22 @@ from lib.cdas_sampler import CDASConfig, select_recent_frames_cdas
 def _synchronize_gpu_devices() -> None:
     if not torch.cuda.is_available():
         return
-    for device_index in range(torch.cuda.device_count()):
+    for device_index in _profile_cuda_device_indices():
         try:
             torch.cuda.synchronize(device_index)
         except Exception:
             continue
+
+
+def _profile_cuda_device_indices() -> list[int]:
+    if not torch.cuda.is_available():
+        return []
+    if os.environ.get("MINICPM_PROFILE_ALL_VISIBLE_GPUS", "").strip().lower() in {"1", "true", "yes", "on"}:
+        return list(range(torch.cuda.device_count()))
+    try:
+        return [int(torch.cuda.current_device())]
+    except Exception:
+        return [0]
 
 
 def _capture_gpu_memory() -> dict[str, Any]:
@@ -40,7 +51,7 @@ def _capture_gpu_memory() -> dict[str, Any]:
         "max_allocated_mb": 0.0,
         "max_reserved_mb": 0.0,
     }
-    for device_index in range(torch.cuda.device_count()):
+    for device_index in _profile_cuda_device_indices():
         try:
             props = torch.cuda.get_device_properties(device_index)
             allocated = float(torch.cuda.memory_allocated(device_index)) / (1024**2)
@@ -72,7 +83,7 @@ def _reset_gpu_memory_peaks() -> dict[str, Any]:
     _synchronize_gpu_devices()
     before = _capture_gpu_memory()
     if torch.cuda.is_available():
-        for device_index in range(torch.cuda.device_count()):
+        for device_index in _profile_cuda_device_indices():
             try:
                 torch.cuda.reset_peak_memory_stats(device_index)
             except Exception:
@@ -332,6 +343,11 @@ class RecentWindowQAModel:
         max_new_tokens: int = 256,
         attn_implementation: str | None = None,
     ) -> None:
+        # ROCm can segfault in Transformers' threaded model materialization
+        # path when multiple eval ranks load MiniCPM at the same time.
+        os.environ.setdefault("HF_ENABLE_PARALLEL_LOADING", "false")
+        os.environ.setdefault("HF_PARALLEL_LOADING_WORKERS", "1")
+
         from transformers import AutoModelForImageTextToText, AutoProcessor
 
         self.model_name = model_name
@@ -356,7 +372,7 @@ class RecentWindowQAModel:
         self.processor = AutoProcessor.from_pretrained(model_name)
 
         model_kwargs: dict[str, Any] = {
-            "torch_dtype": torch.bfloat16,
+            "dtype": torch.bfloat16,
             "attn_implementation": attn_implementation or os.environ.get("ATTN_IMPLEMENTATION", "sdpa"),
         }
         if device == "auto":

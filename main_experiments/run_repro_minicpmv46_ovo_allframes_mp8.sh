@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+# Safe OVO-Bench all-frame evaluation for MiniCPM-V-4.6 using one
+# model-parallel process over all visible GPUs.
+#
+# This keeps the all-frames 1 FPS baseline, but uses the same MiniCPM launch
+# style as the stable recent-4 SimpleStream reproduction: a single process with
+# device_map=auto. On ROCm this avoids launching 8 full MiniCPM model copies.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+PYTHON_BIN="${PYTHON_BIN:-$(command -v python || command -v python3)}"
+MAIN_PROCESS_PORT="${MAIN_PROCESS_PORT:-29591}"
+ATTN_IMPLEMENTATION="${ATTN_IMPLEMENTATION:-sdpa}"
+MINICPM_DOWNSAMPLE_MODE="${MINICPM_DOWNSAMPLE_MODE:-16x}"
+MINICPM_MAX_SLICE_NUMS="${MINICPM_MAX_SLICE_NUMS:-1}"
+MINICPM_PROFILE_COMPONENTS="${MINICPM_PROFILE_COMPONENTS:-0}"
+
+OVO_ANNO_PATH="${REPO_ROOT}/data/ovo_bench/ovo_bench_new.json"
+OVO_CHUNKED_DIR="${REPO_ROOT}/data/ovo_bench/chunked_videos"
+OVO_RESULT_DIR="${REPO_ROOT}/main_experiments/results/repro_allframes/ovo_minicpmv46_allframes_fps1_mp8"
+
+ensure_under_repo_data() {
+    local path="$1"
+    local resolved
+    resolved="$(readlink -f "$path")"
+    case "$resolved" in
+        "${REPO_ROOT}/data/"*) ;;
+        *)
+            echo "[ERROR] Refusing to use data outside this repo: ${resolved}" >&2
+            exit 2
+            ;;
+    esac
+}
+
+if [[ ! -f "${OVO_ANNO_PATH}" ]]; then
+    echo "[ERROR] Missing OVO annotation: ${OVO_ANNO_PATH}" >&2
+    exit 2
+fi
+if [[ ! -d "${OVO_CHUNKED_DIR}" ]]; then
+    echo "[ERROR] Missing OVO chunked videos dir: ${OVO_CHUNKED_DIR}" >&2
+    exit 2
+fi
+ensure_under_repo_data "${OVO_ANNO_PATH}"
+ensure_under_repo_data "${OVO_CHUNKED_DIR}"
+
+cd "${REPO_ROOT}"
+
+if [[ -z "${CUDA_VISIBLE_DEVICES:-}" ]]; then
+    CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7"
+fi
+
+export HF_ENABLE_PARALLEL_LOADING="${HF_ENABLE_PARALLEL_LOADING:-false}"
+export HF_PARALLEL_LOADING_WORKERS="${HF_PARALLEL_LOADING_WORKERS:-1}"
+
+echo "[INFO] Using PYTHON_BIN=${PYTHON_BIN}"
+echo "[INFO] Using CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}"
+echo "[INFO] Using ATTN_IMPLEMENTATION=${ATTN_IMPLEMENTATION}"
+echo "[INFO] Using MINICPM_DOWNSAMPLE_MODE=${MINICPM_DOWNSAMPLE_MODE}"
+echo "[INFO] Using MINICPM_MAX_SLICE_NUMS=${MINICPM_MAX_SLICE_NUMS}"
+echo "[INFO] Using MINICPM_PROFILE_COMPONENTS=${MINICPM_PROFILE_COMPONENTS}"
+echo "[INFO] Using HF_ENABLE_PARALLEL_LOADING=${HF_ENABLE_PARALLEL_LOADING}"
+echo "[INFO] Using HF_PARALLEL_LOADING_WORKERS=${HF_PARALLEL_LOADING_WORKERS}"
+echo "[INFO] Frame selection: all frames at 1 FPS"
+echo "[INFO] Results: ${OVO_RESULT_DIR}"
+echo "[INFO] MiniCPM mode: 1 process, device_map=auto over visible GPUs"
+
+CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES}" \
+ATTN_IMPLEMENTATION="${ATTN_IMPLEMENTATION}" \
+MINICPM_DOWNSAMPLE_MODE="${MINICPM_DOWNSAMPLE_MODE}" \
+MINICPM_MAX_SLICE_NUMS="${MINICPM_MAX_SLICE_NUMS}" \
+MINICPM_PROFILE_COMPONENTS="${MINICPM_PROFILE_COMPONENTS}" \
+HF_ENABLE_PARALLEL_LOADING="${HF_ENABLE_PARALLEL_LOADING}" \
+HF_PARALLEL_LOADING_WORKERS="${HF_PARALLEL_LOADING_WORKERS}" \
+"${PYTHON_BIN}" -m accelerate.commands.launch \
+    --num_processes 1 \
+    --main_process_port "${MAIN_PROCESS_PORT}" \
+    --mixed_precision bf16 \
+    main_experiments/eval_minicpm_ovo.py \
+    --model_path "openbmb/MiniCPM-V-4.6" \
+    --qa_device auto \
+    --anno_path "${OVO_ANNO_PATH}" \
+    --chunked_dir "${OVO_CHUNKED_DIR}" \
+    --result_dir "${OVO_RESULT_DIR}" \
+    --frame_selection all \
+    --recent_frames_only 4 \
+    --chunk_duration 1.0 \
+    --fps 1.0 \
+    --max_qa_tokens 256

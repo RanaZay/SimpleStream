@@ -22,7 +22,6 @@ export ATTN_IMPLEMENTATION=sdpa
 export MINICPM_DOWNSAMPLE_MODE=16x
 export MINICPM_MAX_SLICE_NUMS=1
 export MINICPM_PROFILE_COMPONENTS=${MINICPM_PROFILE_COMPONENTS:-0}
-export MINICPM_SERIALIZE_MODEL_LOAD=1
 export HF_ENABLE_PARALLEL_LOADING=false
 export HF_PARALLEL_LOADING_WORKERS=1
 
@@ -39,7 +38,6 @@ export PYTORCH_KERNEL_CACHE_PATH="$REPO_ROOT/.cache/torch_kernels"
 
 export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 export HIP_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
-export NUM_PROCESSES=8
 
 echo "=== ENV CHECK ==="
 which python
@@ -50,17 +48,16 @@ echo "ATTN_IMPLEMENTATION=$ATTN_IMPLEMENTATION"
 echo "MINICPM_DOWNSAMPLE_MODE=$MINICPM_DOWNSAMPLE_MODE"
 echo "MINICPM_MAX_SLICE_NUMS=$MINICPM_MAX_SLICE_NUMS"
 echo "MINICPM_PROFILE_COMPONENTS=$MINICPM_PROFILE_COMPONENTS"
-echo "MINICPM_SERIALIZE_MODEL_LOAD=$MINICPM_SERIALIZE_MODEL_LOAD"
 echo "HF_ENABLE_PARALLEL_LOADING=$HF_ENABLE_PARALLEL_LOADING"
 echo "HF_PARALLEL_LOADING_WORKERS=$HF_PARALLEL_LOADING_WORKERS"
 echo "CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES"
 echo "HIP_VISIBLE_DEVICES=$HIP_VISIBLE_DEVICES"
-echo "NUM_PROCESSES=$NUM_PROCESSES"
+echo "MINICPM_LAUNCH_MODE=single-process device_map=auto over 8 visible GPUs"
 echo "=== END ENV CHECK ==="
 
-RESULT_DIR="$REPO_ROOT/main_experiments/results/repro_allframes/ovo_minicpmv46_allframes_fps1"
+RESULT_DIR="$REPO_ROOT/main_experiments/results/repro_allframes/ovo_minicpmv46_allframes_fps1_mp8"
 ts=$(date +%Y%m%d_%H%M%S)
 mv "$RESULT_DIR" "${RESULT_DIR}.old_$ts" 2>/dev/null || true
 
 PYTHON_BIN=$(which python) \
-bash main_experiments/run_repro_minicpmv46_ovo_allframes.sh
+bash main_experiments/run_repro_minicpmv46_ovo_allframes_mp8.sh

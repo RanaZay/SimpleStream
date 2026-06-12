@@ -36,8 +36,8 @@ export MIOPEN_USER_DB_PATH="$REPO_ROOT/.cache/miopen"
 export MIOPEN_CUSTOM_CACHE_DIR="$REPO_ROOT/.cache/miopen"
 export PYTORCH_KERNEL_CACHE_PATH="$REPO_ROOT/.cache/torch_kernels"
 
-export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
-export HIP_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+export CUDA_VISIBLE_DEVICES=0,1,2,3
+export HIP_VISIBLE_DEVICES=0,1,2,3
 
 echo "=== ENV CHECK ==="
 which python
@@ -52,12 +52,13 @@ echo "HF_ENABLE_PARALLEL_LOADING=$HF_ENABLE_PARALLEL_LOADING"
 echo "HF_PARALLEL_LOADING_WORKERS=$HF_PARALLEL_LOADING_WORKERS"
 echo "CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES"
 echo "HIP_VISIBLE_DEVICES=$HIP_VISIBLE_DEVICES"
-echo "MINICPM_LAUNCH_MODE=single-process device_map=auto over 8 visible GPUs"
+echo "MINICPM_LAUNCH_MODE=single-process device_map=auto over 4 visible GPUs"
 echo "=== END ENV CHECK ==="
 
-RESULT_DIR="$REPO_ROOT/main_experiments/results/repro_allframes/ovo_minicpmv46_allframes_fps1_mp8"
+RESULT_DIR="$REPO_ROOT/main_experiments/results/repro_allframes/ovo_minicpmv46_allframes_fps1_mp4"
 ts=$(date +%Y%m%d_%H%M%S)
 mv "$RESULT_DIR" "${RESULT_DIR}.old_$ts" 2>/dev/null || true
 
 PYTHON_BIN=$(which python) \
+OVO_RESULT_DIR="$RESULT_DIR" \
 bash main_experiments/run_repro_minicpmv46_ovo_allframes_mp8.sh

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Safe OVO-Bench all-frame evaluation for MiniCPM-V-4.6 using one
-# model-parallel process over all visible GPUs.
+# model-parallel process over visible GPUs.
 #
 # This keeps the all-frames 1 FPS baseline, but uses the same MiniCPM launch
 # style as the stable recent-4 SimpleStream reproduction: a single process with
-# device_map=auto. On ROCm this avoids launching 8 full MiniCPM model copies.
+# device_map=auto. On ROCm this avoids launching full MiniCPM model copies per GPU.
 
 set -euo pipefail
 
@@ -19,7 +19,7 @@ MINICPM_PROFILE_COMPONENTS="${MINICPM_PROFILE_COMPONENTS:-0}"
 
 OVO_ANNO_PATH="${REPO_ROOT}/data/ovo_bench/ovo_bench_new.json"
 OVO_CHUNKED_DIR="${REPO_ROOT}/data/ovo_bench/chunked_videos"
-OVO_RESULT_DIR="${REPO_ROOT}/main_experiments/results/repro_allframes/ovo_minicpmv46_allframes_fps1_mp8"
+OVO_RESULT_DIR="${OVO_RESULT_DIR:-${REPO_ROOT}/main_experiments/results/repro_allframes/ovo_minicpmv46_allframes_fps1_mp4}"
 
 ensure_under_repo_data() {
     local path="$1"
@@ -48,7 +48,7 @@ ensure_under_repo_data "${OVO_CHUNKED_DIR}"
 cd "${REPO_ROOT}"
 
 if [[ -z "${CUDA_VISIBLE_DEVICES:-}" ]]; then
-    CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7"
+    CUDA_VISIBLE_DEVICES="0,1,2,3"
 fi
 
 export HF_ENABLE_PARALLEL_LOADING="${HF_ENABLE_PARALLEL_LOADING:-false}"

@@ -34,7 +34,7 @@ def _flatten_tensor_output(value: Any) -> torch.Tensor | None:
     if isinstance(value, torch.Tensor):
         return value
     if isinstance(value, dict):
-        for key in ("image_embeds", "image_features", "last_hidden_state", "hidden_states"):
+        for key in ("pooler_output", "image_embeds", "image_features", "last_hidden_state", "hidden_states"):
             if key in value:
                 result = _flatten_tensor_output(value[key])
                 if result is not None:

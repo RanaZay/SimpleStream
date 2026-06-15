@@ -4,8 +4,11 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 
 from PIL import Image
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from lib.recent_window_eval_minicpm_ctr import CTRMiniCPMQAModel
 from lib.streamingtom_ctr import CTRConfig

@@ -397,6 +397,12 @@ class RecentWindowQAModel:
             "yes",
             "on",
         }
+        self.load_on_cpu_first = os.environ.get("MINICPM_LOAD_ON_CPU_FIRST", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
         self._last_component_times: dict[str, Any] = {}
 
         self.processor = AutoProcessor.from_pretrained(model_name)
@@ -415,7 +421,14 @@ class RecentWindowQAModel:
                     flush=True,
                 )
         else:
-            model_kwargs["device_map"] = str(device)
+            target_device = str(device)
+            if self.load_on_cpu_first and target_device not in {"cpu", "cpu:0"}:
+                print(
+                    f"[MiniCPM] Loading checkpoint on CPU first, then moving model to {target_device}",
+                    flush=True,
+                )
+            else:
+                model_kwargs["device_map"] = target_device
 
         _saved_ws = os.environ.pop("WORLD_SIZE", None)
         try:
@@ -423,6 +436,12 @@ class RecentWindowQAModel:
         finally:
             if _saved_ws is not None:
                 os.environ["WORLD_SIZE"] = _saved_ws
+
+        if device != "auto":
+            target_device = str(device)
+            if self.load_on_cpu_first and target_device not in {"cpu", "cpu:0"}:
+                self.model.to(torch.device(target_device))
+                _synchronize_gpu_devices()
 
         self.model.eval()
         self._component_profile_targets = self._find_component_profile_targets()

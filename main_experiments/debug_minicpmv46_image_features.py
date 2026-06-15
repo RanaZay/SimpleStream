@@ -30,25 +30,33 @@ def _summarize(value: Any) -> Any:
     return {"type": type(value).__name__, "repr": repr(value)[:240]}
 
 
-def _flatten_tensor_output(value: Any) -> torch.Tensor | None:
+def _collect_feature_tensors(value: Any) -> list[torch.Tensor]:
     if isinstance(value, torch.Tensor):
-        return value
+        return [value]
     if isinstance(value, dict):
         for key in ("pooler_output", "image_embeds", "image_features", "last_hidden_state", "hidden_states"):
             if key in value:
-                result = _flatten_tensor_output(value[key])
-                if result is not None:
+                result = _collect_feature_tensors(value[key])
+                if result:
                     return result
+        collected: list[torch.Tensor] = []
         for item in value.values():
-            result = _flatten_tensor_output(item)
-            if result is not None:
-                return result
+            collected.extend(_collect_feature_tensors(item))
+        return collected
     if isinstance(value, (list, tuple)):
+        collected = []
         for item in value:
-            result = _flatten_tensor_output(item)
-            if result is not None:
-                return result
-    return None
+            collected.extend(_collect_feature_tensors(item))
+        return collected
+    return []
+
+
+def _concat_feature_tensors(value: Any) -> torch.Tensor | None:
+    tensors = _collect_feature_tensors(value)
+    if not tensors:
+        return None
+    flattened = [tensor.reshape(-1, tensor.shape[-1]) for tensor in tensors]
+    return torch.cat(flattened, dim=0)
 
 
 def _make_images(num_images: int) -> list[Image.Image]:
@@ -153,7 +161,7 @@ def main() -> None:
     with torch.inference_mode():
         call_variant, features = _call_get_image_features(model=model, inputs=inputs, args=args)
 
-    feature_tensor = _flatten_tensor_output(features)
+    feature_tensor = _concat_feature_tensors(features)
     feature_tokens = int(feature_tensor.reshape(-1, feature_tensor.shape[-1]).shape[0]) if feature_tensor is not None else None
     feature_dim = int(feature_tensor.shape[-1]) if feature_tensor is not None else None
 

@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=minicpmv46_sb_all_d8
+#SBATCH --job-name=minicpmv46_sb_all_8gpu
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=96

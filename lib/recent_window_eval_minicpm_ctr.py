@@ -190,12 +190,12 @@ class CTRMiniCPMQAModel(_MiniCPMRecentWindowQAModel):
         return compressed, metadata
 
     @torch.inference_mode()
-    def generate_from_frames(
+    def build_ctr_model_inputs(
         self,
         frames: list[Image.Image],
         question: str,
         downsample_mode: str | None = None,
-    ) -> str:
+    ) -> dict[str, Any]:
         effective_downsample_mode = downsample_mode or self.downsample_mode
         self._last_downsample_mode = effective_downsample_mode
         self._last_ctr_compress_features_ms = 0.0
@@ -291,12 +291,39 @@ class CTRMiniCPMQAModel(_MiniCPMRecentWindowQAModel):
         image_mask_expanded = image_mask.unsqueeze(-1).expand_as(inputs_embeds)
         inputs_embeds = inputs_embeds.masked_scatter(image_mask_expanded, compressed_embeds)
 
+        return {
+            "input_ids": compressed_input_ids,
+            "inputs_embeds": inputs_embeds,
+            "attention_mask": attention_mask,
+            "prompt_length": int(compressed_input_ids.shape[1]),
+            "downsample_mode": effective_downsample_mode,
+            "image_mask": image_mask,
+            "compressed_features": compressed_features,
+            "compressed_lengths": compressed_lengths,
+            "tokens_before": before_tokens,
+            "tokens_after": after_tokens,
+            "ctr_metadata": self._last_ctr_metadata,
+        }
+
+    @torch.inference_mode()
+    def generate_from_frames(
+        self,
+        frames: list[Image.Image],
+        question: str,
+        downsample_mode: str | None = None,
+    ) -> str:
+        model_inputs = self.build_ctr_model_inputs(
+            frames=frames,
+            question=question,
+            downsample_mode=downsample_mode,
+        )
+
         answer = self._generate_from_model_inputs(
-            prompt_length=int(compressed_input_ids.shape[1]),
-            downsample_mode=effective_downsample_mode,
-            input_ids=compressed_input_ids,
-            inputs_embeds=inputs_embeds,
-            attention_mask=attention_mask,
+            prompt_length=int(model_inputs["prompt_length"]),
+            downsample_mode=model_inputs["downsample_mode"],
+            input_ids=model_inputs["input_ids"],
+            inputs_embeds=model_inputs["inputs_embeds"],
+            attention_mask=model_inputs["attention_mask"],
         )
 
         component_times = self._last_component_times
@@ -304,9 +331,9 @@ class CTRMiniCPMQAModel(_MiniCPMRecentWindowQAModel):
             component_times["ctr_enabled"] = True
             component_times["ctr_vision_encode_ms"] = self._last_ctr_vision_encode_ms
             component_times["ctr_compress_features_ms"] = self._last_ctr_compress_features_ms
-            component_times["ctr_tokens_before"] = before_tokens
-            component_times["ctr_tokens_after"] = after_tokens
-            component_times["ctr_frames"] = len(pooled_features)
+            component_times["ctr_tokens_before"] = model_inputs["tokens_before"]
+            component_times["ctr_tokens_after"] = model_inputs["tokens_after"]
+            component_times["ctr_frames"] = len(model_inputs["compressed_features"])
             component_times["ctr_metadata"] = self._last_ctr_metadata
         return answer
 

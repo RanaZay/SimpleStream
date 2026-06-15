@@ -9,6 +9,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import lib.recent_window_eval_minicpm as minicpm_eval
 import main_experiments.eval_minicpm_ovo as base_ovo
+from lib.recent_window_eval import calculate_ovo_scores
 from lib.recent_window_eval_minicpm_ctr import (
     CTRMiniCPMQAModel,
     query_all_frames,
@@ -37,6 +38,42 @@ def _consume_ctr_args() -> argparse.Namespace:
     return args
 
 
+def _print_ctr_ovo_results(
+    model_label: str,
+    backward_results: list[dict],
+    realtime_results: list[dict],
+    forward_results: list[dict],
+) -> None:
+    summary = calculate_ovo_scores(backward_results, realtime_results, forward_results)
+    print("\n" + "=" * 60)
+    print(f"OVO-Bench Results ({model_label})")
+    print("=" * 60)
+
+    category_scores: list[float] = []
+    for section_name, title in (
+        ("backward", "Backward Tracing"),
+        ("realtime", "Real-time Perception"),
+        ("forward", "Forward Responding"),
+    ):
+        rows = summary[section_name]
+        if not rows:
+            continue
+        print(f"\n{title}:")
+        accs: list[float] = []
+        for task, stats in rows.items():
+            print(f"  {task}: {stats['accuracy']:.2f}% ({stats['correct']}/{stats['total']})")
+            accs.append(float(stats["accuracy"]))
+        avg = sum(accs) / len(accs)
+        category_scores.append(avg)
+        print(f"  {title.split()[0]} Avg.: {avg:.2f}%")
+
+    if category_scores:
+        total_avg = sum(category_scores) / len(category_scores)
+        print(f"\n{'=' * 60}")
+        print(f"Total Avg.: {total_avg:.2f}%")
+        print("=" * 60)
+
+
 def main() -> None:
     ctr_args = _consume_ctr_args()
 
@@ -48,6 +85,7 @@ def main() -> None:
     base_ovo.MODEL_LABEL = (
         f"MiniCPM-V-4.6 + CTR(G={ctr_args.ctr_budget}, tau={ctr_args.ctr_tau})"
     )
+    base_ovo.print_ovo_results = _print_ctr_ovo_results
     base_ovo.main()
 
 

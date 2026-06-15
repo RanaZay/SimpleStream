@@ -376,6 +376,7 @@ class RecentWindowQAModel:
         # path when multiple eval ranks load MiniCPM at the same time.
         os.environ.setdefault("HF_ENABLE_PARALLEL_LOADING", "false")
         os.environ.setdefault("HF_PARALLEL_LOADING_WORKERS", "1")
+        os.environ.setdefault("HF_DEACTIVATE_ASYNC_LOAD", "1")
 
         from transformers import AutoModelForImageTextToText, AutoProcessor
 

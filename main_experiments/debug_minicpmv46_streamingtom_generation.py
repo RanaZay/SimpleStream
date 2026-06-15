@@ -74,13 +74,67 @@ def _past_layers(past_key_values: Any) -> list[tuple[torch.Tensor, torch.Tensor]
     return layers
 
 
-def _dynamic_cache_from_layers(layers: list[tuple[torch.Tensor, torch.Tensor]]) -> Any:
+def _set_cache_layer_kv(cache_layer: Any, key: torch.Tensor, value: torch.Tensor) -> None:
+    cache_layer.keys = key
+    cache_layer.values = value
+    cache_layer.is_initialized = True
+    cache_layer.dtype = key.dtype
+    cache_layer.device = key.device
+    cumulative_length = getattr(cache_layer, "cumulative_length", None)
+    if isinstance(cumulative_length, int):
+        cache_layer.cumulative_length = int(key.shape[2])
+    elif isinstance(cumulative_length, torch.Tensor):
+        cumulative_length.zero_()
+        cumulative_length.add_(int(key.shape[2]))
+    if hasattr(cache_layer, "cumulative_length_int"):
+        cache_layer.cumulative_length_int = int(key.shape[2])
+
+
+def _dynamic_cache_from_layers(
+    template_cache: Any,
+    layers: list[tuple[torch.Tensor, torch.Tensor]],
+) -> tuple[Any, dict[str, Any]]:
+    cache_layers = getattr(template_cache, "layers", None)
+    if isinstance(cache_layers, (list, tuple)):
+        attention_idx = 0
+        for cache_layer in cache_layers:
+            key = getattr(cache_layer, "keys", None)
+            value = getattr(cache_layer, "values", None)
+            if not isinstance(key, torch.Tensor) or not isinstance(value, torch.Tensor):
+                continue
+            if key.ndim != 4 or value.ndim != 4 or int(key.shape[2]) <= 0:
+                continue
+            if attention_idx >= len(layers):
+                break
+            new_key, new_value = layers[attention_idx]
+            _set_cache_layer_kv(cache_layer, new_key, new_value)
+            attention_idx += 1
+        if attention_idx != len(layers):
+            raise RuntimeError(
+                "Could not map all reconstructed attention layers back into the "
+                f"template cache: replaced={attention_idx}, expected={len(layers)}"
+            )
+        return template_cache, {
+            "format": "template_dynamic_cache",
+            "template_type": type(template_cache).__name__,
+            "attention_layers_replaced": attention_idx,
+            "total_cache_layers": len(cache_layers),
+        }
+
     try:
         from transformers.cache_utils import DynamicCache
 
-        return DynamicCache([(key, value, None) for key, value in layers])
+        return DynamicCache([(key, value, None) for key, value in layers]), {
+            "format": "generic_dynamic_cache",
+            "attention_layers_replaced": len(layers),
+            "total_cache_layers": len(layers),
+        }
     except Exception:
-        return tuple((key, value) for key, value in layers)
+        return tuple((key, value) for key, value in layers), {
+            "format": "tuple_cache",
+            "attention_layers_replaced": len(layers),
+            "total_cache_layers": len(layers),
+        }
 
 
 def _reconstruct_prompt_order_cache(
@@ -257,7 +311,10 @@ def main() -> None:
             )
         )
 
-    reconstructed_cache = _dynamic_cache_from_layers(reconstructed_layers)
+    reconstructed_cache, cache_build_metadata = _dynamic_cache_from_layers(
+        getattr(prefill_outputs, "past_key_values", None),
+        reconstructed_layers,
+    )
     reconstructed_seq_len = int(reconstructed_layers[0][0].shape[2])
     full_seq_len = int(source_layers[0][0].shape[2])
 
@@ -321,6 +378,7 @@ def main() -> None:
         "prompt_length": int(model_inputs["prompt_length"]),
         "image_tokens_after_ctr": int(model_inputs["tokens_after"]),
         "selected_visual_tokens_per_layer": int(args.oqm_retrieval_max_tokens),
+        "cache_build": cache_build_metadata,
         "timing_ms": {
             "ctr_vision_encode": qa._last_ctr_vision_encode_ms,
             "ctr_compress_features": qa._last_ctr_compress_features_ms,

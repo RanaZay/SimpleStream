@@ -27,21 +27,57 @@ def _make_images(num_images: int) -> list[Image.Image]:
 
 
 def _past_layers(past_key_values: Any) -> list[tuple[torch.Tensor, torch.Tensor]]:
+    def append_if_tensor(
+        layers: list[tuple[torch.Tensor, torch.Tensor]],
+        key: Any,
+        value: Any,
+    ) -> None:
+        if not isinstance(key, torch.Tensor) or not isinstance(value, torch.Tensor):
+            return
+        if key.ndim != 4 or value.ndim != 4:
+            return
+        if int(key.shape[2]) <= 0 or int(value.shape[2]) <= 0:
+            return
+        layers.append((key, value))
+
     if hasattr(past_key_values, "key_cache") and hasattr(past_key_values, "value_cache"):
-        return [
-            (key, value)
-            for key, value in zip(past_key_values.key_cache, past_key_values.value_cache)
-            if isinstance(key, torch.Tensor) and isinstance(value, torch.Tensor)
-        ]
+        layers: list[tuple[torch.Tensor, torch.Tensor]] = []
+        for key, value in zip(past_key_values.key_cache, past_key_values.value_cache):
+            append_if_tensor(layers, key, value)
+        if layers:
+            return layers
+
+    # Transformers 5.x returns DynamicCache, whose tensors are stored on
+    # cache layers as `.keys` and `.values`.
+    cache_layers = getattr(past_key_values, "layers", None)
+    if isinstance(cache_layers, (list, tuple)):
+        layers = []
+        for cache_layer in cache_layers:
+            append_if_tensor(
+                layers,
+                getattr(cache_layer, "keys", None),
+                getattr(cache_layer, "values", None),
+            )
+        if layers:
+            return layers
+
     if isinstance(past_key_values, (list, tuple)):
         layers: list[tuple[torch.Tensor, torch.Tensor]] = []
         for layer in past_key_values:
             if isinstance(layer, (list, tuple)) and len(layer) >= 2:
-                key, value = layer[0], layer[1]
-                if isinstance(key, torch.Tensor) and isinstance(value, torch.Tensor):
-                    layers.append((key, value))
-        return layers
-    return []
+                append_if_tensor(layers, layer[0], layer[1])
+        if layers:
+            return layers
+
+    try:
+        iterator = iter(past_key_values)
+    except TypeError:
+        return []
+    layers = []
+    for layer in iterator:
+        if isinstance(layer, (list, tuple)) and len(layer) >= 2:
+            append_if_tensor(layers, layer[0], layer[1])
+    return layers
 
 
 def _shape(value: Any) -> Any:

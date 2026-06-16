@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
+from math import sqrt
 from typing import Any
 
 import torch
@@ -14,6 +15,8 @@ class CTRConfig:
 
     token_budget: int = 50
     similarity_threshold: float = 0.9
+    dpc_k: int = 7
+    merge_beta: float = 0.6
     saliency_mode: str = "norm"
     static_merge: str = "dpc"
     eps: float = 1e-6
@@ -26,6 +29,10 @@ class CTRConfig:
                 "similarity_threshold must be in [0, 1], "
                 f"got {self.similarity_threshold}"
             )
+        if self.dpc_k < 1:
+            raise ValueError(f"dpc_k must be >= 1, got {self.dpc_k}")
+        if not 0.0 <= self.merge_beta <= 1.0:
+            raise ValueError(f"merge_beta must be in [0, 1], got {self.merge_beta}")
         if self.saliency_mode not in {"norm", "uniform"}:
             raise ValueError(f"Unsupported saliency_mode: {self.saliency_mode}")
         if self.static_merge not in {"dpc", "mean"}:
@@ -152,7 +159,7 @@ class CausalTemporalReducer:
         has_previous = previous is not None and previous.shape == current_tokens.shape
 
         if not has_previous:
-            selected = self._topk_indices(scores, budget)
+            selected = torch.sort(self._topk_indices(scores, budget)).values
             reduced = current_tokens.index_select(0, selected)
             self._previous_features = current_tokens.detach()
             meta = CTRFrameMetadata(
@@ -198,18 +205,29 @@ class CausalTemporalReducer:
         else:
             static_selected = static_indices[:0]
 
-        pieces = []
+        feature_pieces: list[torch.Tensor] = []
+        position_pieces: list[torch.Tensor] = []
         if static_reduced.numel():
-            pieces.append(static_reduced)
+            feature_pieces.append(static_reduced)
+            position_pieces.append(static_selected)
         if dynamic_selected.numel():
-            pieces.append(current_tokens.index_select(0, dynamic_selected))
+            feature_pieces.append(current_tokens.index_select(0, dynamic_selected))
+            position_pieces.append(dynamic_selected)
 
-        reduced = torch.cat(pieces, dim=0) if pieces else current_tokens.index_select(0, self._topk_indices(scores, budget))
+        if feature_pieces:
+            all_features = torch.cat(feature_pieces, dim=0)
+            all_positions = torch.cat(position_pieces, dim=0)
+            order = torch.argsort(all_positions)
+            reduced = all_features.index_select(0, order)
+            selected_positions = all_positions.index_select(0, order)
+        else:
+            selected_positions = torch.sort(self._topk_indices(scores, budget)).values
+            reduced = current_tokens.index_select(0, selected_positions)
         if int(reduced.shape[0]) < budget:
-            reduced = self._fill_to_budget(
+            reduced, selected_positions = self._fill_to_budget(
                 current_tokens=current_tokens,
                 reduced=reduced,
-                already_selected=torch.cat([static_selected, dynamic_selected], dim=0),
+                selected_positions=selected_positions,
                 saliency=scores,
                 budget=budget,
             )
@@ -227,8 +245,8 @@ class CausalTemporalReducer:
             has_previous_frame=True,
             compression_time_ms=(time.perf_counter() - t0) * 1000.0,
             mean_temporal_similarity=float(similarity.mean().detach().cpu().item()),
-            selected_dynamic_indices=dynamic_selected.detach().cpu().tolist(),
-            selected_static_indices=static_selected.detach().cpu().tolist(),
+            selected_dynamic_indices=torch.sort(dynamic_selected).values.detach().cpu().tolist(),
+            selected_static_indices=torch.sort(static_selected).values.detach().cpu().tolist(),
             merged_static_clusters=static_budget if int(static_indices.numel()) > static_budget else 0,
         )
         self._frame_index += 1
@@ -304,29 +322,44 @@ class CausalTemporalReducer:
         return merged.to(dtype=static_tokens.dtype), indices
 
     def _merge_static_by_dpc(self, static_tokens: torch.Tensor, budget: int) -> tuple[torch.Tensor, torch.Tensor]:
-        normalized = F.normalize(static_tokens.float(), dim=-1, eps=self.config.eps)
-        distance = 1.0 - normalized @ normalized.transpose(0, 1)
-        distance = distance.clamp_min(0.0)
-        positive = distance[distance > 0]
-        cutoff = positive.mean() if positive.numel() else torch.tensor(1.0, device=distance.device)
-        density = torch.exp(-(distance / cutoff.clamp_min(self.config.eps)) ** 2).sum(dim=-1)
+        seq_len, embed_dim = static_tokens.shape
+        num_clusters = min(int(budget), int(seq_len))
+        if num_clusters <= 0:
+            return static_tokens[:0], torch.empty(0, device=static_tokens.device, dtype=torch.long)
+        if num_clusters == seq_len:
+            indices = torch.arange(seq_len, device=static_tokens.device, dtype=torch.long)
+            return static_tokens, indices
 
-        higher_density = density.unsqueeze(0) > density.unsqueeze(1)
-        masked_distance = distance.masked_fill(~higher_density, float("inf"))
-        nearest_higher = masked_distance.min(dim=0).values
-        nearest_higher = torch.where(torch.isinf(nearest_higher), distance.max(dim=0).values, nearest_higher)
-        center_score = density * nearest_higher
-        centers = self._topk_indices(center_score, int(budget))
+        k_neighbors = min(int(self.config.dpc_k), seq_len - 1)
+        dist_matrix = torch.cdist(static_tokens.float(), static_tokens.float()) / sqrt(float(embed_dim))
+        nearest_dists, _ = torch.topk(dist_matrix, k_neighbors, dim=-1, largest=False)
+        density = (-(nearest_dists**2).mean(dim=-1)).exp()
+        density = density + torch.rand_like(density) * 1e-6
+        higher_density_mask = density[:, None] > density[None, :]
+        dist_to_higher = torch.where(higher_density_mask, dist_matrix, dist_matrix.max()).min(dim=-1)[0]
+        scores = density * dist_to_higher
+        centers = torch.sort(self._topk_indices(scores, num_clusters)).values
 
-        center_tokens = normalized.index_select(0, centers)
-        assignments = (normalized @ center_tokens.transpose(0, 1)).argmax(dim=-1)
+        all_indices = torch.arange(seq_len, device=static_tokens.device)
+        non_center_mask = ~torch.isin(all_indices, centers)
+        non_center_indices = all_indices[non_center_mask]
+        if non_center_indices.numel() == 0:
+            return static_tokens.index_select(0, centers), centers
+
+        non_center_features = static_tokens.index_select(0, non_center_indices)
+        dist_to_centers = dist_matrix.index_select(0, non_center_indices).index_select(1, centers)
+        assignments = torch.argmin(dist_to_centers, dim=1)
         merged = []
-        for cluster_idx in range(int(centers.numel())):
+        for cluster_idx, center_idx in enumerate(centers):
             member_mask = assignments == cluster_idx
             if member_mask.any():
-                merged.append(static_tokens[member_mask].mean(dim=0))
+                cluster_mean = non_center_features[member_mask].mean(dim=0)
+                merged.append(
+                    float(self.config.merge_beta) * static_tokens[center_idx]
+                    + (1.0 - float(self.config.merge_beta)) * cluster_mean
+                )
             else:
-                merged.append(static_tokens[centers[cluster_idx]])
+                merged.append(static_tokens[center_idx])
         return torch.stack(merged, dim=0).to(dtype=static_tokens.dtype), centers
 
     def _fill_to_budget(
@@ -334,20 +367,23 @@ class CausalTemporalReducer:
         *,
         current_tokens: torch.Tensor,
         reduced: torch.Tensor,
-        already_selected: torch.Tensor,
+        selected_positions: torch.Tensor,
         saliency: torch.Tensor,
         budget: int,
-    ) -> torch.Tensor:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         needed = int(budget) - int(reduced.shape[0])
         if needed <= 0:
-            return reduced
+            return reduced, selected_positions
         mask = torch.ones(int(current_tokens.shape[0]), device=current_tokens.device, dtype=torch.bool)
-        if already_selected.numel():
-            mask[already_selected.long()] = False
+        if selected_positions.numel():
+            mask[selected_positions.long()] = False
         candidate_indices = torch.nonzero(mask, as_tuple=False).flatten()
         if candidate_indices.numel() == 0:
-            return reduced
+            return reduced, selected_positions
         candidate_scores = saliency.index_select(0, candidate_indices)
         local = self._topk_indices(candidate_scores, needed)
         fill_indices = candidate_indices.index_select(0, local)
-        return torch.cat([reduced, current_tokens.index_select(0, fill_indices)], dim=0)
+        all_positions = torch.cat([selected_positions, fill_indices], dim=0)
+        all_features = torch.cat([reduced, current_tokens.index_select(0, fill_indices)], dim=0)
+        order = torch.argsort(all_positions)
+        return all_features.index_select(0, order), all_positions.index_select(0, order)

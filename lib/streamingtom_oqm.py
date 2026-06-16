@@ -104,10 +104,10 @@ class OnlineQuantizedMemory:
     fixed-size groups, optionally quantized to 4-bit or 2-bit values. Retrieval
     operates at the group level and reconstructs only the selected groups.
 
-    This file is intentionally independent from MiniCPM internals. The later
-    MiniCPM integration step should feed it post-prefill KV tensors and token
-    group keys, then use ``get_selective_kv`` or ``get_windowed_kv`` during
-    query answering.
+    This file is intentionally independent from MiniCPM internals. The MiniCPM
+    StreamingTOM wrapper feeds it each online prefill chunk's newly produced KV
+    tensors and token group keys, then uses ``get_windowed_kv`` during visual
+    streaming and ``get_selective_kv`` during query answering.
     """
 
     def __init__(self, config: OQMConfig | None = None) -> None:
@@ -495,17 +495,82 @@ class OnlineQuantizedMemory:
         if storage["init_tokens"] is None:
             raise ValueError("system prompt KV is missing")
         init_k, init_v = storage["init_tokens"]
-        vision_k, vision_v = self._reconstruct_quantized_vision(video_id, layer_idx)
-        group_indices = selected_groups.to(vision_k.device)
-        token_indices = (
-            group_indices.unsqueeze(1) * int(self.config.group_size)
-            + torch.arange(int(self.config.group_size), device=vision_k.device)
-        ).flatten()
-        selected_k = vision_k.index_select(2, token_indices)
-        selected_v = vision_v.index_select(2, token_indices)
+        target_dtype = self.original_dtype.get(video_id, {}).get(layer_idx, init_k.dtype)
+        device = selected_groups.device
+        selected = torch.sort(selected_groups.to(device=device, dtype=torch.long)).values
+
+        key_parts: list[torch.Tensor] = []
+        value_parts: list[torch.Tensor] = []
+        group_cursor = 0
+        for key_entry, value_entry in zip(storage["key_blocks"], storage["value_blocks"]):
+            block_groups = int(key_entry["original_tokens"]) // int(self.config.group_size)
+            block_start = group_cursor
+            block_end = group_cursor + block_groups
+            in_block = (selected >= block_start) & (selected < block_end)
+            if in_block.any():
+                local_groups = selected[in_block] - block_start
+                key_parts.append(self._dequantize_selected_groups(key_entry, local_groups, target_dtype, device))
+                value_parts.append(self._dequantize_selected_groups(value_entry, local_groups, target_dtype, device))
+            group_cursor = block_end
+
+        if not key_parts:
+            raise ValueError("No selected quantized groups reconstructed")
+        selected_k = torch.cat(key_parts, dim=2)
+        selected_v = torch.cat(value_parts, dim=2)
         return torch.cat([init_k.to(selected_k.device), selected_k], dim=2), torch.cat(
             [init_v.to(selected_v.device), selected_v],
             dim=2,
+        )
+
+    def _dequantize_selected_groups(
+        self,
+        entry: dict[str, Any],
+        group_indices: torch.Tensor,
+        target_dtype: torch.dtype,
+        device: torch.device,
+    ) -> torch.Tensor:
+        if group_indices.ndim != 1:
+            raise ValueError("group_indices must be 1D")
+        if group_indices.numel() == 0:
+            packed = entry["packed"]
+            return torch.empty(
+                packed.shape[0],
+                packed.shape[1],
+                0,
+                packed.shape[-1],
+                dtype=target_dtype,
+                device=device,
+            )
+
+        packed = entry["packed"].to(device)
+        scales = entry["scales"].to(device)
+        mins = entry["mins"].to(device)
+        batch, heads, _packed_tokens, dim = packed.shape
+        packed_group_size = int(self.config.group_size) // int(self.pack_size)
+        group_indices = group_indices.to(device=device, dtype=torch.long)
+        packed_indices = (
+            group_indices.unsqueeze(1) * packed_group_size
+            + torch.arange(packed_group_size, device=device)
+        ).flatten()
+        selected_packed = packed.index_select(2, packed_indices)
+        selected_packed = selected_packed.reshape(batch, heads, int(group_indices.numel()), packed_group_size, dim)
+        packed_for_unpack = selected_packed.permute(0, 1, 2, 4, 3).reshape(
+            batch * heads * int(group_indices.numel()) * dim,
+            packed_group_size,
+        )
+        unpacked = self._unpack_nbit(packed_for_unpack)
+        unpacked = unpacked.reshape(
+            batch,
+            heads,
+            int(group_indices.numel()),
+            dim,
+            int(self.config.group_size),
+        ).permute(0, 1, 2, 4, 3)
+        selected_scales = scales.index_select(2, group_indices)
+        selected_mins = mins.index_select(2, group_indices)
+        dequant = unpacked.to(selected_scales.dtype) * selected_scales.unsqueeze(3) + selected_mins.unsqueeze(3)
+        return dequant.reshape(batch, heads, int(group_indices.numel()) * int(self.config.group_size), dim).to(
+            dtype=target_dtype
         )
 
     def _slice_selective_unquantized(

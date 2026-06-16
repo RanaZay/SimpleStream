@@ -73,10 +73,13 @@ def main() -> None:
         "oqm": {
             "retrieval_max_tokens": args.oqm_retrieval_max_tokens,
             "bits": args.oqm_bits,
+            "init_token_count_actual": qa._last_oqm_init_token_count,
             "prefill_ms": qa._last_oqm_prefill_ms,
             "store_ms": qa._last_oqm_store_ms,
+            "window_reconstruct_ms": qa._last_oqm_window_reconstruct_ms,
             "retrieval_ms": qa._last_oqm_retrieval_ms,
             "reconstruct_ms": qa._last_oqm_reconstruct_ms,
+            "query_prefill_ms": qa._last_oqm_query_prefill_ms,
             "decode_loop_ms": qa._last_oqm_decode_loop_ms,
             "full_seq_len": qa._last_oqm_full_seq_len,
             "reconstructed_seq_len": qa._last_oqm_reconstructed_seq_len,

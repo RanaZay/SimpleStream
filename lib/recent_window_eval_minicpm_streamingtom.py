@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import time
+from dataclasses import replace as dataclass_replace
 from typing import Any
 
 import torch
@@ -181,10 +182,17 @@ def _reconstruct_prompt_order_cache(
 class StreamingTOMMiniCPMQAModel(CTRMiniCPMQAModel):
     """MiniCPM-V 4.6 wrapper with CTR + OQM.
 
-    This is the full StreamingTOM path kept separate from the baseline and
-    CTR-only wrappers. It uses MiniCPM's real prefill cache as a template,
-    quantizes CTR-compressed visual KV groups with OQM, reconstructs selected
-    visual groups, and greedily decodes from the reconstructed cache.
+    This is the paper-aligned StreamingTOM path kept separate from the baseline
+    and CTR-only wrappers. It follows the paper lifecycle:
+
+    1. apply CTR before LLM prefill,
+    2. prefill compressed visual tokens online in chunks,
+    3. store only the newly produced visual KV in OQM,
+    4. retrieve/reconstruct OQM groups for the question, and
+    5. decode from the retrieved cache.
+
+    It intentionally avoids the earlier prototype behavior of building a full
+    prompt KV cache first and quantizing it afterwards.
     """
 
     def __init__(
@@ -228,6 +236,10 @@ class StreamingTOMMiniCPMQAModel(CTRMiniCPMQAModel):
         self._last_oqm_layer0_reconstruct: dict[str, Any] | None = None
         self._last_oqm_full_seq_len = 0
         self._last_oqm_reconstructed_seq_len = 0
+        self.streaming_encoder_batch_size = int(os.environ.get("MINICPM_STREAMING_ENCODER_BATCH_SIZE", "32"))
+        self._last_oqm_window_reconstruct_ms = 0.0
+        self._last_oqm_query_prefill_ms = 0.0
+        self._last_oqm_init_token_count = int(self.oqm_config.init_token_count)
 
     def _eos_token_ids(self) -> set[int]:
         generation_config = getattr(self.model, "generation_config", None)
@@ -246,6 +258,140 @@ class StreamingTOMMiniCPMQAModel(CTRMiniCPMQAModel):
                 output.add(int(item))
         return output
 
+    def _effective_oqm_config(self, init_token_count: int) -> OQMConfig:
+        # MiniCPM's chat template does not always have the paper's exact 14
+        # initial text tokens. Preserve the actual MiniCPM prefix as the
+        # unquantized OQM init cache, which is the same role those tokens play
+        # in StreamingTOM.
+        return dataclass_replace(self.oqm_config, init_token_count=int(init_token_count))
+
+    def _split_ctr_prompt(self, model_inputs: dict[str, Any]) -> dict[str, Any]:
+        input_ids = model_inputs["input_ids"]
+        inputs_embeds = model_inputs["inputs_embeds"]
+        image_mask = model_inputs["image_mask"][0]
+        blocks = self._image_token_blocks(input_ids[0], self.image_token_id)
+        if not blocks:
+            raise RuntimeError("StreamingTOM active path needs at least one image-token block")
+
+        first_image_start = int(blocks[0][0])
+        last_image_end = int(blocks[-1][1])
+        prefix_ids = input_ids[:, :first_image_start]
+        prefix_embeds = inputs_embeds[:, :first_image_start, :]
+        query_ids = input_ids[:, last_image_end:]
+        query_embeds = inputs_embeds[:, last_image_end:, :]
+        if int(prefix_ids.shape[1]) <= 0:
+            raise RuntimeError("Could not find MiniCPM text prefix before visual tokens")
+        if int(query_ids.shape[1]) <= 0:
+            raise RuntimeError("Could not find MiniCPM query/generation suffix after visual tokens")
+
+        image_positions = torch.nonzero(image_mask, as_tuple=False).flatten()
+        vision_embeds = inputs_embeds[:, image_positions, :]
+        expected_tokens = int(model_inputs["tokens_after"])
+        if int(vision_embeds.shape[1]) != expected_tokens:
+            raise RuntimeError(
+                "Compressed prompt image tokens do not match CTR output: "
+                f"prompt={int(vision_embeds.shape[1])}, ctr={expected_tokens}"
+            )
+
+        return {
+            "prefix_ids": prefix_ids,
+            "prefix_embeds": prefix_embeds,
+            "query_ids": query_ids,
+            "query_embeds": query_embeds,
+            "vision_embeds": vision_embeds,
+        }
+
+    def _forward_embeds(
+        self,
+        *,
+        input_ids: torch.Tensor | None,
+        inputs_embeds: torch.Tensor,
+        past_key_values: Any | None = None,
+        past_length: int = 0,
+    ) -> Any:
+        attention_mask = torch.ones(
+            (inputs_embeds.shape[0], int(past_length) + int(inputs_embeds.shape[1])),
+            dtype=torch.long,
+            device=inputs_embeds.device,
+        )
+        kwargs: dict[str, Any] = {
+            "inputs_embeds": inputs_embeds,
+            "attention_mask": attention_mask,
+            "use_cache": True,
+            "return_dict": True,
+        }
+        if input_ids is not None:
+            kwargs["input_ids"] = input_ids
+        if past_key_values is not None:
+            kwargs["past_key_values"] = past_key_values
+
+        try:
+            return self.model(**kwargs)
+        except TypeError:
+            kwargs.pop("input_ids", None)
+            return self.model(**kwargs)
+
+    def _build_cache_from_layers(
+        self,
+        template_cache: Any,
+        layers: list[tuple[torch.Tensor, torch.Tensor]],
+    ) -> Any:
+        cache, _ = _cache_from_template(template_cache, layers)
+        return cache
+
+    def _windowed_layers_or_init(
+        self,
+        *,
+        oqm: OnlineQuantizedMemory,
+        video_id: str,
+        init_layers: list[tuple[torch.Tensor, torch.Tensor]],
+    ) -> tuple[list[tuple[torch.Tensor, torch.Tensor]], float]:
+        layers: list[tuple[torch.Tensor, torch.Tensor]] = []
+        reconstruct_ms = 0.0
+        for layer_idx, init_layer in enumerate(init_layers):
+            if oqm.get_group_keys(video_id, layer_idx) is None:
+                layers.append(init_layer)
+                continue
+            kv, metadata = oqm.get_windowed_kv(video_id, layer_idx)
+            layers.append(kv)
+            reconstruct_ms += metadata.reconstruct_time_ms
+        return layers, reconstruct_ms
+
+    def _store_new_vision_layers(
+        self,
+        *,
+        oqm: OnlineQuantizedMemory,
+        video_id: str,
+        source_layers: list[tuple[torch.Tensor, torch.Tensor]],
+        past_length: int,
+        token_level_keys: torch.Tensor,
+        init_layers: list[tuple[torch.Tensor, torch.Tensor]],
+    ) -> float:
+        store_ms = 0.0
+        for layer_idx, (key_cache, value_cache) in enumerate(source_layers):
+            if oqm.get_group_keys(video_id, layer_idx) is None:
+                init_k, init_v = init_layers[layer_idx]
+                init_meta = oqm.store_system_prompt(video_id, layer_idx, init_k, init_v)
+                store_ms += init_meta.store_time_ms
+
+            new_k = key_cache[:, :, int(past_length) :, :].detach()
+            new_v = value_cache[:, :, int(past_length) :, :].detach()
+            if int(new_k.shape[2]) <= 0:
+                raise RuntimeError("StreamingTOM active prefill produced no new visual KV")
+            store_meta = oqm.store_kv_cache(
+                video_id,
+                layer_idx,
+                new_k,
+                new_v,
+                token_level_keys=token_level_keys,
+            )
+            store_ms += store_meta.store_time_ms
+        return store_ms
+
+    @staticmethod
+    def _mean_query_key(query_embeds: torch.Tensor) -> torch.Tensor:
+        return query_embeds[0].detach().float().mean(dim=0)
+
     @torch.inference_mode()
     def generate_from_frames(
         self,
@@ -262,113 +408,132 @@ class StreamingTOMMiniCPMQAModel(CTRMiniCPMQAModel):
         self._last_oqm_cache_build = {}
         self._last_oqm_layer0_retrieval = None
         self._last_oqm_layer0_reconstruct = None
+        self._last_oqm_window_reconstruct_ms = 0.0
+        self._last_oqm_query_prefill_ms = 0.0
 
         model_inputs = self.build_ctr_model_inputs(
             frames=frames,
             question=question,
             downsample_mode=downsample_mode,
         )
+        split = self._split_ctr_prompt(model_inputs)
+        oqm_config = self._effective_oqm_config(int(split["prefix_ids"].shape[1]))
+        self._last_oqm_init_token_count = int(oqm_config.init_token_count)
+        oqm = OnlineQuantizedMemory(oqm_config)
+        video_id = "video"
 
         model_generate_t0 = time.perf_counter()
-        prefill_t0 = time.perf_counter()
-        forward_kwargs = {
-            "input_ids": model_inputs["input_ids"],
-            "inputs_embeds": model_inputs["inputs_embeds"],
-            "attention_mask": model_inputs["attention_mask"],
-            "use_cache": True,
-            "return_dict": True,
-        }
-        try:
-            prefill_outputs = self.model(**forward_kwargs)
-        except TypeError:
-            forward_kwargs.pop("input_ids", None)
-            prefill_outputs = self.model(**forward_kwargs)
+
+        init_t0 = time.perf_counter()
+        init_outputs = self._forward_embeds(
+            input_ids=split["prefix_ids"],
+            inputs_embeds=split["prefix_embeds"],
+        )
         _synchronize_gpu_devices()
-        self._last_oqm_prefill_ms = (time.perf_counter() - prefill_t0) * 1000.0
+        init_prefill_ms = (time.perf_counter() - init_t0) * 1000.0
+        init_cache = getattr(init_outputs, "past_key_values", None)
+        init_layers = _past_layers(init_cache)
+        if not init_layers:
+            raise RuntimeError("No MiniCPM KV cache layers found after StreamingTOM init prefill")
 
-        source_layers = _past_layers(getattr(prefill_outputs, "past_key_values", None))
-        if not source_layers:
-            raise RuntimeError("No MiniCPM KV cache layers found after StreamingTOM prefill")
+        current_cache_template = init_cache
+        vision_embeds = split["vision_embeds"]
+        flattened_features = [item.reshape(-1, item.shape[-1]) for item in model_inputs["compressed_features"]]
+        batch_size = max(1, int(self.streaming_encoder_batch_size))
+        prefill_ms = init_prefill_ms
 
-        image_positions = torch.nonzero(model_inputs["image_mask"][0], as_tuple=False).flatten()
-        non_image_mask = ~model_inputs["image_mask"][0]
-        query_key = model_inputs["inputs_embeds"][0, non_image_mask, :].detach().float().mean(dim=0)
-        token_level_keys = model_inputs["inputs_embeds"][0, image_positions, :].detach()
-
-        oqm = OnlineQuantizedMemory(self.oqm_config)
-        reconstructed_layers: list[tuple[torch.Tensor, torch.Tensor]] = []
-
-        for layer_idx, (key_cache, value_cache) in enumerate(source_layers):
-            key_cache = key_cache.detach()
-            value_cache = value_cache.detach()
-            init_k = key_cache[:, :, : int(self.oqm_config.init_token_count), :]
-            init_v = value_cache[:, :, : int(self.oqm_config.init_token_count), :]
-            vision_k = key_cache.index_select(2, image_positions.to(key_cache.device))
-            vision_v = value_cache.index_select(2, image_positions.to(value_cache.device))
-            if int(vision_k.shape[2]) % int(self.oqm_config.group_size) != 0:
+        for start in range(0, len(flattened_features), batch_size):
+            frame_batch = flattened_features[start : start + batch_size]
+            batch_tokens = torch.cat(frame_batch, dim=0).unsqueeze(0)
+            batch_tokens = batch_tokens.to(device=vision_embeds.device, dtype=vision_embeds.dtype)
+            token_level_keys = batch_tokens[0].detach()
+            if int(batch_tokens.shape[1]) % int(oqm_config.group_size) != 0:
                 raise RuntimeError(
-                    f"Layer {layer_idx}: vision token count {int(vision_k.shape[2])} "
-                    f"is not divisible by OQM group_size={self.oqm_config.group_size}"
+                    f"Vision batch token count {int(batch_tokens.shape[1])} is not divisible "
+                    f"by OQM group_size={oqm_config.group_size}"
                 )
 
-            init_meta = oqm.store_system_prompt("video", layer_idx, init_k, init_v)
-            store_meta = oqm.store_kv_cache(
-                "video",
-                layer_idx,
-                vision_k,
-                vision_v,
-                token_level_keys=token_level_keys,
+            window_layers, window_ms = self._windowed_layers_or_init(
+                oqm=oqm,
+                video_id=video_id,
+                init_layers=init_layers,
             )
+            self._last_oqm_window_reconstruct_ms += window_ms
+            past_length = int(window_layers[0][0].shape[2])
+            past_cache = self._build_cache_from_layers(current_cache_template, window_layers)
+
+            batch_t0 = time.perf_counter()
+            batch_outputs = self._forward_embeds(
+                input_ids=None,
+                inputs_embeds=batch_tokens,
+                past_key_values=past_cache,
+                past_length=past_length,
+            )
+            _synchronize_gpu_devices()
+            prefill_ms += (time.perf_counter() - batch_t0) * 1000.0
+            batch_layers = _past_layers(getattr(batch_outputs, "past_key_values", None))
+            if not batch_layers:
+                raise RuntimeError("No MiniCPM KV cache layers found after StreamingTOM visual prefill")
+            self._last_oqm_store_ms += self._store_new_vision_layers(
+                oqm=oqm,
+                video_id=video_id,
+                source_layers=batch_layers,
+                past_length=past_length,
+                token_level_keys=token_level_keys,
+                init_layers=init_layers,
+            )
+            current_cache_template = getattr(batch_outputs, "past_key_values", current_cache_template)
+
+        self._last_oqm_prefill_ms = prefill_ms
+
+        query_key = self._mean_query_key(split["query_embeds"])
+        reconstructed_layers: list[tuple[torch.Tensor, torch.Tensor]] = []
+        for layer_idx in range(len(init_layers)):
             selected_groups, retrieval_meta = oqm.retrieve_group_indices(
-                "video",
+                video_id,
                 layer_idx,
                 query_key,
-                max_tokens=int(self.oqm_config.retrieval_max_tokens),
+                max_tokens=int(oqm_config.retrieval_max_tokens),
             )
-            selected_kv, reconstruct_meta = oqm.get_selective_kv(
-                "video",
-                layer_idx,
-                selected_groups,
-            )
-            self._last_oqm_store_ms += init_meta.store_time_ms + store_meta.store_time_ms
+            selected_kv, reconstruct_meta = oqm.get_selective_kv(video_id, layer_idx, selected_groups)
             self._last_oqm_retrieval_ms += retrieval_meta.retrieval_time_ms
             self._last_oqm_reconstruct_ms += reconstruct_meta.reconstruct_time_ms
             if layer_idx == 0:
                 self._last_oqm_layer0_retrieval = retrieval_meta.as_dict()
                 self._last_oqm_layer0_reconstruct = reconstruct_meta.as_dict()
-            reconstructed_layers.append(
-                _reconstruct_prompt_order_cache(
-                    key_cache=key_cache,
-                    value_cache=value_cache,
-                    image_positions=image_positions,
-                    selected_groups=selected_groups,
-                    selected_kv=selected_kv,
-                    group_size=int(self.oqm_config.group_size),
-                    init_token_count=int(self.oqm_config.init_token_count),
-                )
-            )
+            reconstructed_layers.append(selected_kv)
 
         reconstructed_cache, cache_build = _cache_from_template(
-            getattr(prefill_outputs, "past_key_values", None),
+            current_cache_template,
             reconstructed_layers,
         )
         self._last_oqm_cache_build = cache_build
-        self._last_oqm_storage_summary = oqm.storage_summary("video")
-        self._last_oqm_full_seq_len = int(source_layers[0][0].shape[2])
+        self._last_oqm_storage_summary = oqm.storage_summary(video_id)
+        self._last_oqm_full_seq_len = int(oqm.stored_tokens_count.get(video_id, {}).get(0, 0))
         self._last_oqm_reconstructed_seq_len = int(reconstructed_layers[0][0].shape[2])
 
+        query_t0 = time.perf_counter()
+        query_outputs = self._forward_embeds(
+            input_ids=split["query_ids"],
+            inputs_embeds=split["query_embeds"],
+            past_key_values=reconstructed_cache,
+            past_length=self._last_oqm_reconstructed_seq_len,
+        )
+        _synchronize_gpu_devices()
+        self._last_oqm_query_prefill_ms = (time.perf_counter() - query_t0) * 1000.0
+
         generated_tokens: list[torch.Tensor] = []
-        next_token = torch.argmax(prefill_outputs.logits[:, -1, :], dim=-1, keepdim=True)
+        next_token = torch.argmax(query_outputs.logits[:, -1, :], dim=-1, keepdim=True)
         generated_tokens.append(next_token)
         eos_token_ids = self._eos_token_ids()
         attention_mask = torch.ones(
-            (1, self._last_oqm_reconstructed_seq_len + 1),
-            dtype=model_inputs["attention_mask"].dtype,
-            device=model_inputs["attention_mask"].device,
+            (1, self._last_oqm_reconstructed_seq_len + int(split["query_embeds"].shape[1]) + 1),
+            dtype=torch.long,
+            device=split["query_embeds"].device,
         )
 
         decode_t0 = time.perf_counter()
-        cache = reconstructed_cache
+        cache = getattr(query_outputs, "past_key_values", reconstructed_cache)
         for _step in range(max(0, int(self.max_new_tokens) - 1)):
             if eos_token_ids and int(next_token.item()) in eos_token_ids:
                 break
@@ -397,10 +562,9 @@ class StreamingTOMMiniCPMQAModel(CTRMiniCPMQAModel):
         self._last_oqm_decode_loop_ms = (time.perf_counter() - decode_t0) * 1000.0
         self._last_model_generate_seconds = time.perf_counter() - model_generate_t0
         self._last_ttft_seconds = (
-            self._last_oqm_prefill_ms
-            + self._last_oqm_store_ms
             + self._last_oqm_retrieval_ms
             + self._last_oqm_reconstruct_ms
+            + self._last_oqm_query_prefill_ms
         ) / 1000.0
 
         generated_ids = torch.cat(generated_tokens, dim=1)
@@ -421,9 +585,12 @@ class StreamingTOMMiniCPMQAModel(CTRMiniCPMQAModel):
             "oqm_enabled": True,
             "oqm_prefill_ms": self._last_oqm_prefill_ms,
             "oqm_store_ms": self._last_oqm_store_ms,
+            "oqm_window_reconstruct_ms": self._last_oqm_window_reconstruct_ms,
             "oqm_retrieval_ms": self._last_oqm_retrieval_ms,
             "oqm_reconstruct_ms": self._last_oqm_reconstruct_ms,
+            "oqm_query_prefill_ms": self._last_oqm_query_prefill_ms,
             "oqm_decode_loop_ms": self._last_oqm_decode_loop_ms,
+            "oqm_init_token_count": self._last_oqm_init_token_count,
             "oqm_cache_build": self._last_oqm_cache_build,
         }
         return answer
@@ -438,11 +605,13 @@ def _apply_streamingtom_profile_overrides(
         "retrieval_max_tokens": int(qa.oqm_config.retrieval_max_tokens),
         "quantization_bits": int(qa.oqm_config.quantization_bits),
         "group_size": int(qa.oqm_config.group_size),
-        "init_token_count": int(qa.oqm_config.init_token_count),
+        "init_token_count": int(getattr(qa, "_last_oqm_init_token_count", qa.oqm_config.init_token_count)),
         "prefill_ms": float(getattr(qa, "_last_oqm_prefill_ms", 0.0)),
         "store_ms": float(getattr(qa, "_last_oqm_store_ms", 0.0)),
+        "window_reconstruct_ms": float(getattr(qa, "_last_oqm_window_reconstruct_ms", 0.0)),
         "retrieval_ms": float(getattr(qa, "_last_oqm_retrieval_ms", 0.0)),
         "reconstruct_ms": float(getattr(qa, "_last_oqm_reconstruct_ms", 0.0)),
+        "query_prefill_ms": float(getattr(qa, "_last_oqm_query_prefill_ms", 0.0)),
         "decode_loop_ms": float(getattr(qa, "_last_oqm_decode_loop_ms", 0.0)),
         "full_seq_len": int(getattr(qa, "_last_oqm_full_seq_len", 0)),
         "reconstructed_seq_len": int(getattr(qa, "_last_oqm_reconstructed_seq_len", 0)),
@@ -458,11 +627,11 @@ def _apply_streamingtom_profile_overrides(
     profile_metadata["st_store_kv_ms"] = oqm["store_ms"]
     profile_metadata["st_retrieval_forward_ms"] = oqm["retrieval_ms"]
     profile_metadata["st_reconstruct_kv_ms"] = oqm["reconstruct_ms"]
-    profile_metadata["st_generate_first_token_ms"] = (
-        oqm["prefill_ms"] + oqm["store_ms"] + oqm["retrieval_ms"] + oqm["reconstruct_ms"]
-    )
+    profile_metadata["st_generate_first_token_ms"] = oqm["query_prefill_ms"]
     profile_metadata["st_generate_tokens_ms"] = oqm["decode_loop_ms"]
-    profile_metadata["ttft_seconds"] = profile_metadata["st_generate_first_token_ms"] / 1000.0
+    profile_metadata["ttft_seconds"] = (
+        oqm["retrieval_ms"] + oqm["reconstruct_ms"] + oqm["query_prefill_ms"]
+    ) / 1000.0
     timeline = profile_metadata.get("streamingtom_timeline_ms")
     if isinstance(timeline, dict):
         vision_components = timeline.setdefault("vision_subtask_components", {})
@@ -474,9 +643,11 @@ def _apply_streamingtom_profile_overrides(
         query_components["generate_first_token"] = profile_metadata["st_generate_first_token_ms"]
         query_components["generate_tokens"] = oqm["decode_loop_ms"]
         notes = timeline.setdefault("notes", {})
+        notes["prefill_kv"] = "Measured online visual prefill over CTR-compressed chunks."
         notes["store_kv"] = "Measured OQM 4-bit KV storage time."
         notes["retrieval_forward"] = "Measured OQM group retrieval time."
         notes["reconstruct_kv"] = "Measured OQM selective KV reconstruction time."
+        notes["generate_first_token"] = "Measured query suffix prefill with retrieved OQM cache."
 
 
 def query_recent_window(

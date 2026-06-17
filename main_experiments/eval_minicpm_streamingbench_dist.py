@@ -16,7 +16,7 @@ import math
 import os
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +24,7 @@ os.environ.setdefault("NCCL_TIMEOUT", "7200")
 os.environ.setdefault("TORCH_NCCL_BLOCKING_WAIT", "0")
 
 from accelerate import Accelerator
+from accelerate.utils import InitProcessGroupKwargs
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -206,7 +207,12 @@ def main() -> None:
     if args.top_k != 0:
         raise ValueError("Distributed MiniCPM StreamingBench only supports --top-k 0.")
 
-    accelerator = Accelerator()
+    dist_timeout_seconds = int(os.environ.get("MINICPM_DIST_TIMEOUT_SECONDS", "7200"))
+    accelerator = Accelerator(
+        kwargs_handlers=[
+            InitProcessGroupKwargs(timeout=timedelta(seconds=dist_timeout_seconds)),
+        ]
+    )
     cdas_config = CDASConfig(
         enabled=bool(args.cdas_enable),
         mode=args.cdas_mode,

@@ -29,6 +29,7 @@ export HF_ENABLE_PARALLEL_LOADING=false
 export HF_PARALLEL_LOADING_WORKERS=1
 export HF_DEACTIVATE_ASYNC_LOAD=1
 export ALLFRAMES_CONTEXT_TIME=${ALLFRAMES_CONTEXT_TIME:--1}
+export MAX_SAMPLES=${MAX_SAMPLES:-}
 
 export MIOPEN_DISABLE_CACHE=1
 export PYTORCH_TUNABLEOP_ENABLED=0
@@ -65,12 +66,16 @@ echo "HF_DEACTIVATE_ASYNC_LOAD=$HF_DEACTIVATE_ASYNC_LOAD"
 echo "ALLFRAMES_CONTEXT_TIME=$ALLFRAMES_CONTEXT_TIME"
 echo "CTR_BUDGET=$CTR_BUDGET"
 echo "CTR_TAU=$CTR_TAU"
+echo "MAX_SAMPLES=$MAX_SAMPLES"
 echo "CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES"
 echo "HIP_VISIBLE_DEVICES=$HIP_VISIBLE_DEVICES"
 echo "MINICPM_LAUNCH_MODE=8 data-parallel processes, direct per-rank GPU load"
 echo "=== END ENV CHECK ==="
 
 RESULT_DIR="$REPO_ROOT/main_experiments/results/repro_allframes/streamingbench_minicpmv46_allframes_fps1_ctr_g50_tau0.9_d8"
+if [[ -n "$MAX_SAMPLES" ]]; then
+  RESULT_DIR="${RESULT_DIR}_smoke${MAX_SAMPLES}"
+fi
 ts=$(date +%Y%m%d_%H%M%S)
 mv "$RESULT_DIR" "${RESULT_DIR}.old_$ts" 2>/dev/null || true
 
@@ -78,6 +83,7 @@ PYTHON_BIN=$(which python) \
 MINICPM_QA_DEVICE="$MINICPM_QA_DEVICE" \
 SB_RESULT_DIR="$RESULT_DIR" \
 NUM_PROCESSES=8 \
+MAX_SAMPLES="$MAX_SAMPLES" \
 CTR_BUDGET="$CTR_BUDGET" \
 CTR_TAU="$CTR_TAU" \
 bash main_experiments/run_repro_minicpmv46_streamingbench_allframes_ctr.sh

@@ -145,6 +145,7 @@ def run_benchmark(
     context_time: int,
     frame_selection: str,
     cdas_config: CDASConfig | None = None,
+    max_samples: int = 0,
 ) -> None:
     if top_k != 0:
         raise ValueError(
@@ -157,17 +158,25 @@ def run_benchmark(
 
     video_questions: dict[str, list[dict[str, Any]]] = defaultdict(list)
     video_categories: dict[str, str] = {}
+    selected_questions = 0
     for entry in all_data:
+        if max_samples > 0 and selected_questions >= max_samples:
+            break
         video_path = entry["video_path"]
         video_categories[video_path] = entry.get("video_categories", "")
         for question in entry["questions"]:
+            if max_samples > 0 and selected_questions >= max_samples:
+                break
             video_questions[video_path].append(question)
+            selected_questions += 1
 
     for video_path in video_questions:
         video_questions[video_path].sort(key=lambda item: timestamp_to_seconds(item["time_stamp"]))
 
     total_questions = sum(len(items) for items in video_questions.values())
     logger.info("Loaded %d videos and %d questions", len(video_questions), total_questions)
+    if max_samples > 0:
+        logger.info("Smoke-test max samples: %d", max_samples)
     logger.info(
         "Frame selection: %s (fps=%.3f, chunk_duration=%.3f, context_time=%s)",
         frame_selection,
@@ -375,6 +384,7 @@ def run_benchmark(
                 "attn_implementation": os.environ.get("ATTN_IMPLEMENTATION", "sdpa"),
                 "downsample_mode": os.environ.get("MINICPM_DOWNSAMPLE_MODE", "16x"),
                 "max_slice_nums": os.environ.get("MINICPM_MAX_SLICE_NUMS", "1"),
+                "max_samples": int(max_samples),
                 "cdas": cdas_config.__dict__ if cdas_config is not None else {"enabled": False},
             },
             "summary": summary,
@@ -397,6 +407,12 @@ def main() -> None:
     parser.add_argument("--fps", type=float, default=1.0)
     parser.add_argument("--top-k", type=int, default=0)
     parser.add_argument("--max-qa-tokens", type=int, default=256)
+    parser.add_argument(
+        "--max-samples",
+        type=int,
+        default=0,
+        help="Optional smoke-test limit on total StreamingBench questions.",
+    )
     parser.add_argument("--recent-frames-only", "--recent-frames-buffer", dest="recent_frames_only", type=int, default=4)
     parser.add_argument("--context-time", type=int, default=-1)
     parser.add_argument(
@@ -463,6 +479,7 @@ def main() -> None:
         context_time=args.context_time,
         frame_selection=args.frame_selection,
         cdas_config=cdas_config,
+        max_samples=args.max_samples,
     )
 
 

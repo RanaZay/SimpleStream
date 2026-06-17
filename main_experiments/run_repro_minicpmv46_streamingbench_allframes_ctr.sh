@@ -22,6 +22,7 @@ MINICPM_MODEL_LOAD_TIMEOUT="${MINICPM_MODEL_LOAD_TIMEOUT:-7200}"
 ALLFRAMES_CONTEXT_TIME="${ALLFRAMES_CONTEXT_TIME:--1}"
 CTR_BUDGET="${CTR_BUDGET:-50}"
 CTR_TAU="${CTR_TAU:-0.9}"
+MAX_SAMPLES="${MAX_SAMPLES:-}"
 
 SB_ANNO_PATH="${REPO_ROOT}/data/streamingbench/questions_real.json"
 SB_VIDEO_DIR="${REPO_ROOT}/data/streamingbench/videos"
@@ -73,6 +74,9 @@ echo "[INFO] Using MINICPM_SERIALIZE_MODEL_LOAD=${MINICPM_SERIALIZE_MODEL_LOAD}"
 echo "[INFO] Using MINICPM_MODEL_LOAD_TIMEOUT=${MINICPM_MODEL_LOAD_TIMEOUT}"
 echo "[INFO] Using CTR_BUDGET=${CTR_BUDGET}"
 echo "[INFO] Using CTR_TAU=${CTR_TAU}"
+if [[ -n "${MAX_SAMPLES}" ]]; then
+    echo "[INFO] Using MAX_SAMPLES=${MAX_SAMPLES}"
+fi
 echo "[INFO] Frame selection: all frames at 1 FPS"
 echo "[INFO] ALLFRAMES_CONTEXT_TIME=${ALLFRAMES_CONTEXT_TIME}"
 echo "[INFO] Results: ${SB_RESULT_DIR}"
@@ -95,6 +99,9 @@ COMMON_ARGS=(
 
 if [[ -n "${MINICPM_QA_DEVICE}" ]]; then
     COMMON_ARGS+=(--qa-device "${MINICPM_QA_DEVICE}")
+fi
+if [[ -n "${MAX_SAMPLES}" ]]; then
+    COMMON_ARGS+=(--max-samples "${MAX_SAMPLES}")
 fi
 
 if [[ "${NUM_PROCESSES}" -le 1 ]]; then

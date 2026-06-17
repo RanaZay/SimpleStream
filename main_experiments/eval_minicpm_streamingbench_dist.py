@@ -188,6 +188,12 @@ def main() -> None:
     parser.add_argument("--fps", type=float, default=1.0)
     parser.add_argument("--top-k", type=int, default=0)
     parser.add_argument("--max-qa-tokens", type=int, default=256)
+    parser.add_argument(
+        "--max-samples",
+        type=int,
+        default=0,
+        help="Optional smoke-test limit on total StreamingBench questions before distributed splitting.",
+    )
     parser.add_argument("--recent-frames-only", "--recent-frames-buffer", dest="recent_frames_only", type=int, default=4)
     parser.add_argument("--context-time", type=int, default=-1)
     parser.add_argument("--frame-selection", choices=["recent", "all"], default="recent")
@@ -229,11 +235,15 @@ def main() -> None:
     cdas_config.validate()
 
     tasks, video_count = _load_tasks(args.anno_path, args.video_dir)
+    if args.max_samples > 0:
+        tasks = tasks[: args.max_samples]
     os.makedirs(args.output_dir, exist_ok=True)
     accelerator.print("\n" + "=" * 60)
     accelerator.print("StreamingBench Distributed Evaluation (MiniCPM-V-4.6)")
     accelerator.print("=" * 60)
     accelerator.print(f"Videos: {video_count}, Questions: {len(tasks)}, Processes: {accelerator.num_processes}")
+    if args.max_samples > 0:
+        accelerator.print(f"Smoke-test max samples: {args.max_samples}")
     accelerator.print(
         f"Frame selection: {args.frame_selection}, fps={args.fps}, "
         f"chunk_duration={args.chunk_duration}, context_time={args.context_time}"
@@ -406,6 +416,7 @@ def main() -> None:
                     "attn_implementation": os.environ.get("ATTN_IMPLEMENTATION", "sdpa"),
                     "downsample_mode": os.environ.get("MINICPM_DOWNSAMPLE_MODE", "16x"),
                     "max_slice_nums": os.environ.get("MINICPM_MAX_SLICE_NUMS", "1"),
+                    "max_samples": int(args.max_samples),
                     "cdas": cdas_config.__dict__,
                     "distributed": True,
                     "num_processes": accelerator.num_processes,

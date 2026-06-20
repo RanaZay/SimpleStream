@@ -90,7 +90,7 @@ Downloaded automatically from HuggingFace on first run:
 conda activate simplestream-qwen3
 
 CUDA_VISIBLE_DEVICES=0,1 accelerate launch --num_processes=2 \
-    main_experiments/eval_qwen3vl_ovo.py \
+    main_experiments/qwen/evals/eval_qwen3vl_ovo.py \
     --model_path Qwen/Qwen3-VL-8B-Instruct \
     --anno_path data/ovo_bench/ovo_bench_new.json \
     --chunked_dir data/ovo_bench/chunked_videos \
@@ -102,7 +102,7 @@ CUDA_VISIBLE_DEVICES=0,1 accelerate launch --num_processes=2 \
 
 Or use the convenience launcher for 4-GPU:
 ```bash
-bash main_experiments/run_qwen3vl_ovo_4gpu.sh
+bash main_experiments/qwen/runs/run_qwen3vl_ovo_4gpu.sh
 ```
 </details>
 
@@ -113,7 +113,7 @@ bash main_experiments/run_qwen3vl_ovo_4gpu.sh
 conda activate simplestream-qwen25
 
 CUDA_VISIBLE_DEVICES=0,1 accelerate launch --num_processes=2 \
-    main_experiments/eval_qwen25vl_ovo.py \
+    main_experiments/qwen/evals/eval_qwen25vl_ovo.py \
     --model_path Qwen/Qwen2.5-VL-7B-Instruct \
     --anno_path data/ovo_bench/ovo_bench_new.json \
     --chunked_dir data/ovo_bench/chunked_videos \
@@ -130,7 +130,7 @@ CUDA_VISIBLE_DEVICES=0,1 accelerate launch --num_processes=2 \
 `--top-k 0` disables retrieval and keeps only the most recent chunks.
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 python main_experiments/eval_streamingbench.py \
+CUDA_VISIBLE_DEVICES=0 python main_experiments/qwen/evals/eval_streamingbench.py \
     --anno-path data/streamingbench/questions_real.json \
     --video-dir data/streamingbench/videos \
     --top-k 0 \

@@ -6,7 +6,7 @@ from typing import Any, TYPE_CHECKING
 from PIL import Image, ImageChops, ImageFilter, ImageStat
 
 if TYPE_CHECKING:
-    from lib.recent_window_eval import EvalChunk
+    from lib.shared.recent_window import EvalChunk
 
 
 @dataclass(frozen=True)

@@ -28,20 +28,20 @@ OVO-Bench:
 
 ```bash
 PYTHON_BIN=/path/to/qwen3/env/bin/python \
-  bash main_experiments/run_repro_qwen3vl_ovo_recent4.sh
+  bash main_experiments/qwen/runs/run_repro_qwen3vl_ovo_recent4.sh
 
 PYTHON_BIN=/path/to/qwen25/env/bin/python \
-  bash main_experiments/run_repro_qwen25vl_ovo_recent4.sh
+  bash main_experiments/qwen/runs/run_repro_qwen25vl_ovo_recent4.sh
 ```
 
 StreamingBench:
 
 ```bash
 PYTHON_BIN=/path/to/qwen3/env/bin/python \
-  bash main_experiments/run_repro_qwen3vl_streamingbench_recent4.sh
+  bash main_experiments/qwen/runs/run_repro_qwen3vl_streamingbench_recent4.sh
 
 PYTHON_BIN=/path/to/qwen25/env/bin/python \
-  bash main_experiments/run_repro_qwen25vl_streamingbench_recent4.sh
+  bash main_experiments/qwen/runs/run_repro_qwen25vl_streamingbench_recent4.sh
 ```
 
 The Qwen3-VL and Qwen2.5-VL runs require separate environments because the

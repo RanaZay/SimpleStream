@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Safe OVO-Bench evaluation for MiniCPM-V-4.6:
-# recent_frames_only=4, chunk_duration=1.0, fps=1.0, max_qa_tokens=256.
+# Safe OVO-Bench SimpleStream evaluation for MiniCPM-V-4.6:
+# recent_frames_only=${RECENT_FRAMES_ONLY}, chunk_duration=1.0,
+# fps=1.0, max_qa_tokens=256.
 #
 # This script only uses benchmark data inside this repo:
 #   data/ovo_bench/ovo_bench_new.json
@@ -16,10 +17,13 @@ MAIN_PROCESS_PORT="${MAIN_PROCESS_PORT:-29571}"
 ATTN_IMPLEMENTATION="${ATTN_IMPLEMENTATION:-sdpa}"
 MINICPM_DOWNSAMPLE_MODE="${MINICPM_DOWNSAMPLE_MODE:-16x}"
 MINICPM_MAX_SLICE_NUMS="${MINICPM_MAX_SLICE_NUMS:-1}"
+MINICPM_PROFILE_COMPONENTS="${MINICPM_PROFILE_COMPONENTS:-1}"
+RECENT_FRAMES_ONLY="${RECENT_FRAMES_ONLY:-4}"
+MAX_SAMPLES_PER_SPLIT="${MAX_SAMPLES_PER_SPLIT:-}"
 
 OVO_ANNO_PATH="${REPO_ROOT}/data/ovo_bench/ovo_bench_new.json"
 OVO_CHUNKED_DIR="${REPO_ROOT}/data/ovo_bench/chunked_videos"
-OVO_RESULT_DIR="${REPO_ROOT}/main_experiments/results/repro_recent4/ovo_minicpmv46_recent4"
+OVO_RESULT_DIR="${OVO_RESULT_DIR:-${REPO_ROOT}/main_experiments/results/repro_recent${RECENT_FRAMES_ONLY}/ovo_minicpmv46_recent${RECENT_FRAMES_ONLY}}"
 
 ensure_under_repo_data() {
     local path="$1"
@@ -63,23 +67,36 @@ echo "[INFO] Using CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}"
 echo "[INFO] Using ATTN_IMPLEMENTATION=${ATTN_IMPLEMENTATION}"
 echo "[INFO] Using MINICPM_DOWNSAMPLE_MODE=${MINICPM_DOWNSAMPLE_MODE}"
 echo "[INFO] Using MINICPM_MAX_SLICE_NUMS=${MINICPM_MAX_SLICE_NUMS}"
+echo "[INFO] Using MINICPM_PROFILE_COMPONENTS=${MINICPM_PROFILE_COMPONENTS}"
+echo "[INFO] Using RECENT_FRAMES_ONLY=${RECENT_FRAMES_ONLY}"
+if [[ -n "${MAX_SAMPLES_PER_SPLIT}" ]]; then
+    echo "[INFO] Using MAX_SAMPLES_PER_SPLIT=${MAX_SAMPLES_PER_SPLIT}"
+fi
 echo "[INFO] Results: ${OVO_RESULT_DIR}"
+
+COMMON_ARGS=(
+    --model_path "openbmb/MiniCPM-V-4.6" \
+    --anno_path "${OVO_ANNO_PATH}" \
+    --chunked_dir "${OVO_CHUNKED_DIR}" \
+    --result_dir "${OVO_RESULT_DIR}" \
+    --recent_frames_only "${RECENT_FRAMES_ONLY}" \
+    --chunk_duration 1.0 \
+    --fps 1.0 \
+    --max_qa_tokens 256
+)
+
+if [[ -n "${MAX_SAMPLES_PER_SPLIT}" ]]; then
+    COMMON_ARGS+=(--max_samples_per_split "${MAX_SAMPLES_PER_SPLIT}")
+fi
 
 CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES}" \
 ATTN_IMPLEMENTATION="${ATTN_IMPLEMENTATION}" \
 MINICPM_DOWNSAMPLE_MODE="${MINICPM_DOWNSAMPLE_MODE}" \
 MINICPM_MAX_SLICE_NUMS="${MINICPM_MAX_SLICE_NUMS}" \
+MINICPM_PROFILE_COMPONENTS="${MINICPM_PROFILE_COMPONENTS}" \
 "${PYTHON_BIN}" -m accelerate.commands.launch \
     --num_processes "${NUM_PROCESSES}" \
     --main_process_port "${MAIN_PROCESS_PORT}" \
     --multi_gpu \
     --mixed_precision bf16 \
-    main_experiments/minicpm_v46/ovo/eval_baseline.py \
-    --model_path "openbmb/MiniCPM-V-4.6" \
-    --anno_path "${OVO_ANNO_PATH}" \
-    --chunked_dir "${OVO_CHUNKED_DIR}" \
-    --result_dir "${OVO_RESULT_DIR}" \
-    --recent_frames_only 4 \
-    --chunk_duration 1.0 \
-    --fps 1.0 \
-    --max_qa_tokens 256
+    main_experiments/minicpm_v46/ovo/eval_baseline.py "${COMMON_ARGS[@]}"

@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=minicpmv46_sb_recent4_d8
+#SBATCH --job-name=minicpmv46_sb_recent8_d8
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=96
@@ -60,10 +60,10 @@ echo "HF_DEACTIVATE_ASYNC_LOAD=$HF_DEACTIVATE_ASYNC_LOAD"
 echo "DECORD_EOF_RETRY_MAX=$DECORD_EOF_RETRY_MAX"
 echo "CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES"
 echo "HIP_VISIBLE_DEVICES=$HIP_VISIBLE_DEVICES"
-echo "RECENT_FRAMES_ONLY=4"
+echo "RECENT_FRAMES_ONLY=8"
 echo "=== END ENV CHECK ==="
 
-RESULT_DIR="$REPO_ROOT/main_experiments/results/repro_recent4/streamingbench_minicpmv46_recent4_d8"
+RESULT_DIR="$REPO_ROOT/main_experiments/results/repro_recent8/streamingbench_minicpmv46_recent8_d8"
 ts=$(date +%Y%m%d_%H%M%S)
 if [[ "${RESUME:-0}" != "1" ]]; then
     mv "$RESULT_DIR" "${RESULT_DIR}.old_$ts" 2>/dev/null || true
@@ -72,5 +72,5 @@ fi
 PYTHON_BIN=$(which python) \
 SB_RESULT_DIR="$RESULT_DIR" \
 NUM_PROCESSES=8 \
-RECENT_FRAMES_ONLY=4 \
+RECENT_FRAMES_ONLY=8 \
 bash main_experiments/minicpm_v46/streamingbench/run_recent4.sh

@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=minicpmv46_sb_recent4_d8
+#SBATCH --job-name=minicpmv46_ovo_recent6_d8
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=96
@@ -26,7 +26,6 @@ export MINICPM_SERIALIZE_MODEL_LOAD=${MINICPM_SERIALIZE_MODEL_LOAD:-1}
 export MINICPM_MODEL_LOAD_TIMEOUT=${MINICPM_MODEL_LOAD_TIMEOUT:-7200}
 export HF_ENABLE_PARALLEL_LOADING=false
 export HF_PARALLEL_LOADING_WORKERS=1
-export HF_DEACTIVATE_ASYNC_LOAD=1
 export DECORD_EOF_RETRY_MAX=${DECORD_EOF_RETRY_MAX:-65536}
 
 export MIOPEN_DISABLE_CACHE=1
@@ -56,21 +55,20 @@ echo "MINICPM_SERIALIZE_MODEL_LOAD=$MINICPM_SERIALIZE_MODEL_LOAD"
 echo "MINICPM_MODEL_LOAD_TIMEOUT=$MINICPM_MODEL_LOAD_TIMEOUT"
 echo "HF_ENABLE_PARALLEL_LOADING=$HF_ENABLE_PARALLEL_LOADING"
 echo "HF_PARALLEL_LOADING_WORKERS=$HF_PARALLEL_LOADING_WORKERS"
-echo "HF_DEACTIVATE_ASYNC_LOAD=$HF_DEACTIVATE_ASYNC_LOAD"
 echo "DECORD_EOF_RETRY_MAX=$DECORD_EOF_RETRY_MAX"
 echo "CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES"
 echo "HIP_VISIBLE_DEVICES=$HIP_VISIBLE_DEVICES"
-echo "RECENT_FRAMES_ONLY=4"
+echo "RECENT_FRAMES_ONLY=6"
 echo "=== END ENV CHECK ==="
 
-RESULT_DIR="$REPO_ROOT/main_experiments/results/repro_recent4/streamingbench_minicpmv46_recent4_d8"
+RESULT_DIR="$REPO_ROOT/main_experiments/results/repro_recent6/ovo_minicpmv46_recent6_d8"
 ts=$(date +%Y%m%d_%H%M%S)
 if [[ "${RESUME:-0}" != "1" ]]; then
     mv "$RESULT_DIR" "${RESULT_DIR}.old_$ts" 2>/dev/null || true
 fi
 
 PYTHON_BIN=$(which python) \
-SB_RESULT_DIR="$RESULT_DIR" \
+OVO_RESULT_DIR="$RESULT_DIR" \
 NUM_PROCESSES=8 \
-RECENT_FRAMES_ONLY=4 \
-bash main_experiments/minicpm_v46/streamingbench/run_recent4.sh
+RECENT_FRAMES_ONLY=6 \
+bash main_experiments/minicpm_v46/ovo/run_recent4.sh

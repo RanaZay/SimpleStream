@@ -1,0 +1,320 @@
+from __future__ import annotations
+
+import os
+import re
+import time
+from dataclasses import dataclass
+from typing import Any
+
+import numpy as np
+from PIL import Image
+
+from lib.cdas_sampler import CDASConfig
+from lib.minicpm.baseline import (
+    RecentWindowQAModel,
+    _build_profile,
+    _capture_gpu_memory,
+    _reset_gpu_memory_peaks,
+    _synchronize_gpu_devices,
+)
+from lib.shared.recent_window import RecentWindowResult, decode_video_to_chunks_qwen
+
+
+_HISTORY_RE = re.compile(
+    r"\b("
+    r"before|earlier|previous|previously|ago|past|history|throughout|"
+    r"how many|how much time|count|times|total|after|next|then|later|"
+    r"first|last|finally|event|causal|prospective|trace|backward|forward"
+    r")\b",
+    re.IGNORECASE,
+)
+_ACTION_RE = re.compile(
+    r"\b("
+    r"action|doing|do |does|perform|performing|move|moving|happen|happening|"
+    r"activity|change|changes|start|stop|continue|inserted|appeared"
+    r")\b",
+    re.IGNORECASE,
+)
+_CURRENT_RE = re.compile(
+    r"\b("
+    r"right now|currently|current|color|wearing|holding|text|ocr|object|"
+    r"where|what is|what are|who is"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+@dataclass(frozen=True)
+class AdaptiveWindowConfig:
+    """Configuration for MiniCPM SimpleStream novelty variants.
+
+    Modes:
+      adaptive: choose a 4/6/8 recent window from the question.
+      adaptive_dedup: adaptive window, then remove near-duplicate frames.
+      adaptive_memory: adaptive window, plus older anchor frames for history questions.
+      adaptive_dedup_memory: combine both additions.
+    """
+
+    mode: str = "adaptive"
+    min_window: int = 4
+    mid_window: int = 6
+    max_window: int = 8
+    dedup_threshold: float = 4.0
+    dedup_min_frames: int = 4
+    dedup_resize: int = 64
+    memory_anchors: int = 2
+
+    @classmethod
+    def from_env(cls) -> "AdaptiveWindowConfig":
+        return cls(
+            mode=os.environ.get("MINICPM_ADAPTIVE_MODE", "adaptive"),
+            min_window=int(os.environ.get("MINICPM_ADAPTIVE_MIN_WINDOW", "4")),
+            mid_window=int(os.environ.get("MINICPM_ADAPTIVE_MID_WINDOW", "6")),
+            max_window=int(os.environ.get("MINICPM_ADAPTIVE_MAX_WINDOW", "8")),
+            dedup_threshold=float(os.environ.get("MINICPM_ADAPTIVE_DEDUP_THRESHOLD", "4.0")),
+            dedup_min_frames=int(os.environ.get("MINICPM_ADAPTIVE_DEDUP_MIN_FRAMES", "4")),
+            dedup_resize=int(os.environ.get("MINICPM_ADAPTIVE_DEDUP_RESIZE", "64")),
+            memory_anchors=int(os.environ.get("MINICPM_ADAPTIVE_MEMORY_ANCHORS", "2")),
+        )
+
+    def validate(self) -> None:
+        valid_modes = {"adaptive", "adaptive_dedup", "adaptive_memory", "adaptive_dedup_memory"}
+        if self.mode not in valid_modes:
+            raise ValueError(f"Unknown adaptive mode {self.mode!r}; expected one of {sorted(valid_modes)}")
+        if not (1 <= self.min_window <= self.mid_window <= self.max_window):
+            raise ValueError("Adaptive windows must satisfy 1 <= min <= mid <= max")
+        if self.dedup_min_frames < 1:
+            raise ValueError("dedup_min_frames must be >= 1")
+        if self.dedup_resize < 8:
+            raise ValueError("dedup_resize must be >= 8")
+        if self.memory_anchors < 0:
+            raise ValueError("memory_anchors must be >= 0")
+
+    @property
+    def use_dedup(self) -> bool:
+        return self.mode in {"adaptive_dedup", "adaptive_dedup_memory"}
+
+    @property
+    def use_memory(self) -> bool:
+        return self.mode in {"adaptive_memory", "adaptive_dedup_memory"}
+
+
+@dataclass
+class AdaptiveSelection:
+    frames: list[Image.Image]
+    final_chunk_ids: list[int]
+    metadata: dict[str, Any]
+
+
+def classify_adaptive_window(prompt: str, config: AdaptiveWindowConfig) -> tuple[int, str]:
+    """Choose the recent-window size from the user question/prompt text."""
+
+    text = prompt.lower()
+    if _HISTORY_RE.search(text):
+        return config.max_window, "history_or_temporal"
+    if _ACTION_RE.search(text):
+        return config.mid_window, "action_or_event"
+    if _CURRENT_RE.search(text):
+        return config.min_window, "current_perception"
+    return config.mid_window, "default_mid"
+
+
+def _frame_signature(frame: Image.Image, resize: int) -> np.ndarray:
+    gray = frame.convert("L").resize((resize, resize), Image.BILINEAR)
+    return np.asarray(gray, dtype=np.float32)
+
+
+def _mean_abs_diff(left: np.ndarray, right: np.ndarray) -> float:
+    return float(np.mean(np.abs(left - right)))
+
+
+def _evenly_spaced_indices(length: int, count: int) -> list[int]:
+    if count <= 0 or length <= 0:
+        return []
+    if count >= length:
+        return list(range(length))
+    if count == 1:
+        return [length // 2]
+    return sorted({round(i * (length - 1) / (count - 1)) for i in range(count)})
+
+
+def select_adaptive_frames(
+    chunks: list[Any],
+    prompt: str,
+    config: AdaptiveWindowConfig | None = None,
+) -> AdaptiveSelection:
+    config = config or AdaptiveWindowConfig.from_env()
+    config.validate()
+    if not chunks:
+        raise ValueError("No chunks available for adaptive selection.")
+
+    window_size, reason = classify_adaptive_window(prompt, config)
+    recent_chunks = chunks[-window_size:]
+    memory_chunks: list[Any] = []
+    memory_triggered = bool(config.use_memory and reason == "history_or_temporal")
+    if memory_triggered and config.memory_anchors > 0:
+        older_chunks = chunks[: max(0, len(chunks) - window_size)]
+        memory_chunks = [older_chunks[index] for index in _evenly_spaced_indices(len(older_chunks), config.memory_anchors)]
+
+    selected_chunks = [*memory_chunks, *recent_chunks]
+    candidate_frames = [frame for chunk in selected_chunks for frame in chunk.frames]
+    candidate_chunk_ids = [
+        int(chunk.chunk_index)
+        for chunk in selected_chunks
+        for _frame in chunk.frames
+    ]
+    candidate_timestamps = [
+        float(ts)
+        for chunk in selected_chunks
+        for ts in chunk.frame_timestamps
+    ]
+    if not candidate_frames:
+        raise ValueError("Adaptive selection produced no frames.")
+
+    kept_indices = list(range(len(candidate_frames)))
+    duplicate_filter_scores: list[dict[str, Any]] = []
+    if config.use_dedup and len(candidate_frames) > 1:
+        signatures = [_frame_signature(frame, config.dedup_resize) for frame in candidate_frames]
+        kept_indices = [0]
+        for index in range(1, len(candidate_frames)):
+            diff = _mean_abs_diff(signatures[index], signatures[kept_indices[-1]])
+            duplicate_filter_scores.append(
+                {
+                    "index": index,
+                    "chunk_id": candidate_chunk_ids[index],
+                    "mean_abs_diff_from_previous_kept": diff,
+                    "kept": diff >= config.dedup_threshold,
+                }
+            )
+            if diff >= config.dedup_threshold:
+                kept_indices.append(index)
+
+        last_index = len(candidate_frames) - 1
+        if last_index not in kept_indices:
+            kept_indices.append(last_index)
+
+        min_frames = min(len(candidate_frames), max(1, int(config.dedup_min_frames)))
+        if len(kept_indices) < min_frames:
+            for index in reversed(range(len(candidate_frames))):
+                if index not in kept_indices:
+                    kept_indices.append(index)
+                if len(kept_indices) >= min_frames:
+                    break
+        kept_indices = sorted(set(kept_indices))
+
+    frames = [candidate_frames[index] for index in kept_indices]
+    final_chunk_ids = [candidate_chunk_ids[index] for index in kept_indices]
+    metadata = {
+        "mode": config.mode,
+        "window_size": window_size,
+        "window_reason": reason,
+        "config": {
+            "min_window": config.min_window,
+            "mid_window": config.mid_window,
+            "max_window": config.max_window,
+            "dedup_threshold": config.dedup_threshold,
+            "dedup_min_frames": config.dedup_min_frames,
+            "dedup_resize": config.dedup_resize,
+            "memory_anchors": config.memory_anchors,
+        },
+        "decoded_chunks": len(chunks),
+        "recent_chunk_ids": [int(chunk.chunk_index) for chunk in recent_chunks],
+        "memory_triggered": memory_triggered,
+        "memory_chunk_ids": [int(chunk.chunk_index) for chunk in memory_chunks],
+        "candidate_frames": len(candidate_frames),
+        "selected_frames": len(frames),
+        "candidate_chunk_ids": candidate_chunk_ids,
+        "selected_chunk_ids": final_chunk_ids,
+        "candidate_timestamps": candidate_timestamps,
+        "selected_timestamps": [candidate_timestamps[index] for index in kept_indices],
+        "dedup_applied": bool(config.use_dedup),
+        "dedup_scores": duplicate_filter_scores,
+    }
+    return AdaptiveSelection(frames=frames, final_chunk_ids=final_chunk_ids, metadata=metadata)
+
+
+def query_adaptive_window(
+    qa: RecentWindowQAModel,
+    video_path: str,
+    prompt: str,
+    chunk_duration: float,
+    fps: float,
+    recent_frames_only: int,
+    video_start: float | None = None,
+    video_end: float | None = None,
+    cdas_config: CDASConfig | None = None,
+) -> tuple[RecentWindowResult, str]:
+    """Evaluate MiniCPM with adaptive SimpleStream-style frame selection.
+
+    cdas_config is accepted for signature compatibility with the baseline
+    evaluator, but adaptive runs do not apply CDAS.
+    """
+
+    del cdas_config
+    config = AdaptiveWindowConfig.from_env()
+    config.validate()
+    before_memory = _reset_gpu_memory_peaks()
+
+    decode_recent_hint = max(int(recent_frames_only), config.max_window + config.memory_anchors)
+    decode_t0 = time.perf_counter()
+    chunks, decode_backend = decode_video_to_chunks_qwen(
+        video_path=video_path,
+        chunk_duration=chunk_duration,
+        fps=fps,
+        recent_frames_only=decode_recent_hint,
+        video_start=video_start,
+        video_end=video_end,
+    )
+    decode_time = time.perf_counter() - decode_t0
+    if not chunks:
+        raise ValueError(f"No chunks decoded from video: {video_path}")
+
+    selection_t0 = time.perf_counter()
+    selection = select_adaptive_frames(chunks, prompt=prompt, config=config)
+    selection_time = time.perf_counter() - selection_t0
+    if not selection.frames:
+        raise ValueError(f"No frames selected from video: {video_path}")
+
+    t0 = time.perf_counter()
+    answer = qa.generate_from_frames(selection.frames, prompt)
+    _synchronize_gpu_devices()
+    generate_time = time.perf_counter() - t0
+    ttft_seconds = getattr(qa, "_last_ttft_seconds", 0.0) or 0.0
+    num_vision_tokens = getattr(qa, "_last_num_vision_tokens", 0) or 0
+    num_frames = getattr(qa, "_last_num_vision_frames", 0) or len(selection.frames)
+
+    _synchronize_gpu_devices()
+    after_memory = _capture_gpu_memory()
+    profile_metadata = _build_profile(
+        mode=config.mode,
+        decode_time=decode_time,
+        selection_time=selection_time,
+        generate_time=generate_time,
+        before_memory=before_memory,
+        after_memory=after_memory,
+        qa=qa,
+    )
+    profile_metadata["adaptive"] = selection.metadata
+    profile_metadata["decoded_chunks"] = len(chunks)
+    profile_metadata["decoded_frames"] = sum(len(chunk.frames) for chunk in chunks)
+    profile_metadata["video_start"] = video_start
+    profile_metadata["video_end"] = video_end
+
+    result = RecentWindowResult(
+        answer=answer,
+        final_chunk_ids=selection.final_chunk_ids,
+        generate_time=generate_time,
+        ttft_seconds=ttft_seconds,
+        num_vision_tokens=num_vision_tokens,
+        num_vision_tokens_before=num_vision_tokens,
+        num_vision_tokens_after=num_vision_tokens,
+        num_frames=num_frames,
+    )
+    result.profile_metadata = profile_metadata
+    result.adaptive_metadata = selection.metadata
+    return result, decode_backend
+
+
+# The existing evaluator imports this name, so expose a compatible override.
+query_recent_window = query_adaptive_window
+

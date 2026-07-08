@@ -53,6 +53,10 @@ class AdaptiveWindowConfig:
       adaptive_dedup: adaptive window, then remove near-duplicate frames.
       adaptive_memory: adaptive window, plus older anchor frames for history questions.
       adaptive_dedup_memory: combine both additions.
+      fixed_budget_memory: keep the chosen frame budget, replacing recent frames
+        with older memory anchors for history questions.
+      event_memory: adaptive memory with older anchors selected by visual change.
+      fixed_event_memory: fixed-budget memory with visual-change anchors.
     """
 
     mode: str = "adaptive"
@@ -63,6 +67,7 @@ class AdaptiveWindowConfig:
     dedup_min_frames: int = 4
     dedup_resize: int = 64
     memory_anchors: int = 2
+    memory_search_chunks: int = 0
 
     @classmethod
     def from_env(cls) -> "AdaptiveWindowConfig":
@@ -75,10 +80,19 @@ class AdaptiveWindowConfig:
             dedup_min_frames=int(os.environ.get("MINICPM_ADAPTIVE_DEDUP_MIN_FRAMES", "4")),
             dedup_resize=int(os.environ.get("MINICPM_ADAPTIVE_DEDUP_RESIZE", "64")),
             memory_anchors=int(os.environ.get("MINICPM_ADAPTIVE_MEMORY_ANCHORS", "2")),
+            memory_search_chunks=int(os.environ.get("MINICPM_ADAPTIVE_MEMORY_SEARCH_CHUNKS", "0")),
         )
 
     def validate(self) -> None:
-        valid_modes = {"adaptive", "adaptive_dedup", "adaptive_memory", "adaptive_dedup_memory"}
+        valid_modes = {
+            "adaptive",
+            "adaptive_dedup",
+            "adaptive_memory",
+            "adaptive_dedup_memory",
+            "fixed_budget_memory",
+            "event_memory",
+            "fixed_event_memory",
+        }
         if self.mode not in valid_modes:
             raise ValueError(f"Unknown adaptive mode {self.mode!r}; expected one of {sorted(valid_modes)}")
         if not (1 <= self.min_window <= self.mid_window <= self.max_window):
@@ -89,6 +103,8 @@ class AdaptiveWindowConfig:
             raise ValueError("dedup_resize must be >= 8")
         if self.memory_anchors < 0:
             raise ValueError("memory_anchors must be >= 0")
+        if self.memory_search_chunks < 0:
+            raise ValueError("memory_search_chunks must be >= 0")
 
     @property
     def use_dedup(self) -> bool:
@@ -96,7 +112,15 @@ class AdaptiveWindowConfig:
 
     @property
     def use_memory(self) -> bool:
-        return self.mode in {"adaptive_memory", "adaptive_dedup_memory"}
+        return self.mode in {"adaptive_memory", "adaptive_dedup_memory", "fixed_budget_memory", "event_memory", "fixed_event_memory"}
+
+    @property
+    def fixed_memory_budget(self) -> bool:
+        return self.mode in {"fixed_budget_memory", "fixed_event_memory"}
+
+    @property
+    def event_memory(self) -> bool:
+        return self.mode in {"event_memory", "fixed_event_memory"}
 
 
 @dataclass
@@ -138,6 +162,57 @@ def _evenly_spaced_indices(length: int, count: int) -> list[int]:
     return sorted({round(i * (length - 1) / (count - 1)) for i in range(count)})
 
 
+def _chunk_signature(chunk: Any, resize: int) -> np.ndarray:
+    signatures = [_frame_signature(frame, resize) for frame in chunk.frames]
+    if not signatures:
+        return np.zeros((resize, resize), dtype=np.float32)
+    return np.mean(np.stack(signatures, axis=0), axis=0)
+
+
+def _select_memory_chunks(
+    older_chunks: list[Any],
+    count: int,
+    config: AdaptiveWindowConfig,
+) -> tuple[list[Any], list[dict[str, Any]]]:
+    if count <= 0 or not older_chunks:
+        return [], []
+    if count >= len(older_chunks):
+        return older_chunks, [
+            {"chunk_id": int(chunk.chunk_index), "event_change_score": None, "selected": True}
+            for chunk in older_chunks
+        ]
+
+    if not config.event_memory:
+        indices = _evenly_spaced_indices(len(older_chunks), count)
+        return [older_chunks[index] for index in indices], [
+            {
+                "chunk_id": int(chunk.chunk_index),
+                "event_change_score": None,
+                "selected": index in indices,
+            }
+            for index, chunk in enumerate(older_chunks)
+        ]
+
+    signatures = [_chunk_signature(chunk, config.dedup_resize) for chunk in older_chunks]
+    scores = [0.0]
+    for index in range(1, len(signatures)):
+        scores.append(_mean_abs_diff(signatures[index], signatures[index - 1]))
+
+    selected_indices = sorted(
+        sorted(range(len(scores)), key=lambda index: (-scores[index], index))[:count]
+    )
+    selected_set = set(selected_indices)
+    metadata = [
+        {
+            "chunk_id": int(chunk.chunk_index),
+            "event_change_score": scores[index],
+            "selected": index in selected_set,
+        }
+        for index, chunk in enumerate(older_chunks)
+    ]
+    return [older_chunks[index] for index in selected_indices], metadata
+
+
 def select_adaptive_frames(
     chunks: list[Any],
     prompt: str,
@@ -149,12 +224,17 @@ def select_adaptive_frames(
         raise ValueError("No chunks available for adaptive selection.")
 
     window_size, reason = classify_adaptive_window(prompt, config)
-    recent_chunks = chunks[-window_size:]
-    memory_chunks: list[Any] = []
     memory_triggered = bool(config.use_memory and reason == "history_or_temporal")
+    recent_window_size = window_size
+    if memory_triggered and config.fixed_memory_budget and config.memory_anchors > 0:
+        recent_window_size = max(1, window_size - config.memory_anchors)
+
+    recent_chunks = chunks[-recent_window_size:]
+    memory_chunks: list[Any] = []
+    memory_scores: list[dict[str, Any]] = []
     if memory_triggered and config.memory_anchors > 0:
-        older_chunks = chunks[: max(0, len(chunks) - window_size)]
-        memory_chunks = [older_chunks[index] for index in _evenly_spaced_indices(len(older_chunks), config.memory_anchors)]
+        older_chunks = chunks[: max(0, len(chunks) - recent_window_size)]
+        memory_chunks, memory_scores = _select_memory_chunks(older_chunks, config.memory_anchors, config)
 
     selected_chunks = [*memory_chunks, *recent_chunks]
     candidate_frames = [frame for chunk in selected_chunks for frame in chunk.frames]
@@ -216,11 +296,16 @@ def select_adaptive_frames(
             "dedup_min_frames": config.dedup_min_frames,
             "dedup_resize": config.dedup_resize,
             "memory_anchors": config.memory_anchors,
+            "memory_search_chunks": config.memory_search_chunks,
         },
         "decoded_chunks": len(chunks),
+        "recent_window_size": recent_window_size,
         "recent_chunk_ids": [int(chunk.chunk_index) for chunk in recent_chunks],
         "memory_triggered": memory_triggered,
+        "memory_fixed_budget": bool(config.fixed_memory_budget),
+        "memory_selector": "event_change" if config.event_memory else "evenly_spaced",
         "memory_chunk_ids": [int(chunk.chunk_index) for chunk in memory_chunks],
+        "memory_scores": memory_scores,
         "candidate_frames": len(candidate_frames),
         "selected_frames": len(frames),
         "candidate_chunk_ids": candidate_chunk_ids,
@@ -255,7 +340,10 @@ def query_adaptive_window(
     config.validate()
     before_memory = _reset_gpu_memory_peaks()
 
-    decode_recent_hint = max(int(recent_frames_only), config.max_window + config.memory_anchors)
+    _window_size, reason = classify_adaptive_window(prompt, config)
+    memory_would_trigger = bool(config.use_memory and reason == "history_or_temporal")
+    memory_search_chunks = max(config.memory_anchors, config.memory_search_chunks) if memory_would_trigger else 0
+    decode_recent_hint = max(int(recent_frames_only), config.max_window + memory_search_chunks)
     decode_t0 = time.perf_counter()
     chunks, decode_backend = decode_video_to_chunks_qwen(
         video_path=video_path,
@@ -317,4 +405,3 @@ def query_adaptive_window(
 
 # The existing evaluator imports this name, so expose a compatible override.
 query_recent_window = query_adaptive_window
-

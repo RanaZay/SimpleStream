@@ -57,6 +57,98 @@ _TEXT_LOCALIZATION_RE = re.compile(
 _COUNT_MEMORY_RE = re.compile(r"\b(how many|count|times|total)\b", re.IGNORECASE)
 _EARLY_MEMORY_RE = re.compile(r"\b(first|before|earlier|previous|previously|past|ago)\b", re.IGNORECASE)
 _LATE_MEMORY_RE = re.compile(r"\b(last|finally|after|next|then|later|prospective|forward)\b", re.IGNORECASE)
+_WORD_RE = re.compile(r"[a-z][a-z0-9_-]*", re.IGNORECASE)
+_QUERY_STOPWORDS = {
+    "about",
+    "after",
+    "again",
+    "answer",
+    "appeared",
+    "are",
+    "best",
+    "can",
+    "choice",
+    "could",
+    "directly",
+    "does",
+    "doing",
+    "during",
+    "enough",
+    "from",
+    "give",
+    "happen",
+    "have",
+    "how",
+    "information",
+    "into",
+    "letter",
+    "many",
+    "now",
+    "only",
+    "option",
+    "options",
+    "person",
+    "provided",
+    "question",
+    "right",
+    "should",
+    "there",
+    "they",
+    "this",
+    "time",
+    "video",
+    "what",
+    "when",
+    "where",
+    "which",
+    "while",
+    "with",
+}
+_COLOR_WORDS = {
+    "black",
+    "blue",
+    "brown",
+    "gray",
+    "green",
+    "grey",
+    "orange",
+    "pink",
+    "purple",
+    "red",
+    "white",
+    "yellow",
+}
+_TEXT_SEMANTIC_WORDS = {
+    "caption",
+    "letter",
+    "letters",
+    "logo",
+    "number",
+    "ocr",
+    "sign",
+    "text",
+    "word",
+    "words",
+}
+_TEXTURE_SEMANTIC_WORDS = {
+    "basket",
+    "baskets",
+    "building",
+    "clothes",
+    "fence",
+    "grass",
+    "handle",
+    "pattern",
+    "road",
+    "shirt",
+    "structure",
+    "table",
+    "traffic",
+    "vehicle",
+    "woven",
+    "wood",
+    "wooden",
+}
 
 
 @dataclass(frozen=True)
@@ -84,6 +176,8 @@ class AdaptiveWindowConfig:
       online_memory: recent-6 backbone plus an online memory bank that scores
         older chunks by event change, text/detail signal, query type, recency,
         and temporal diversity.
+      semantic_memory: recent-6 backbone plus older anchors selected by
+        question-grounded color/detail evidence and temporal diversity.
     """
 
     mode: str = "adaptive"
@@ -131,6 +225,7 @@ class AdaptiveWindowConfig:
             "foveated",
             "foveated_memory",
             "online_memory",
+            "semantic_memory",
         }
         if self.mode not in valid_modes:
             raise ValueError(f"Unknown adaptive mode {self.mode!r}; expected one of {sorted(valid_modes)}")
@@ -168,6 +263,7 @@ class AdaptiveWindowConfig:
             "first_middle_anchor_memory",
             "foveated_memory",
             "online_memory",
+            "semantic_memory",
         }
 
     @property
@@ -177,6 +273,10 @@ class AdaptiveWindowConfig:
     @property
     def online_memory(self) -> bool:
         return self.mode == "online_memory"
+
+    @property
+    def semantic_memory(self) -> bool:
+        return self.mode == "semantic_memory"
 
     @property
     def fixed_memory_budget(self) -> bool:
@@ -271,6 +371,135 @@ def _score_crop(gray: np.ndarray, text_query: bool) -> float:
     if text_query:
         return 0.35 * contrast + 0.65 * edge_score
     return 0.55 * contrast + 0.45 * edge_score
+
+
+def _singularise(token: str) -> str:
+    if len(token) > 4 and token.endswith("ies"):
+        return token[:-3] + "y"
+    if len(token) > 3 and token.endswith("s"):
+        return token[:-1]
+    return token
+
+
+def _query_text_only(prompt: str) -> str:
+    text = prompt.lower()
+    for marker in ("\noptions:", "\nonly give", "\nanswer yes", "\nis there enough"):
+        index = text.find(marker)
+        if index >= 0:
+            text = text[:index]
+            break
+    return text
+
+
+def _extract_semantic_query(prompt: str) -> dict[str, Any]:
+    text = _query_text_only(prompt)
+    raw_tokens = [token.lower() for token in _WORD_RE.findall(text)]
+    terms: list[str] = []
+    seen: set[str] = set()
+    for token in raw_tokens:
+        if len(token) < 3 or token in _QUERY_STOPWORDS:
+            continue
+        token = _singularise(token)
+        if token in _QUERY_STOPWORDS or token in seen:
+            continue
+        seen.add(token)
+        terms.append(token)
+    colors = sorted({("gray" if term == "grey" else term) for term in terms if term in _COLOR_WORDS})
+    text_terms = sorted({term for term in terms if term in _TEXT_SEMANTIC_WORDS})
+    texture_terms = sorted({term for term in terms if term in _TEXTURE_SEMANTIC_WORDS})
+    object_terms = [
+        term
+        for term in terms
+        if term not in colors and term not in text_terms and term not in texture_terms
+    ]
+    return {
+        "terms": terms,
+        "colors": colors,
+        "text_terms": text_terms,
+        "texture_terms": texture_terms,
+        "object_terms": object_terms,
+    }
+
+
+def _chunk_rgb_sample(chunk: Any, resize: int) -> np.ndarray:
+    samples: list[np.ndarray] = []
+    side = max(16, min(96, int(resize)))
+    for frame in chunk.frames:
+        rgb = frame.convert("RGB").resize((side, side), Image.BILINEAR)
+        samples.append(np.asarray(rgb, dtype=np.float32) / 255.0)
+    if not samples:
+        return np.zeros((side, side, 3), dtype=np.float32)
+    return np.mean(np.stack(samples, axis=0), axis=0)
+
+
+def _rgb_color_features(rgb: np.ndarray) -> dict[str, float]:
+    if rgb.size == 0:
+        return {color: 0.0 for color in _COLOR_WORDS if color != "grey"}
+    r = rgb[..., 0]
+    g = rgb[..., 1]
+    b = rgb[..., 2]
+    maxc = np.maximum.reduce([r, g, b])
+    minc = np.minimum.reduce([r, g, b])
+    sat = maxc - minc
+    value = maxc
+    brightness = (r + g + b) / 3.0
+    features = {
+        "black": np.mean(brightness < 0.20),
+        "white": np.mean((brightness > 0.78) & (sat < 0.18)),
+        "gray": np.mean((brightness > 0.22) & (brightness < 0.78) & (sat < 0.12)),
+        "red": np.mean((r > 0.42) & (r > g * 1.25) & (r > b * 1.25)),
+        "green": np.mean((g > 0.34) & (g > r * 1.15) & (g > b * 1.15)),
+        "blue": np.mean((b > 0.34) & (b > r * 1.15) & (b > g * 1.15)),
+        "yellow": np.mean((r > 0.52) & (g > 0.48) & (b < 0.36) & (abs(r - g) < 0.30)),
+        "orange": np.mean((r > 0.50) & (g > 0.25) & (g < 0.68) & (b < 0.34) & (r > g)),
+        "brown": np.mean((r > 0.24) & (g > 0.14) & (b < 0.36) & (r > g * 1.05) & (g > b * 1.05) & (value < 0.78)),
+        "pink": np.mean((r > 0.55) & (b > 0.38) & (g < 0.52) & (r > g * 1.15)),
+        "purple": np.mean((r > 0.30) & (b > 0.38) & (g < 0.38)),
+    }
+    return {key: float(value) for key, value in features.items()}
+
+
+def _semantic_color_score(color_features: dict[str, float], colors: list[str]) -> float:
+    if not colors:
+        return 0.0
+    return float(max(color_features.get(color, 0.0) for color in colors))
+
+
+def _semantic_proxy_score(
+    entry: dict[str, Any],
+    semantic_query: dict[str, Any],
+) -> float:
+    colors = semantic_query["colors"]
+    text_terms = semantic_query["text_terms"]
+    texture_terms = semantic_query["texture_terms"]
+    object_terms = semantic_query["object_terms"]
+
+    color_score = _semantic_color_score(entry["color_features"], colors)
+    text_score = float(entry["text_detail_norm"]) if text_terms else 0.0
+    texture_score = 0.5 * float(entry["contrast_norm"]) + 0.5 * float(entry["text_detail_norm"])
+    if not texture_terms:
+        texture_score = 0.0
+
+    # Generic object words do not have detectors here, so use detail and change
+    # as a cheap proxy for visible object evidence.
+    object_score = 0.0
+    if object_terms:
+        object_score = (
+            0.35 * float(entry["contrast_norm"])
+            + 0.35 * float(entry["text_detail_norm"])
+            + 0.30 * float(entry["event_change_norm"])
+        )
+
+    active = int(bool(colors)) + int(bool(text_terms)) + int(bool(texture_terms)) + int(bool(object_terms))
+    if active == 0:
+        return 0.0
+    weighted = (
+        0.42 * color_score
+        + 0.25 * text_score
+        + 0.20 * texture_score
+        + 0.28 * object_score
+    )
+    return float(min(1.0, weighted / max(0.42, active * 0.28)))
 
 
 def _select_foveal_box(
@@ -400,14 +629,16 @@ def _build_online_memory_bank(older_chunks: list[Any], config: AdaptiveWindowCon
     change_scores: list[float] = []
     contrast_scores: list[float] = []
     text_detail_scores: list[float] = []
+    color_features_by_chunk: list[dict[str, float]] = []
     previous_signature: np.ndarray | None = None
-    for signature in signatures:
+    for chunk, signature in zip(older_chunks, signatures):
         if previous_signature is None:
             change_scores.append(0.0)
         else:
             change_scores.append(_mean_abs_diff(signature, previous_signature))
         contrast_scores.append(float(np.std(signature)))
         text_detail_scores.append(_score_crop(signature, text_query=True))
+        color_features_by_chunk.append(_rgb_color_features(_chunk_rgb_sample(chunk, config.dedup_resize)))
         previous_signature = signature
 
     change_norm = _normalise(change_scores)
@@ -429,6 +660,7 @@ def _build_online_memory_bank(older_chunks: list[Any], config: AdaptiveWindowCon
                 "contrast_norm": float(contrast_norm[index]),
                 "text_detail_score": float(text_detail_scores[index]),
                 "text_detail_norm": float(text_norm[index]),
+                "color_features": color_features_by_chunk[index],
             }
         )
     return bank
@@ -526,6 +758,99 @@ def _select_online_memory_chunks(
     return [bank[index]["chunk"] for index in selected_order], metadata
 
 
+def _select_semantic_memory_chunks(
+    older_chunks: list[Any],
+    count: int,
+    config: AdaptiveWindowConfig,
+    prompt: str,
+) -> tuple[list[Any], list[dict[str, Any]]]:
+    if count <= 0 or not older_chunks:
+        return [], []
+
+    bank = _build_online_memory_bank(older_chunks, config)
+    online_scores, query_flags = _online_memory_base_scores(bank, prompt)
+    semantic_query = _extract_semantic_query(prompt)
+    semantic_scores = [
+        _semantic_proxy_score(entry, semantic_query)
+        for entry in bank
+    ]
+    has_semantic_signal = bool(
+        semantic_query["colors"]
+        or semantic_query["text_terms"]
+        or semantic_query["texture_terms"]
+        or semantic_query["object_terms"]
+    )
+
+    combined_scores: list[float] = []
+    for index, entry in enumerate(bank):
+        event_score = float(entry["event_change_norm"])
+        contrast_score = float(entry["contrast_norm"])
+        recency_score = float(entry["temporal_position"])
+        if has_semantic_signal:
+            score = (
+                0.55 * semantic_scores[index]
+                + 0.25 * event_score
+                + 0.10 * contrast_score
+                + 0.10 * recency_score
+            )
+        else:
+            score = online_scores[index]
+        combined_scores.append(float(score))
+
+    if count >= len(bank):
+        selected_indices = set(range(len(bank)))
+    else:
+        selected: list[int] = []
+        diversity_weight = 0.30 if has_semantic_signal else 0.22
+        while len(selected) < count:
+            best_index: int | None = None
+            best_score: float | None = None
+            for index in range(len(bank)):
+                if index in selected:
+                    continue
+                if selected:
+                    denom = max(1, len(bank) - 1)
+                    diversity = min(abs(index - chosen) / denom for chosen in selected)
+                else:
+                    diversity = 1.0
+                score = combined_scores[index] + diversity_weight * diversity
+                if best_score is None or score > best_score or (
+                    score == best_score and best_index is not None and index < best_index
+                ):
+                    best_score = score
+                    best_index = index
+            if best_index is None:
+                break
+            selected.append(best_index)
+        selected_indices = set(selected)
+
+    selected_order = sorted(selected_indices)
+    metadata = []
+    for index, entry in enumerate(bank):
+        color_hits = {
+            color: float(entry["color_features"].get(color, 0.0))
+            for color in semantic_query["colors"]
+        }
+        metadata.append(
+            {
+                "chunk_id": int(entry["chunk_id"]),
+                "selected": index in selected_indices,
+                "semantic_memory_score": float(combined_scores[index]),
+                "semantic_proxy_score": float(semantic_scores[index]),
+                "online_memory_score": float(online_scores[index]),
+                "event_change_score": float(entry["event_change_score"]),
+                "event_change_norm": float(entry["event_change_norm"]),
+                "contrast_norm": float(entry["contrast_norm"]),
+                "text_detail_norm": float(entry["text_detail_norm"]),
+                "temporal_position": float(entry["temporal_position"]),
+                "semantic_query": semantic_query,
+                "semantic_color_hits": color_hits,
+                "query_flags": query_flags,
+            }
+        )
+    return [bank[index]["chunk"] for index in selected_order], metadata
+
+
 def _select_memory_chunks(
     older_chunks: list[Any],
     count: int,
@@ -539,6 +864,9 @@ def _select_memory_chunks(
             {"chunk_id": int(chunk.chunk_index), "event_change_score": None, "selected": True}
             for chunk in older_chunks
         ]
+
+    if config.semantic_memory:
+        return _select_semantic_memory_chunks(older_chunks, count, config, prompt)
 
     if config.online_memory:
         return _select_online_memory_chunks(older_chunks, count, config, prompt)
@@ -669,6 +997,8 @@ def _select_episodic_memory_chunks(
 
 
 def _memory_selector_label(config: AdaptiveWindowConfig) -> str:
+    if config.semantic_memory:
+        return "semantic_query_memory"
     if config.online_memory:
         return "online_memory_bank"
     if config.mode == "first_middle_anchor_memory":

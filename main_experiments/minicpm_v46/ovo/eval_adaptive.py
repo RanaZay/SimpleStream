@@ -24,6 +24,7 @@ def _consume_adaptive_args() -> argparse.Namespace:
             "fixed_budget_memory",
             "event_memory",
             "fixed_event_memory",
+            "episodic_memory",
         ],
         default=os.environ.get("MINICPM_ADAPTIVE_MODE", "adaptive"),
     )

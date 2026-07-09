@@ -59,6 +59,9 @@ class AdaptiveWindowConfig:
       fixed_event_memory: fixed-budget memory with visual-change anchors.
       episodic_memory: fixed-budget memory with one early context anchor and
         one high-change event anchor.
+      first_anchor_memory: fixed-budget memory with first old anchor + recent frames.
+      first_middle_anchor_memory: fixed-budget memory with first and middle old
+        anchors + recent frames.
     """
 
     mode: str = "adaptive"
@@ -95,6 +98,8 @@ class AdaptiveWindowConfig:
             "event_memory",
             "fixed_event_memory",
             "episodic_memory",
+            "first_anchor_memory",
+            "first_middle_anchor_memory",
         }
         if self.mode not in valid_modes:
             raise ValueError(f"Unknown adaptive mode {self.mode!r}; expected one of {sorted(valid_modes)}")
@@ -122,11 +127,19 @@ class AdaptiveWindowConfig:
             "event_memory",
             "fixed_event_memory",
             "episodic_memory",
+            "first_anchor_memory",
+            "first_middle_anchor_memory",
         }
 
     @property
     def fixed_memory_budget(self) -> bool:
-        return self.mode in {"fixed_budget_memory", "fixed_event_memory", "episodic_memory"}
+        return self.mode in {
+            "fixed_budget_memory",
+            "fixed_event_memory",
+            "episodic_memory",
+            "first_anchor_memory",
+            "first_middle_anchor_memory",
+        }
 
     @property
     def event_memory(self) -> bool:
@@ -135,6 +148,10 @@ class AdaptiveWindowConfig:
     @property
     def episodic_memory(self) -> bool:
         return self.mode == "episodic_memory"
+
+    @property
+    def anchor_memory(self) -> bool:
+        return self.mode in {"first_anchor_memory", "first_middle_anchor_memory"}
 
 
 @dataclass
@@ -199,6 +216,9 @@ def _select_memory_chunks(
     if config.episodic_memory:
         return _select_episodic_memory_chunks(older_chunks, count, config)
 
+    if config.anchor_memory:
+        return _select_simple_anchor_memory_chunks(older_chunks, count, config)
+
     if not config.event_memory:
         indices = _evenly_spaced_indices(len(older_chunks), count)
         return [older_chunks[index] for index in indices], [
@@ -224,6 +244,44 @@ def _select_memory_chunks(
             "chunk_id": int(chunk.chunk_index),
             "event_change_score": scores[index],
             "selected": index in selected_set,
+        }
+        for index, chunk in enumerate(older_chunks)
+    ]
+    return [older_chunks[index] for index in selected_indices], metadata
+
+
+def _select_simple_anchor_memory_chunks(
+    older_chunks: list[Any],
+    count: int,
+    config: AdaptiveWindowConfig,
+) -> tuple[list[Any], list[dict[str, Any]]]:
+    selected_indices = [0]
+    if config.mode == "first_middle_anchor_memory" and count > 1:
+        middle_index = len(older_chunks) // 2
+        if middle_index not in selected_indices:
+            selected_indices.append(middle_index)
+
+    if len(selected_indices) < count:
+        for index in _evenly_spaced_indices(len(older_chunks), count):
+            if index not in selected_indices:
+                selected_indices.append(index)
+            if len(selected_indices) >= count:
+                break
+
+    selected_indices = sorted(selected_indices[:count])
+    selected_set = set(selected_indices)
+    metadata = [
+        {
+            "chunk_id": int(chunk.chunk_index),
+            "event_change_score": None,
+            "selected": index in selected_set,
+            "anchor_role": (
+                "first_anchor"
+                if index == 0 and index in selected_set
+                else "middle_anchor"
+                if index in selected_set
+                else None
+            ),
         }
         for index, chunk in enumerate(older_chunks)
     ]
@@ -371,7 +429,11 @@ def select_adaptive_frames(
         "memory_triggered": memory_triggered,
         "memory_fixed_budget": bool(config.fixed_memory_budget),
         "memory_selector": (
-            "episodic_context_event"
+            "first_middle_anchor"
+            if config.mode == "first_middle_anchor_memory"
+            else "first_anchor"
+            if config.mode == "first_anchor_memory"
+            else "episodic_context_event"
             if config.episodic_memory
             else "event_change"
             if config.event_memory

@@ -22,6 +22,7 @@ def _consume_adaptive_args() -> argparse.Namespace:
             "adaptive_dedup_memory",
             "foveated",
             "foveated_memory",
+            "online_memory",
         ],
         default=os.environ.get("MINICPM_ADAPTIVE_MODE", "adaptive"),
     )
@@ -31,6 +32,7 @@ def _consume_adaptive_args() -> argparse.Namespace:
     parser.add_argument("--adaptive-dedup-threshold", type=float, default=float(os.environ.get("MINICPM_ADAPTIVE_DEDUP_THRESHOLD", "4.0")))
     parser.add_argument("--adaptive-dedup-min-frames", type=int, default=int(os.environ.get("MINICPM_ADAPTIVE_DEDUP_MIN_FRAMES", "4")))
     parser.add_argument("--adaptive-memory-anchors", type=int, default=int(os.environ.get("MINICPM_ADAPTIVE_MEMORY_ANCHORS", "2")))
+    parser.add_argument("--adaptive-memory-search-chunks", type=int, default=int(os.environ.get("MINICPM_ADAPTIVE_MEMORY_SEARCH_CHUNKS", "0")))
     args, remaining = parser.parse_known_args()
     sys.argv = [sys.argv[0], *remaining]
 
@@ -41,6 +43,7 @@ def _consume_adaptive_args() -> argparse.Namespace:
     os.environ["MINICPM_ADAPTIVE_DEDUP_THRESHOLD"] = str(args.adaptive_dedup_threshold)
     os.environ["MINICPM_ADAPTIVE_DEDUP_MIN_FRAMES"] = str(args.adaptive_dedup_min_frames)
     os.environ["MINICPM_ADAPTIVE_MEMORY_ANCHORS"] = str(args.adaptive_memory_anchors)
+    os.environ["MINICPM_ADAPTIVE_MEMORY_SEARCH_CHUNKS"] = str(args.adaptive_memory_search_chunks)
     return args
 
 

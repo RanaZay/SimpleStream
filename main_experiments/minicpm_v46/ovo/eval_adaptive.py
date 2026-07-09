@@ -29,6 +29,7 @@ def _consume_adaptive_args() -> argparse.Namespace:
             "first_middle_anchor_memory",
             "foveated",
             "foveated_memory",
+            "online_memory",
         ],
         default=os.environ.get("MINICPM_ADAPTIVE_MODE", "adaptive"),
     )

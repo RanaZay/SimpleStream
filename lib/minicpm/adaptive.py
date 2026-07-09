@@ -54,6 +54,9 @@ _TEXT_LOCALIZATION_RE = re.compile(
     r"\b(text|ocr|word|words|sign|caption|logo|number|letter|letters)\b",
     re.IGNORECASE,
 )
+_COUNT_MEMORY_RE = re.compile(r"\b(how many|count|times|total)\b", re.IGNORECASE)
+_EARLY_MEMORY_RE = re.compile(r"\b(first|before|earlier|previous|previously|past|ago)\b", re.IGNORECASE)
+_LATE_MEMORY_RE = re.compile(r"\b(last|finally|after|next|then|later|prospective|forward)\b", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -78,6 +81,9 @@ class AdaptiveWindowConfig:
         localization-style questions.
       foveated_memory: recent-window memory plus query-guided crop insets for
         localization-style questions.
+      online_memory: recent-6 backbone plus an online memory bank that scores
+        older chunks by event change, text/detail signal, query type, recency,
+        and temporal diversity.
     """
 
     mode: str = "adaptive"
@@ -124,6 +130,7 @@ class AdaptiveWindowConfig:
             "first_middle_anchor_memory",
             "foveated",
             "foveated_memory",
+            "online_memory",
         }
         if self.mode not in valid_modes:
             raise ValueError(f"Unknown adaptive mode {self.mode!r}; expected one of {sorted(valid_modes)}")
@@ -160,11 +167,16 @@ class AdaptiveWindowConfig:
             "first_anchor_memory",
             "first_middle_anchor_memory",
             "foveated_memory",
+            "online_memory",
         }
 
     @property
     def use_foveation(self) -> bool:
         return self.mode in {"foveated", "foveated_memory"}
+
+    @property
+    def online_memory(self) -> bool:
+        return self.mode == "online_memory"
 
     @property
     def fixed_memory_budget(self) -> bool:
@@ -373,10 +385,152 @@ def _apply_query_foveation(
     return foveated_frames, metadata
 
 
+def _normalise(values: list[float]) -> list[float]:
+    if not values:
+        return []
+    low = min(values)
+    high = max(values)
+    if high <= low:
+        return [0.0 for _ in values]
+    return [(value - low) / (high - low) for value in values]
+
+
+def _build_online_memory_bank(older_chunks: list[Any], config: AdaptiveWindowConfig) -> list[dict[str, Any]]:
+    signatures = [_chunk_signature(chunk, config.dedup_resize) for chunk in older_chunks]
+    change_scores: list[float] = []
+    contrast_scores: list[float] = []
+    text_detail_scores: list[float] = []
+    previous_signature: np.ndarray | None = None
+    for signature in signatures:
+        if previous_signature is None:
+            change_scores.append(0.0)
+        else:
+            change_scores.append(_mean_abs_diff(signature, previous_signature))
+        contrast_scores.append(float(np.std(signature)))
+        text_detail_scores.append(_score_crop(signature, text_query=True))
+        previous_signature = signature
+
+    change_norm = _normalise(change_scores)
+    contrast_norm = _normalise(contrast_scores)
+    text_norm = _normalise(text_detail_scores)
+    denom = max(1, len(older_chunks) - 1)
+    bank: list[dict[str, Any]] = []
+    for index, chunk in enumerate(older_chunks):
+        position = index / denom
+        bank.append(
+            {
+                "index": index,
+                "chunk": chunk,
+                "chunk_id": int(chunk.chunk_index),
+                "temporal_position": float(position),
+                "event_change_score": float(change_scores[index]),
+                "event_change_norm": float(change_norm[index]),
+                "contrast_score": float(contrast_scores[index]),
+                "contrast_norm": float(contrast_norm[index]),
+                "text_detail_score": float(text_detail_scores[index]),
+                "text_detail_norm": float(text_norm[index]),
+            }
+        )
+    return bank
+
+
+def _online_memory_base_scores(bank: list[dict[str, Any]], prompt: str) -> tuple[list[float], dict[str, bool]]:
+    count_query = bool(_COUNT_MEMORY_RE.search(prompt))
+    early_query = bool(_EARLY_MEMORY_RE.search(prompt))
+    late_query = bool(_LATE_MEMORY_RE.search(prompt))
+    text_query = bool(_TEXT_LOCALIZATION_RE.search(prompt))
+    flags = {
+        "count_query": count_query,
+        "early_query": early_query,
+        "late_query": late_query,
+        "text_query": text_query,
+    }
+    scores: list[float] = []
+    for entry in bank:
+        position = float(entry["temporal_position"])
+        event_score = float(entry["event_change_norm"])
+        contrast_score = float(entry["contrast_norm"])
+        text_score = float(entry["text_detail_norm"])
+        recency_score = position
+        early_score = 1.0 - position
+        middle_score = 1.0 - abs(position - 0.5) * 2.0
+
+        score = 0.45 * event_score + 0.20 * contrast_score + 0.15 * recency_score
+        if count_query:
+            score += 0.25 * event_score + 0.20 * middle_score
+        if early_query:
+            score += 0.35 * early_score
+        if late_query:
+            score += 0.25 * recency_score
+        if text_query:
+            score += 0.30 * text_score
+        scores.append(float(score))
+    return scores, flags
+
+
+def _select_online_memory_chunks(
+    older_chunks: list[Any],
+    count: int,
+    config: AdaptiveWindowConfig,
+    prompt: str,
+) -> tuple[list[Any], list[dict[str, Any]]]:
+    if count <= 0 or not older_chunks:
+        return [], []
+
+    bank = _build_online_memory_bank(older_chunks, config)
+    base_scores, query_flags = _online_memory_base_scores(bank, prompt)
+    if count >= len(bank):
+        selected_indices = set(range(len(bank)))
+    else:
+        selected: list[int] = []
+        diversity_weight = 0.35 if query_flags["count_query"] else 0.22
+        while len(selected) < count:
+            best_index: int | None = None
+            best_score: float | None = None
+            for index, entry in enumerate(bank):
+                if index in selected:
+                    continue
+                if selected:
+                    denom = max(1, len(bank) - 1)
+                    diversity = min(abs(index - chosen) / denom for chosen in selected)
+                else:
+                    diversity = 1.0
+                score = base_scores[index] + diversity_weight * diversity
+                # Prefer deterministic chronological tie-breaking.
+                if best_score is None or score > best_score or (
+                    score == best_score and best_index is not None and index < best_index
+                ):
+                    best_score = score
+                    best_index = index
+            if best_index is None:
+                break
+            selected.append(best_index)
+        selected_indices = set(selected)
+
+    selected_order = sorted(selected_indices)
+    metadata = []
+    for index, entry in enumerate(bank):
+        metadata.append(
+            {
+                "chunk_id": int(entry["chunk_id"]),
+                "selected": index in selected_indices,
+                "online_memory_score": float(base_scores[index]),
+                "event_change_score": float(entry["event_change_score"]),
+                "event_change_norm": float(entry["event_change_norm"]),
+                "contrast_norm": float(entry["contrast_norm"]),
+                "text_detail_norm": float(entry["text_detail_norm"]),
+                "temporal_position": float(entry["temporal_position"]),
+                "query_flags": query_flags,
+            }
+        )
+    return [bank[index]["chunk"] for index in selected_order], metadata
+
+
 def _select_memory_chunks(
     older_chunks: list[Any],
     count: int,
     config: AdaptiveWindowConfig,
+    prompt: str = "",
 ) -> tuple[list[Any], list[dict[str, Any]]]:
     if count <= 0 or not older_chunks:
         return [], []
@@ -385,6 +539,9 @@ def _select_memory_chunks(
             {"chunk_id": int(chunk.chunk_index), "event_change_score": None, "selected": True}
             for chunk in older_chunks
         ]
+
+    if config.online_memory:
+        return _select_online_memory_chunks(older_chunks, count, config, prompt)
 
     if config.episodic_memory:
         return _select_episodic_memory_chunks(older_chunks, count, config)
@@ -511,6 +668,20 @@ def _select_episodic_memory_chunks(
     return [older_chunks[index] for index in selected_indices], metadata
 
 
+def _memory_selector_label(config: AdaptiveWindowConfig) -> str:
+    if config.online_memory:
+        return "online_memory_bank"
+    if config.mode == "first_middle_anchor_memory":
+        return "first_middle_anchor"
+    if config.mode == "first_anchor_memory":
+        return "first_anchor"
+    if config.episodic_memory:
+        return "episodic_context_event"
+    if config.event_memory:
+        return "event_change"
+    return "evenly_spaced"
+
+
 def select_adaptive_frames(
     chunks: list[Any],
     prompt: str,
@@ -532,7 +703,12 @@ def select_adaptive_frames(
     memory_scores: list[dict[str, Any]] = []
     if memory_triggered and config.memory_anchors > 0:
         older_chunks = chunks[: max(0, len(chunks) - recent_window_size)]
-        memory_chunks, memory_scores = _select_memory_chunks(older_chunks, config.memory_anchors, config)
+        memory_chunks, memory_scores = _select_memory_chunks(
+            older_chunks,
+            config.memory_anchors,
+            config,
+            prompt=prompt,
+        )
 
     selected_chunks = [*memory_chunks, *recent_chunks]
     candidate_frames = [frame for chunk in selected_chunks for frame in chunk.frames]
@@ -605,17 +781,7 @@ def select_adaptive_frames(
         "recent_chunk_ids": [int(chunk.chunk_index) for chunk in recent_chunks],
         "memory_triggered": memory_triggered,
         "memory_fixed_budget": bool(config.fixed_memory_budget),
-        "memory_selector": (
-            "first_middle_anchor"
-            if config.mode == "first_middle_anchor_memory"
-            else "first_anchor"
-            if config.mode == "first_anchor_memory"
-            else "episodic_context_event"
-            if config.episodic_memory
-            else "event_change"
-            if config.event_memory
-            else "evenly_spaced"
-        ),
+        "memory_selector": _memory_selector_label(config),
         "memory_chunk_ids": [int(chunk.chunk_index) for chunk in memory_chunks],
         "memory_scores": memory_scores,
         "candidate_frames": len(candidate_frames),

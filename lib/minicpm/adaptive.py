@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from lib.cdas_sampler import CDASConfig
 from lib.minicpm.baseline import (
@@ -42,6 +42,18 @@ _CURRENT_RE = re.compile(
     r")\b",
     re.IGNORECASE,
 )
+_LOCALIZATION_RE = re.compile(
+    r"\b("
+    r"text|ocr|word|words|sign|caption|logo|number|color|wearing|holding|"
+    r"object|shape|where|traffic light|large structure|left side|right side|"
+    r"person|man|woman|animal|vehicle"
+    r")\b",
+    re.IGNORECASE,
+)
+_TEXT_LOCALIZATION_RE = re.compile(
+    r"\b(text|ocr|word|words|sign|caption|logo|number|letter|letters)\b",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -62,6 +74,10 @@ class AdaptiveWindowConfig:
       first_anchor_memory: fixed-budget memory with first old anchor + recent frames.
       first_middle_anchor_memory: fixed-budget memory with first and middle old
         anchors + recent frames.
+      foveated: adaptive recent window plus query-guided crop insets for
+        localization-style questions.
+      foveated_memory: recent-window memory plus query-guided crop insets for
+        localization-style questions.
     """
 
     mode: str = "adaptive"
@@ -73,6 +89,9 @@ class AdaptiveWindowConfig:
     dedup_resize: int = 64
     memory_anchors: int = 2
     memory_search_chunks: int = 0
+    foveation_grid: int = 4
+    foveation_crop_fraction: float = 0.45
+    foveation_inset_fraction: float = 0.46
 
     @classmethod
     def from_env(cls) -> "AdaptiveWindowConfig":
@@ -86,6 +105,9 @@ class AdaptiveWindowConfig:
             dedup_resize=int(os.environ.get("MINICPM_ADAPTIVE_DEDUP_RESIZE", "64")),
             memory_anchors=int(os.environ.get("MINICPM_ADAPTIVE_MEMORY_ANCHORS", "2")),
             memory_search_chunks=int(os.environ.get("MINICPM_ADAPTIVE_MEMORY_SEARCH_CHUNKS", "0")),
+            foveation_grid=int(os.environ.get("MINICPM_ADAPTIVE_FOVEATION_GRID", "4")),
+            foveation_crop_fraction=float(os.environ.get("MINICPM_ADAPTIVE_FOVEATION_CROP_FRACTION", "0.45")),
+            foveation_inset_fraction=float(os.environ.get("MINICPM_ADAPTIVE_FOVEATION_INSET_FRACTION", "0.46")),
         )
 
     def validate(self) -> None:
@@ -100,6 +122,8 @@ class AdaptiveWindowConfig:
             "episodic_memory",
             "first_anchor_memory",
             "first_middle_anchor_memory",
+            "foveated",
+            "foveated_memory",
         }
         if self.mode not in valid_modes:
             raise ValueError(f"Unknown adaptive mode {self.mode!r}; expected one of {sorted(valid_modes)}")
@@ -113,6 +137,12 @@ class AdaptiveWindowConfig:
             raise ValueError("memory_anchors must be >= 0")
         if self.memory_search_chunks < 0:
             raise ValueError("memory_search_chunks must be >= 0")
+        if self.foveation_grid < 1:
+            raise ValueError("foveation_grid must be >= 1")
+        if not (0.20 <= self.foveation_crop_fraction <= 0.90):
+            raise ValueError("foveation_crop_fraction must be in [0.20, 0.90]")
+        if not (0.20 <= self.foveation_inset_fraction <= 0.80):
+            raise ValueError("foveation_inset_fraction must be in [0.20, 0.80]")
 
     @property
     def use_dedup(self) -> bool:
@@ -129,7 +159,12 @@ class AdaptiveWindowConfig:
             "episodic_memory",
             "first_anchor_memory",
             "first_middle_anchor_memory",
+            "foveated_memory",
         }
+
+    @property
+    def use_foveation(self) -> bool:
+        return self.mode in {"foveated", "foveated_memory"}
 
     @property
     def fixed_memory_budget(self) -> bool:
@@ -198,6 +233,144 @@ def _chunk_signature(chunk: Any, resize: int) -> np.ndarray:
     if not signatures:
         return np.zeros((resize, resize), dtype=np.float32)
     return np.mean(np.stack(signatures, axis=0), axis=0)
+
+
+def _should_foveate(prompt: str, reason: str, config: AdaptiveWindowConfig) -> bool:
+    if not config.use_foveation:
+        return False
+    if reason == "history_or_temporal":
+        return False
+    return bool(_LOCALIZATION_RE.search(prompt))
+
+
+def _score_crop(gray: np.ndarray, text_query: bool) -> float:
+    if gray.size == 0:
+        return 0.0
+    contrast = float(np.std(gray))
+    if gray.shape[0] > 1:
+        grad_y = np.mean(np.abs(np.diff(gray, axis=0)))
+    else:
+        grad_y = 0.0
+    if gray.shape[1] > 1:
+        grad_x = np.mean(np.abs(np.diff(gray, axis=1)))
+    else:
+        grad_x = 0.0
+    edge_score = float(grad_x + grad_y)
+    if text_query:
+        return 0.35 * contrast + 0.65 * edge_score
+    return 0.55 * contrast + 0.45 * edge_score
+
+
+def _select_foveal_box(
+    frame: Image.Image,
+    prompt: str,
+    config: AdaptiveWindowConfig,
+) -> tuple[tuple[int, int, int, int], dict[str, Any]]:
+    width, height = frame.size
+    crop_w = max(1, min(width, int(round(width * config.foveation_crop_fraction))))
+    crop_h = max(1, min(height, int(round(height * config.foveation_crop_fraction))))
+    if crop_w >= width and crop_h >= height:
+        return (0, 0, width, height), {
+            "strategy": "full_frame",
+            "score": 0.0,
+            "text_query": bool(_TEXT_LOCALIZATION_RE.search(prompt)),
+        }
+
+    resize = max(32, int(config.dedup_resize))
+    gray_small = _frame_signature(frame, resize)
+    text_query = bool(_TEXT_LOCALIZATION_RE.search(prompt))
+    grid = max(1, int(config.foveation_grid))
+    best: tuple[float, float, tuple[int, int, int, int]] | None = None
+    for row in range(grid):
+        center_y = (row + 0.5) / grid
+        for col in range(grid):
+            center_x = (col + 0.5) / grid
+            left = int(round(center_x * width - crop_w / 2))
+            top = int(round(center_y * height - crop_h / 2))
+            left = max(0, min(left, width - crop_w))
+            top = max(0, min(top, height - crop_h))
+            right = left + crop_w
+            bottom = top + crop_h
+
+            small_left = max(0, min(resize - 1, int(round(left / max(width, 1) * resize))))
+            small_right = max(small_left + 1, min(resize, int(round(right / max(width, 1) * resize))))
+            small_top = max(0, min(resize - 1, int(round(top / max(height, 1) * resize))))
+            small_bottom = max(small_top + 1, min(resize, int(round(bottom / max(height, 1) * resize))))
+            patch = gray_small[small_top:small_bottom, small_left:small_right]
+            score = _score_crop(patch, text_query=text_query)
+            center_prior = 1.0 - min(1.0, abs(center_x - 0.5) + abs(center_y - 0.5))
+            total = score + (0.10 if not text_query else 0.03) * center_prior
+            candidate = (total, center_prior, (left, top, right, bottom))
+            if best is None or candidate[:2] > best[:2]:
+                best = candidate
+
+    assert best is not None
+    return best[2], {
+        "strategy": "edge_text" if text_query else "saliency_center",
+        "score": float(best[0]),
+        "center_prior": float(best[1]),
+        "text_query": text_query,
+    }
+
+
+def _compose_foveated_frame(
+    frame: Image.Image,
+    box: tuple[int, int, int, int],
+    config: AdaptiveWindowConfig,
+) -> Image.Image:
+    base = frame.convert("RGB").copy()
+    width, height = base.size
+    inset_w = max(1, int(round(width * config.foveation_inset_fraction)))
+    inset_h = max(1, int(round(height * config.foveation_inset_fraction)))
+    crop = base.crop(box).resize((inset_w, inset_h), Image.BICUBIC)
+
+    box_center_x = (box[0] + box[2]) / 2
+    box_center_y = (box[1] + box[3]) / 2
+    margin = max(2, int(round(min(width, height) * 0.015)))
+    if box_center_x > width / 2:
+        inset_left = margin
+    else:
+        inset_left = width - inset_w - margin
+    if box_center_y > height / 2:
+        inset_top = margin
+    else:
+        inset_top = height - inset_h - margin
+    inset_left = max(0, min(inset_left, width - inset_w))
+    inset_top = max(0, min(inset_top, height - inset_h))
+
+    draw = ImageDraw.Draw(base)
+    draw.rectangle(box, outline=(255, 232, 96), width=max(2, margin // 2))
+    base.paste(crop, (inset_left, inset_top))
+    draw = ImageDraw.Draw(base)
+    draw.rectangle(
+        (inset_left, inset_top, inset_left + inset_w - 1, inset_top + inset_h - 1),
+        outline=(255, 232, 96),
+        width=max(2, margin // 2),
+    )
+    return base
+
+
+def _apply_query_foveation(
+    frames: list[Image.Image],
+    prompt: str,
+    reason: str,
+    config: AdaptiveWindowConfig,
+) -> tuple[list[Image.Image], list[dict[str, Any]]]:
+    if not _should_foveate(prompt, reason, config):
+        return frames, []
+    foveated_frames: list[Image.Image] = []
+    metadata: list[dict[str, Any]] = []
+    for index, frame in enumerate(frames):
+        box, score_metadata = _select_foveal_box(frame, prompt, config)
+        foveated_frames.append(_compose_foveated_frame(frame, box, config))
+        metadata.append(
+            {
+                "frame_index": index,
+                "box": [int(value) for value in box],
+                **score_metadata,
+            }
+        )
+    return foveated_frames, metadata
 
 
 def _select_memory_chunks(
@@ -409,6 +582,7 @@ def select_adaptive_frames(
 
     frames = [candidate_frames[index] for index in kept_indices]
     final_chunk_ids = [candidate_chunk_ids[index] for index in kept_indices]
+    frames, foveation_boxes = _apply_query_foveation(frames, prompt, reason, config)
     metadata = {
         "mode": config.mode,
         "window_size": window_size,
@@ -422,6 +596,9 @@ def select_adaptive_frames(
             "dedup_resize": config.dedup_resize,
             "memory_anchors": config.memory_anchors,
             "memory_search_chunks": config.memory_search_chunks,
+            "foveation_grid": config.foveation_grid,
+            "foveation_crop_fraction": config.foveation_crop_fraction,
+            "foveation_inset_fraction": config.foveation_inset_fraction,
         },
         "decoded_chunks": len(chunks),
         "recent_window_size": recent_window_size,
@@ -449,6 +626,8 @@ def select_adaptive_frames(
         "selected_timestamps": [candidate_timestamps[index] for index in kept_indices],
         "dedup_applied": bool(config.use_dedup),
         "dedup_scores": duplicate_filter_scores,
+        "foveation_applied": bool(foveation_boxes),
+        "foveation_boxes": foveation_boxes,
     }
     return AdaptiveSelection(frames=frames, final_chunk_ids=final_chunk_ids, metadata=metadata)
 

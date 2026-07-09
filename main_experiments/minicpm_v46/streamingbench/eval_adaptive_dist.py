@@ -15,7 +15,14 @@ def _consume_adaptive_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument(
         "--adaptive-mode",
-        choices=["adaptive", "adaptive_dedup", "adaptive_memory", "adaptive_dedup_memory"],
+        choices=[
+            "adaptive",
+            "adaptive_dedup",
+            "adaptive_memory",
+            "adaptive_dedup_memory",
+            "foveated",
+            "foveated_memory",
+        ],
         default=os.environ.get("MINICPM_ADAPTIVE_MODE", "adaptive"),
     )
     parser.add_argument("--adaptive-min-window", type=int, default=int(os.environ.get("MINICPM_ADAPTIVE_MIN_WINDOW", "4")))
@@ -61,4 +68,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

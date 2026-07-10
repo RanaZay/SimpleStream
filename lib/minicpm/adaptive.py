@@ -104,6 +104,30 @@ _QUERY_STOPWORDS = {
     "while",
     "with",
 }
+_BOUND_QUERY_STOPWORDS = _QUERY_STOPWORDS | {
+    "advanced",
+    "analyze",
+    "assistant",
+    "based",
+    "best",
+    "context",
+    "describe",
+    "explain",
+    "frame",
+    "frames",
+    "given",
+    "image",
+    "images",
+    "likely",
+    "multiple",
+    "please",
+    "provide",
+    "scene",
+    "select",
+    "speaker",
+    "task",
+    "using",
+}
 _COLOR_WORDS = {
     "black",
     "blue",
@@ -180,6 +204,9 @@ class AdaptiveWindowConfig:
         question-grounded color/detail evidence and temporal diversity.
       semantic_episodic_memory: recent-6 backbone plus both semantic anchors
         and an episodic early/event anchor.
+      bound_semantic_episodic_memory: recent-6 backbone plus older anchors
+        selected where semantic query relevance and episodic event importance
+        reinforce each other.
     """
 
     mode: str = "adaptive"
@@ -229,6 +256,7 @@ class AdaptiveWindowConfig:
             "online_memory",
             "semantic_memory",
             "semantic_episodic_memory",
+            "bound_semantic_episodic_memory",
         }
         if self.mode not in valid_modes:
             raise ValueError(f"Unknown adaptive mode {self.mode!r}; expected one of {sorted(valid_modes)}")
@@ -268,6 +296,7 @@ class AdaptiveWindowConfig:
             "online_memory",
             "semantic_memory",
             "semantic_episodic_memory",
+            "bound_semantic_episodic_memory",
         }
 
     @property
@@ -285,6 +314,10 @@ class AdaptiveWindowConfig:
     @property
     def semantic_episodic_memory(self) -> bool:
         return self.mode == "semantic_episodic_memory"
+
+    @property
+    def bound_semantic_episodic_memory(self) -> bool:
+        return self.mode == "bound_semantic_episodic_memory"
 
     @property
     def fixed_memory_budget(self) -> bool:
@@ -409,6 +442,36 @@ def _extract_semantic_query(prompt: str) -> dict[str, Any]:
             continue
         token = _singularise(token)
         if token in _QUERY_STOPWORDS or token in seen:
+            continue
+        seen.add(token)
+        terms.append(token)
+    colors = sorted({("gray" if term == "grey" else term) for term in terms if term in _COLOR_WORDS})
+    text_terms = sorted({term for term in terms if term in _TEXT_SEMANTIC_WORDS})
+    texture_terms = sorted({term for term in terms if term in _TEXTURE_SEMANTIC_WORDS})
+    object_terms = [
+        term
+        for term in terms
+        if term not in colors and term not in text_terms and term not in texture_terms
+    ]
+    return {
+        "terms": terms,
+        "colors": colors,
+        "text_terms": text_terms,
+        "texture_terms": texture_terms,
+        "object_terms": object_terms,
+    }
+
+
+def _extract_bound_semantic_query(prompt: str) -> dict[str, Any]:
+    text = _query_text_only(prompt)
+    raw_tokens = [token.lower() for token in _WORD_RE.findall(text)]
+    terms: list[str] = []
+    seen: set[str] = set()
+    for token in raw_tokens:
+        if len(token) < 3 or token in _BOUND_QUERY_STOPWORDS:
+            continue
+        token = _singularise(token)
+        if token in _BOUND_QUERY_STOPWORDS or token in seen:
             continue
         seen.add(token)
         terms.append(token)
@@ -984,6 +1047,149 @@ def _select_semantic_episodic_memory_chunks(
     return selected_chunks, metadata
 
 
+def _temporal_relevance_score(entry: dict[str, Any], query_flags: dict[str, bool]) -> float:
+    position = float(entry["temporal_position"])
+    early_score = 1.0 - position
+    recency_score = position
+    middle_score = 1.0 - abs(position - 0.5) * 2.0
+    if query_flags["early_query"]:
+        return float(early_score)
+    if query_flags["late_query"]:
+        return float(recency_score)
+    if query_flags["count_query"]:
+        return float(max(middle_score, float(entry["event_change_norm"])))
+    return float(0.50 * middle_score + 0.50 * recency_score)
+
+
+def _select_bound_semantic_episodic_memory_chunks(
+    older_chunks: list[Any],
+    count: int,
+    config: AdaptiveWindowConfig,
+    prompt: str,
+) -> tuple[list[Any], list[dict[str, Any]]]:
+    """Select anchors where question meaning and episode importance agree.
+
+    This is a separate experimental selector from semantic_episodic_memory.
+    Instead of independently choosing semantic and episodic anchors, each older
+    chunk receives a joint score:
+
+        semantic schema + episodic event importance + semantic*episodic binding.
+    """
+
+    if count <= 0 or not older_chunks:
+        return [], []
+
+    bank = _build_online_memory_bank(older_chunks, config)
+    online_scores, query_flags = _online_memory_base_scores(bank, prompt)
+    online_scores_norm = _normalise(online_scores)
+    semantic_query = _extract_bound_semantic_query(prompt)
+    semantic_scores = [
+        _semantic_proxy_score(entry, semantic_query)
+        for entry in bank
+    ]
+    has_schema = bool(
+        semantic_query["colors"]
+        or semantic_query["text_terms"]
+        or semantic_query["texture_terms"]
+        or semantic_query["object_terms"]
+    )
+
+    joint_scores: list[float] = []
+    episodic_scores: list[float] = []
+    binding_scores: list[float] = []
+    temporal_scores: list[float] = []
+    for index, entry in enumerate(bank):
+        semantic_score = float(semantic_scores[index])
+        event_score = float(entry["event_change_norm"])
+        contrast_score = float(entry["contrast_norm"])
+        detail_score = float(entry["text_detail_norm"])
+        temporal_score = _temporal_relevance_score(entry, query_flags)
+        episodic_score = (
+            0.55 * event_score
+            + 0.20 * contrast_score
+            + 0.15 * temporal_score
+            + 0.10 * detail_score
+        )
+        binding_score = semantic_score * episodic_score
+        if has_schema:
+            score = (
+                0.40 * semantic_score
+                + 0.25 * episodic_score
+                + 0.20 * binding_score
+                + 0.10 * temporal_score
+                + 0.05 * contrast_score
+            )
+        else:
+            # If no meaningful semantic schema remains after prompt cleanup,
+            # fall back to a conservative episodic/online-memory score.
+            score = (
+                0.55 * episodic_score
+                + 0.25 * float(online_scores_norm[index] if online_scores_norm else 0.0)
+                + 0.15 * temporal_score
+                + 0.05 * contrast_score
+            )
+        episodic_scores.append(float(episodic_score))
+        binding_scores.append(float(binding_score))
+        temporal_scores.append(float(temporal_score))
+        joint_scores.append(float(score))
+
+    if count >= len(bank):
+        selected_indices = set(range(len(bank)))
+    else:
+        selected: list[int] = []
+        while len(selected) < count:
+            best_index: int | None = None
+            best_score: float | None = None
+            for index in range(len(bank)):
+                if index in selected:
+                    continue
+                if selected:
+                    denom = max(1, len(bank) - 1)
+                    diversity = min(abs(index - chosen) / denom for chosen in selected)
+                else:
+                    diversity = 1.0
+                score = joint_scores[index] + 0.25 * diversity
+                if best_score is None or score > best_score or (
+                    score == best_score and best_index is not None and index < best_index
+                ):
+                    best_score = score
+                    best_index = index
+            if best_index is None:
+                break
+            selected.append(best_index)
+        selected_indices = set(selected)
+
+    selected_order = sorted(selected_indices)
+    metadata = []
+    for index, entry in enumerate(bank):
+        color_hits = {
+            color: float(entry["color_features"].get(color, 0.0))
+            for color in semantic_query["colors"]
+        }
+        metadata.append(
+            {
+                "chunk_id": int(entry["chunk_id"]),
+                "selected": index in selected_indices,
+                "bound_memory_score": float(joint_scores[index]),
+                "semantic_proxy_score": float(semantic_scores[index]),
+                "episodic_importance_score": float(episodic_scores[index]),
+                "semantic_episodic_binding_score": float(binding_scores[index]),
+                "temporal_relevance_score": float(temporal_scores[index]),
+                "online_memory_score": float(online_scores[index]),
+                "event_change_score": float(entry["event_change_score"]),
+                "event_change_norm": float(entry["event_change_norm"]),
+                "contrast_norm": float(entry["contrast_norm"]),
+                "text_detail_norm": float(entry["text_detail_norm"]),
+                "temporal_position": float(entry["temporal_position"]),
+                "semantic_query": semantic_query,
+                "semantic_color_hits": color_hits,
+                "query_flags": query_flags,
+                "has_semantic_schema": bool(has_schema),
+            }
+        )
+    return [bank[index]["chunk"] for index in selected_order], metadata
+
+
 def _select_memory_chunks(
     older_chunks: list[Any],
     count: int,
@@ -997,6 +1203,9 @@ def _select_memory_chunks(
             {"chunk_id": int(chunk.chunk_index), "event_change_score": None, "selected": True}
             for chunk in older_chunks
         ]
+
+    if config.bound_semantic_episodic_memory:
+        return _select_bound_semantic_episodic_memory_chunks(older_chunks, count, config, prompt)
 
     if config.semantic_episodic_memory:
         return _select_semantic_episodic_memory_chunks(older_chunks, count, config, prompt)
@@ -1133,6 +1342,8 @@ def _select_episodic_memory_chunks(
 
 
 def _memory_selector_label(config: AdaptiveWindowConfig) -> str:
+    if config.bound_semantic_episodic_memory:
+        return "bound_semantic_episodic_memory"
     if config.semantic_episodic_memory:
         return "semantic_episodic_memory"
     if config.semantic_memory:

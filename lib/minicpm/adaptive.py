@@ -57,6 +57,29 @@ _TEXT_LOCALIZATION_RE = re.compile(
 _COUNT_MEMORY_RE = re.compile(r"\b(how many|count|times|total)\b", re.IGNORECASE)
 _EARLY_MEMORY_RE = re.compile(r"\b(first|before|earlier|previous|previously|past|ago)\b", re.IGNORECASE)
 _LATE_MEMORY_RE = re.compile(r"\b(last|finally|after|next|then|later|prospective|forward)\b", re.IGNORECASE)
+_GATED_STRONG_MEMORY_RE = re.compile(
+    r"\b("
+    r"before|earlier|previous|previously|past|ago|throughout|"
+    r"first|initially|beginning|start|started|"
+    r"after|then|later|finally|last|"
+    r"how many times|times in total|in total|total number|"
+    r"trace|backward|history"
+    r")\b",
+    re.IGNORECASE,
+)
+_GATED_CURRENT_GUARD_RE = re.compile(
+    r"\b("
+    r"right now|currently|current|just now|at this moment|"
+    r"what is|what are|what color|wearing|holding|visible now|text appeared"
+    r")\b",
+    re.IGNORECASE,
+)
+_GATED_PROSPECTIVE_GUARD_RE = re.compile(
+    r"\b("
+    r"next|most likely|will|would|after this|prospective|forward"
+    r")\b",
+    re.IGNORECASE,
+)
 _WORD_RE = re.compile(r"[a-z][a-z0-9_-]*", re.IGNORECASE)
 _QUERY_STOPWORDS = {
     "about",
@@ -207,6 +230,8 @@ class AdaptiveWindowConfig:
       bound_semantic_episodic_memory: recent-6 backbone plus older anchors
         selected where semantic query relevance and episodic event importance
         reinforce each other.
+      gated_semantic_episodic_memory: recent-6 by default; activate bound
+        semantic-episodic memory only when the question needs older evidence.
     """
 
     mode: str = "adaptive"
@@ -257,6 +282,7 @@ class AdaptiveWindowConfig:
             "semantic_memory",
             "semantic_episodic_memory",
             "bound_semantic_episodic_memory",
+            "gated_semantic_episodic_memory",
         }
         if self.mode not in valid_modes:
             raise ValueError(f"Unknown adaptive mode {self.mode!r}; expected one of {sorted(valid_modes)}")
@@ -297,6 +323,7 @@ class AdaptiveWindowConfig:
             "semantic_memory",
             "semantic_episodic_memory",
             "bound_semantic_episodic_memory",
+            "gated_semantic_episodic_memory",
         }
 
     @property
@@ -318,6 +345,10 @@ class AdaptiveWindowConfig:
     @property
     def bound_semantic_episodic_memory(self) -> bool:
         return self.mode == "bound_semantic_episodic_memory"
+
+    @property
+    def gated_semantic_episodic_memory(self) -> bool:
+        return self.mode == "gated_semantic_episodic_memory"
 
     @property
     def fixed_memory_budget(self) -> bool:
@@ -430,6 +461,65 @@ def _query_text_only(prompt: str) -> str:
             text = text[:index]
             break
     return text
+
+
+def _gated_memory_activation(prompt: str, reason: str) -> tuple[bool, str]:
+    """Decide if an older memory retrieval is warranted for this question.
+
+    This gate is intentionally conservative. The fixed recent-6 backbone already
+    works well for current-state questions, so memory is activated only for
+    strong history/count cues and guarded off for current/prospective prompts.
+    """
+
+    text = _query_text_only(prompt)
+    strong_memory = bool(_GATED_STRONG_MEMORY_RE.search(text))
+    count_total = bool(
+        re.search(
+            r"\b(how many times|times in total|in total|total number|count)\b",
+            text,
+            re.IGNORECASE,
+        )
+    )
+    current_guard = bool(_GATED_CURRENT_GUARD_RE.search(text))
+    prospective_guard = bool(_GATED_PROSPECTIVE_GUARD_RE.search(text))
+
+    if strong_memory or count_total:
+        if prospective_guard and not (_EARLY_MEMORY_RE.search(text) or count_total):
+            return False, "prospective_recent_guard"
+        return True, "strong_history_or_count_cue"
+    if current_guard:
+        return False, "current_state_guard"
+    if prospective_guard:
+        return False, "prospective_recent_guard"
+    if reason != "history_or_temporal":
+        return False, "no_history_reason"
+    return False, "weak_history_cue"
+
+
+def _memory_trigger_decision(
+    prompt: str,
+    reason: str,
+    config: AdaptiveWindowConfig,
+) -> tuple[bool, dict[str, Any]]:
+    if not config.use_memory:
+        return False, {
+            "enabled": False,
+            "activated": False,
+            "reason": "memory_mode_disabled",
+        }
+    if config.gated_semantic_episodic_memory:
+        activated, gate_reason = _gated_memory_activation(prompt, reason)
+        return activated, {
+            "enabled": True,
+            "activated": bool(activated),
+            "reason": gate_reason,
+        }
+    activated = reason == "history_or_temporal"
+    return activated, {
+        "enabled": False,
+        "activated": bool(activated),
+        "reason": "legacy_history_rule" if activated else "legacy_no_history_reason",
+    }
 
 
 def _extract_semantic_query(prompt: str) -> dict[str, Any]:
@@ -1204,7 +1294,7 @@ def _select_memory_chunks(
             for chunk in older_chunks
         ]
 
-    if config.bound_semantic_episodic_memory:
+    if config.gated_semantic_episodic_memory or config.bound_semantic_episodic_memory:
         return _select_bound_semantic_episodic_memory_chunks(older_chunks, count, config, prompt)
 
     if config.semantic_episodic_memory:
@@ -1342,6 +1432,8 @@ def _select_episodic_memory_chunks(
 
 
 def _memory_selector_label(config: AdaptiveWindowConfig) -> str:
+    if config.gated_semantic_episodic_memory:
+        return "gated_bound_semantic_episodic_memory"
     if config.bound_semantic_episodic_memory:
         return "bound_semantic_episodic_memory"
     if config.semantic_episodic_memory:
@@ -1372,7 +1464,7 @@ def select_adaptive_frames(
         raise ValueError("No chunks available for adaptive selection.")
 
     window_size, reason = classify_adaptive_window(prompt, config)
-    memory_triggered = bool(config.use_memory and reason == "history_or_temporal")
+    memory_triggered, memory_gate = _memory_trigger_decision(prompt, reason, config)
     recent_window_size = window_size
     if memory_triggered and config.fixed_memory_budget and config.memory_anchors > 0:
         recent_window_size = max(1, window_size - config.memory_anchors)
@@ -1459,6 +1551,7 @@ def select_adaptive_frames(
         "recent_window_size": recent_window_size,
         "recent_chunk_ids": [int(chunk.chunk_index) for chunk in recent_chunks],
         "memory_triggered": memory_triggered,
+        "memory_gate": memory_gate,
         "memory_fixed_budget": bool(config.fixed_memory_budget),
         "memory_selector": _memory_selector_label(config),
         "memory_chunk_ids": [int(chunk.chunk_index) for chunk in memory_chunks],
@@ -1500,7 +1593,7 @@ def query_adaptive_window(
     before_memory = _reset_gpu_memory_peaks()
 
     _window_size, reason = classify_adaptive_window(prompt, config)
-    memory_would_trigger = bool(config.use_memory and reason == "history_or_temporal")
+    memory_would_trigger, _memory_gate = _memory_trigger_decision(prompt, reason, config)
     memory_search_chunks = max(config.memory_anchors, config.memory_search_chunks) if memory_would_trigger else 0
     decode_recent_hint = max(int(recent_frames_only), config.max_window + memory_search_chunks)
     decode_t0 = time.perf_counter()

@@ -1,0 +1,140 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1700" height="1050" viewBox="0 0 1700 1050">
+  <defs>
+    <style>
+      .title { font: 700 42px Arial, sans-serif; fill: #13293d; }
+      .subtitle { font: 400 22px Arial, sans-serif; fill: #365168; }
+      .box-title { font: 700 24px Arial, sans-serif; fill: #12263a; }
+      .box-text { font: 400 19px Arial, sans-serif; fill: #22394d; }
+      .small { font: 400 17px Arial, sans-serif; fill: #344f65; }
+      .tiny { font: 400 15px Arial, sans-serif; fill: #476177; }
+      .formula { font: 700 20px "Courier New", monospace; fill: #162a3a; }
+      .panel { fill: #f7fafc; stroke: #c9d6df; stroke-width: 2; }
+      .input { fill: #e7f3ff; stroke: #3b78a8; stroke-width: 3; }
+      .activator { fill: #fff4d6; stroke: #b2872e; stroke-width: 3; }
+      .recent { fill: #e8f7ee; stroke: #2d8a50; stroke-width: 3; }
+      .memory { fill: #f3ecff; stroke: #7353a6; stroke-width: 3; }
+      .decision { fill: #fff; stroke: #d66c4b; stroke-width: 3; }
+      .output { fill: #e9fbfb; stroke: #2f8b95; stroke-width: 3; }
+      .warn { fill: #fff0ef; stroke: #c94b4b; stroke-width: 2; }
+      .ok { fill: #eff9ed; stroke: #4e9b52; stroke-width: 2; }
+      .arrow { stroke: #2c3e50; stroke-width: 3; fill: none; marker-end: url(#arrowhead); }
+      .arrow-soft { stroke: #64798a; stroke-width: 2.5; fill: none; marker-end: url(#arrowhead-soft); }
+      .arrow-purple { stroke: #7353a6; stroke-width: 3; fill: none; marker-end: url(#arrowhead-purple); }
+      .arrow-green { stroke: #2d8a50; stroke-width: 3; fill: none; marker-end: url(#arrowhead-green); }
+    </style>
+    <marker id="arrowhead" markerWidth="12" markerHeight="8" refX="11" refY="4" orient="auto">
+      <path d="M0,0 L12,4 L0,8 Z" fill="#2c3e50" />
+    </marker>
+    <marker id="arrowhead-soft" markerWidth="12" markerHeight="8" refX="11" refY="4" orient="auto">
+      <path d="M0,0 L12,4 L0,8 Z" fill="#64798a" />
+    </marker>
+    <marker id="arrowhead-purple" markerWidth="12" markerHeight="8" refX="11" refY="4" orient="auto">
+      <path d="M0,0 L12,4 L0,8 Z" fill="#7353a6" />
+    </marker>
+    <marker id="arrowhead-green" markerWidth="12" markerHeight="8" refX="11" refY="4" orient="auto">
+      <path d="M0,0 L12,4 L0,8 Z" fill="#2d8a50" />
+    </marker>
+  </defs>
+
+  <rect width="1700" height="1050" fill="#ffffff" />
+
+  <text x="70" y="70" class="title">Memory-Gated SimpleStream</text>
+  <text x="70" y="108" class="subtitle">Default to Recent-6; activate semantic or episodic memory only when the question needs older evidence.</text>
+
+  <!-- Inputs -->
+  <rect x="70" y="160" width="300" height="120" rx="18" class="input" />
+  <text x="100" y="205" class="box-title">Video Stream</text>
+  <text x="100" y="238" class="box-text">1 FPS chunks</text>
+  <text x="100" y="266" class="small">chunk_1 ... chunk_t</text>
+
+  <rect x="70" y="360" width="300" height="120" rx="18" class="input" />
+  <text x="100" y="405" class="box-title">Question</text>
+  <text x="100" y="438" class="box-text">Current, temporal,</text>
+  <text x="100" y="466" class="box-text">counting, or history?</text>
+
+  <!-- Recent buffer and old candidate pool -->
+  <rect x="500" y="140" width="390" height="145" rx="18" class="recent" />
+  <text x="530" y="185" class="box-title">Recent-6 Buffer</text>
+  <text x="530" y="220" class="box-text">Always selected</text>
+  <text x="530" y="252" class="small">latest 6 chunks near question time</text>
+
+  <rect x="500" y="335" width="390" height="145" rx="18" class="memory" />
+  <text x="530" y="380" class="box-title">Older Candidate Bank</text>
+  <text x="530" y="415" class="box-text">Search older context only</text>
+  <text x="530" y="447" class="small">up to previous 32 chunks</text>
+
+  <!-- Activator -->
+  <rect x="1015" y="185" width="420" height="230" rx="22" class="activator" />
+  <text x="1045" y="232" class="box-title">Memory Need Activator</text>
+  <text x="1045" y="270" class="box-text">Classify whether older evidence is needed.</text>
+  <text x="1045" y="310" class="small">Activate if: before, earlier, total,</text>
+  <text x="1045" y="336" class="small">count, throughout, sequence, event tracing</text>
+  <text x="1045" y="376" class="small">Do not activate if: right now, current,</text>
+  <text x="1045" y="402" class="small">what color, holding now, visible text now</text>
+
+  <!-- Decision -->
+  <path d="M1218 505 L1420 625 L1218 745 L1016 625 Z" class="decision" />
+  <text x="1122" y="607" class="box-title">Need Older</text>
+  <text x="1149" y="637" class="box-title">Memory?</text>
+  <text x="1140" y="672" class="small">general activator</text>
+
+  <!-- No branch -->
+  <rect x="1015" y="820" width="420" height="115" rx="18" class="ok" />
+  <text x="1045" y="863" class="box-title">No Memory Path</text>
+  <text x="1045" y="899" class="box-text">Use Recent-6 only</text>
+  <text x="1045" y="925" class="tiny">Protects current-state and recent perception questions</text>
+
+  <!-- Memory router -->
+  <rect x="70" y="610" width="440" height="250" rx="22" class="memory" />
+  <text x="105" y="655" class="box-title">Memory Type Router</text>
+  <text x="105" y="695" class="box-text">If older evidence is needed:</text>
+  <text x="105" y="733" class="small">Semantic cues: colors, objects, text, texture</text>
+  <text x="105" y="765" class="small">Episodic cues: before, first, sequence, event</text>
+  <text x="105" y="805" class="formula">semantic + episodic when both are present</text>
+  <text x="105" y="835" class="tiny">The goal is to avoid memory when it only distracts.</text>
+
+  <!-- Bound scoring -->
+  <rect x="610" y="600" width="470" height="280" rx="22" class="memory" />
+  <text x="642" y="645" class="box-title">Bound Memory Scoring</text>
+  <text x="642" y="685" class="box-text">For each older chunk i:</text>
+  <text x="642" y="725" class="formula">S_i = semantic relevance</text>
+  <text x="642" y="760" class="formula">E_i = episodic importance</text>
+  <text x="642" y="795" class="formula">B_i = S_i * E_i</text>
+  <text x="642" y="835" class="small">Select frames where question meaning</text>
+  <text x="642" y="862" class="small">and event importance reinforce each other.</text>
+
+  <!-- Final compose -->
+  <rect x="1250" y="560" width="370" height="170" rx="20" class="output" />
+  <text x="1280" y="606" class="box-title">Final Visual Input</text>
+  <text x="1280" y="646" class="box-text">If activated:</text>
+  <text x="1280" y="681" class="formula">M memory anchors + Recent-6</text>
+  <text x="1280" y="715" class="small">M = 2 or 3 for ablations</text>
+
+  <rect x="1250" y="820" width="370" height="115" rx="18" class="output" />
+  <text x="1280" y="866" class="box-title">MiniCPM-V-4.6</text>
+  <text x="1280" y="902" class="box-text">Answer generation + latency metrics</text>
+
+  <!-- Arrows -->
+  <path d="M370 220 C430 220 440 212 500 212" class="arrow-green" />
+  <path d="M370 220 C430 250 440 372 500 407" class="arrow-purple" />
+  <path d="M370 420 C650 420 745 300 1015 300" class="arrow" />
+  <path d="M890 212 C940 212 965 250 1015 280" class="arrow-soft" />
+  <path d="M890 407 C950 410 970 360 1015 335" class="arrow-soft" />
+  <path d="M1220 415 L1220 505" class="arrow" />
+
+  <text x="1432" y="602" class="small">Yes</text>
+  <path d="M1420 625 C1488 625 1192 565 1080 700" class="arrow-purple" />
+  <path d="M510 735 C550 735 570 735 610 735" class="arrow-purple" />
+  <path d="M1080 735 C1150 735 1175 660 1250 650" class="arrow-purple" />
+  <path d="M1435 650 C1480 690 1490 790 1435 845" class="arrow-soft" />
+
+  <text x="1120" y="785" class="small">No</text>
+  <path d="M1218 745 L1218 795 C1218 822 1110 830 1015 860" class="arrow-green" />
+  <path d="M1435 878 L1250 878" class="arrow-soft" />
+
+  <!-- Bottom notes -->
+  <rect x="70" y="930" width="1120" height="78" rx="16" class="warn" />
+  <text x="100" y="970" class="box-title">Design Hypothesis</text>
+  <text x="365" y="970" class="box-text">Memory should improve long-range/history questions, while Recent-6 should remain untouched for current-state questions.</text>
+  <text x="365" y="998" class="small">This directly targets the OVO vs StreamingBench failure pattern.</text>
+</svg>

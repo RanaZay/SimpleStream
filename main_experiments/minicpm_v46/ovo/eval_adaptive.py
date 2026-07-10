@@ -31,6 +31,7 @@ def _consume_adaptive_args() -> argparse.Namespace:
             "foveated_memory",
             "online_memory",
             "semantic_memory",
+            "semantic_episodic_memory",
         ],
         default=os.environ.get("MINICPM_ADAPTIVE_MODE", "adaptive"),
     )

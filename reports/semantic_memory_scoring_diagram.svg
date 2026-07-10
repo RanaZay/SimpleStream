@@ -1,0 +1,174 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1050" viewBox="0 0 1800 1050">
+  <defs>
+    <style>
+      .title { font: 700 38px Arial, Helvetica, sans-serif; fill: #0c2438; }
+      .subtitle { font: 500 21px Arial, Helvetica, sans-serif; fill: #36566b; }
+      .box-title { font: 700 22px Arial, Helvetica, sans-serif; fill: #0c2438; }
+      .text { font: 18px Arial, Helvetica, sans-serif; fill: #173247; }
+      .small { font: 16px Arial, Helvetica, sans-serif; fill: #28485d; }
+      .tiny { font: 14px Arial, Helvetica, sans-serif; fill: #406072; }
+      .formula { font: 17px "Courier New", monospace; fill: #102b3e; }
+      .note { font: 700 18px Arial, Helvetica, sans-serif; fill: #0b5f73; }
+      .box { fill: #ffffff; stroke: #15384f; stroke-width: 2.2; rx: 12; }
+      .soft { fill: #eef6f8; stroke: #2d8091; stroke-width: 2; rx: 12; }
+      .gold { fill: #fff7df; stroke: #bc9439; stroke-width: 2; rx: 12; }
+      .green { fill: #edf8ef; stroke: #2f855a; stroke-width: 2; rx: 12; }
+      .purple { fill: #f3effb; stroke: #6d5f91; stroke-width: 2; rx: 12; }
+      .dark { fill: #0c3b58; stroke: #0c3b58; stroke-width: 2; rx: 12; }
+      .dark-text { font: 700 22px Arial, Helvetica, sans-serif; fill: #ffffff; }
+      .arrow { stroke: #15384f; stroke-width: 2.6; fill: none; marker-end: url(#arrow); }
+      .arrow-soft { stroke: #2d8091; stroke-width: 2.4; fill: none; marker-end: url(#arrow-teal); }
+      .dash { stroke: #8a97a3; stroke-width: 2.2; fill: none; stroke-dasharray: 7 7; marker-end: url(#arrow-gray); }
+      .chip { fill: #eaf3fb; stroke: #8db5d6; stroke-width: 1.5; rx: 9; }
+      .anchor { fill: #ffe7a8; stroke: #bc9439; stroke-width: 2; rx: 9; }
+      .recent { fill: #cfeee7; stroke: #1f8a78; stroke-width: 2; rx: 9; }
+    </style>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#15384f"/>
+    </marker>
+    <marker id="arrow-teal" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#2d8091"/>
+    </marker>
+    <marker id="arrow-gray" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#8a97a3"/>
+    </marker>
+  </defs>
+
+  <rect width="1800" height="1050" fill="#ffffff"/>
+  <text x="70" y="62" class="title">Semantic Memory for MiniCPM-V Streaming Video</text>
+  <text x="70" y="94" class="subtitle">Training-free frame selection: SimpleStream Recent-6 + query-grounded older memory anchors</text>
+
+  <!-- Input stream -->
+  <rect x="70" y="145" width="270" height="135" class="box"/>
+  <text x="95" y="180" class="box-title">Incoming stream</text>
+  <text x="95" y="212" class="text">Decode at 1 FPS</text>
+  <text x="95" y="238" class="text">Split into chunks</text>
+  <rect x="95" y="252" width="35" height="18" class="chip"/>
+  <rect x="135" y="252" width="35" height="18" class="chip"/>
+  <rect x="175" y="252" width="35" height="18" class="chip"/>
+  <rect x="215" y="252" width="35" height="18" class="chip"/>
+  <rect x="255" y="252" width="35" height="18" class="chip"/>
+
+  <!-- Split -->
+  <rect x="420" y="125" width="300" height="125" class="green"/>
+  <text x="445" y="160" class="box-title">Recent context path</text>
+  <text x="445" y="193" class="text">Keep latest 6 frames</text>
+  <text x="445" y="222" class="small">This is the SimpleStream backbone.</text>
+
+  <rect x="420" y="305" width="300" height="145" class="soft"/>
+  <text x="445" y="340" class="box-title">Older memory path</text>
+  <text x="445" y="373" class="text">Search older chunks</text>
+  <text x="445" y="402" class="text">Build memory bank</text>
+  <text x="445" y="430" class="small">Default search: 32 older chunks</text>
+
+  <path d="M340 212 C370 212 385 175 420 175" class="arrow"/>
+  <path d="M340 212 C370 212 385 375 420 375" class="arrow"/>
+
+  <!-- Query -->
+  <rect x="780" y="105" width="450" height="170" class="gold"/>
+  <text x="810" y="142" class="box-title">User question parser</text>
+  <text x="810" y="176" class="text">Example: "Where are the brown woven baskets?"</text>
+  <text x="810" y="213" class="small">Extract semantic cues:</text>
+  <text x="835" y="242" class="formula">colors = {brown}</text>
+  <text x="835" y="267" class="formula">texture_terms = {woven, basket}</text>
+
+  <!-- Feature extraction -->
+  <rect x="780" y="315" width="450" height="240" class="box"/>
+  <text x="810" y="350" class="box-title">Per older chunk i: lightweight features</text>
+  <text x="810" y="390" class="formula">E_i = normalized event change</text>
+  <text x="810" y="420" class="formula">C_i = normalized contrast/detail</text>
+  <text x="810" y="450" class="formula">T_i = normalized text/edge detail</text>
+  <text x="810" y="480" class="formula">R_i = temporal position in older stream</text>
+  <text x="810" y="510" class="formula">Color_i = pixel-level color evidence</text>
+  <text x="810" y="538" class="tiny">No detector or training is used; these are cheap image statistics.</text>
+
+  <path d="M720 375 L780 420" class="arrow-soft"/>
+  <path d="M1005 275 L1005 315" class="arrow"/>
+
+  <!-- Semantic proxy -->
+  <rect x="1285" y="115" width="445" height="275" class="purple"/>
+  <text x="1315" y="150" class="box-title">Semantic proxy score S_i</text>
+  <text x="1315" y="188" class="formula">color_score = max Color_i[color]</text>
+  <text x="1315" y="218" class="formula">text_score = T_i if text terms exist</text>
+  <text x="1315" y="248" class="formula">texture_score = 0.5 C_i + 0.5 T_i</text>
+  <text x="1315" y="278" class="formula">object_score = 0.35 C_i + 0.35 T_i + 0.30 E_i</text>
+  <line x1="1315" y1="300" x2="1695" y2="300" stroke="#6d5f91" stroke-width="1.5"/>
+  <text x="1315" y="330" class="formula">S_i = min(1, weighted / normalizer)</text>
+  <text x="1315" y="360" class="tiny">Weighted = 0.42 color + 0.25 text + 0.20 texture + 0.28 object</text>
+
+  <path d="M1230 195 L1285 215" class="arrow"/>
+  <path d="M1230 430 L1285 300" class="arrow"/>
+
+  <!-- Final scoring -->
+  <rect x="1285" y="430" width="445" height="235" class="gold"/>
+  <text x="1315" y="465" class="box-title">Final memory score</text>
+  <text x="1315" y="505" class="formula">If semantic cues exist:</text>
+  <text x="1315" y="535" class="formula">Score_i = 0.55 S_i + 0.25 E_i</text>
+  <text x="1398" y="565" class="formula">+ 0.10 C_i + 0.10 R_i</text>
+  <text x="1315" y="605" class="formula">Diversity selection:</text>
+  <text x="1315" y="635" class="formula">candidate_i = Score_i + 0.30 * D_i</text>
+  <text x="1315" y="660" class="tiny">D_i = distance from already selected anchors</text>
+
+  <path d="M1508 390 L1508 430" class="arrow"/>
+
+  <!-- Select anchors -->
+  <rect x="1285" y="710" width="445" height="135" class="soft"/>
+  <text x="1315" y="745" class="box-title">Select semantic anchors</text>
+  <text x="1315" y="780" class="text">Choose top M older chunks</text>
+  <text x="1315" y="810" class="small">Current default: M = 2 anchors</text>
+  <rect x="1590" y="760" width="42" height="30" class="anchor"/>
+  <rect x="1640" y="760" width="42" height="30" class="anchor"/>
+  <text x="1597" y="782" class="tiny">a1</text>
+  <text x="1647" y="782" class="tiny">a2</text>
+
+  <path d="M1508 665 L1508 710" class="arrow"/>
+
+  <!-- Merge -->
+  <rect x="780" y="720" width="435" height="155" class="green"/>
+  <text x="810" y="755" class="box-title">Final visual input to MiniCPM</text>
+  <text x="810" y="790" class="text">Recent 6 frames + semantic anchors</text>
+  <rect x="815" y="815" width="38" height="28" class="anchor"/>
+  <rect x="861" y="815" width="38" height="28" class="anchor"/>
+  <rect x="925" y="815" width="38" height="28" class="recent"/>
+  <rect x="971" y="815" width="38" height="28" class="recent"/>
+  <rect x="1017" y="815" width="38" height="28" class="recent"/>
+  <rect x="1063" y="815" width="38" height="28" class="recent"/>
+  <rect x="1109" y="815" width="38" height="28" class="recent"/>
+  <rect x="1155" y="815" width="38" height="28" class="recent"/>
+  <text x="818" y="837" class="tiny">a1</text>
+  <text x="864" y="837" class="tiny">a2</text>
+  <text x="934" y="837" class="tiny">r1</text>
+  <text x="980" y="837" class="tiny">r2</text>
+  <text x="1026" y="837" class="tiny">r3</text>
+  <text x="1072" y="837" class="tiny">r4</text>
+  <text x="1118" y="837" class="tiny">r5</text>
+  <text x="1164" y="837" class="tiny">r6</text>
+
+  <path d="M720 190 C760 190 735 790 780 790" class="arrow"/>
+  <path d="M1285 780 L1215 790" class="arrow"/>
+
+  <!-- Model and output -->
+  <rect x="70" y="720" width="250" height="155" class="dark"/>
+  <text x="105" y="778" class="dark-text">MiniCPM-V 4.6</text>
+  <text x="105" y="812" class="dark-text">generates answer</text>
+  <path d="M780 798 C610 798 480 798 320 798" class="arrow"/>
+
+  <!-- Baseline callout -->
+  <rect x="70" y="930" width="1660" height="70" class="box"/>
+  <text x="95" y="972" class="note">Baseline difference:</text>
+  <text x="285" y="972" class="text">SimpleStream Recent-6 uses only r1...r6. Semantic Memory adds query-selected older anchors a1,a2 before the recent frames.</text>
+
+  <!-- Legend -->
+  <rect x="420" y="500" width="300" height="130" class="box"/>
+  <text x="445" y="535" class="box-title">Legend</text>
+  <rect x="448" y="560" width="35" height="24" class="recent"/>
+  <text x="495" y="579" class="small">recent frame</text>
+  <rect x="448" y="595" width="35" height="24" class="anchor"/>
+  <text x="495" y="614" class="small">semantic memory anchor</text>
+
+  <!-- Example selection note -->
+  <rect x="780" y="590" width="450" height="105" class="soft"/>
+  <text x="810" y="625" class="box-title">Example behavior</text>
+  <text x="810" y="655" class="small">For "brown woven baskets", chunks with brown pixels</text>
+  <text x="810" y="680" class="small">and strong detail/texture receive higher S_i.</text>
+</svg>

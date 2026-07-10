@@ -178,6 +178,8 @@ class AdaptiveWindowConfig:
         and temporal diversity.
       semantic_memory: recent-6 backbone plus older anchors selected by
         question-grounded color/detail evidence and temporal diversity.
+      semantic_episodic_memory: recent-6 backbone plus both semantic anchors
+        and an episodic early/event anchor.
     """
 
     mode: str = "adaptive"
@@ -226,6 +228,7 @@ class AdaptiveWindowConfig:
             "foveated_memory",
             "online_memory",
             "semantic_memory",
+            "semantic_episodic_memory",
         }
         if self.mode not in valid_modes:
             raise ValueError(f"Unknown adaptive mode {self.mode!r}; expected one of {sorted(valid_modes)}")
@@ -264,6 +267,7 @@ class AdaptiveWindowConfig:
             "foveated_memory",
             "online_memory",
             "semantic_memory",
+            "semantic_episodic_memory",
         }
 
     @property
@@ -277,6 +281,10 @@ class AdaptiveWindowConfig:
     @property
     def semantic_memory(self) -> bool:
         return self.mode == "semantic_memory"
+
+    @property
+    def semantic_episodic_memory(self) -> bool:
+        return self.mode == "semantic_episodic_memory"
 
     @property
     def fixed_memory_budget(self) -> bool:
@@ -851,6 +859,131 @@ def _select_semantic_memory_chunks(
     return [bank[index]["chunk"] for index in selected_order], metadata
 
 
+def _select_semantic_episodic_memory_chunks(
+    older_chunks: list[Any],
+    count: int,
+    config: AdaptiveWindowConfig,
+    prompt: str,
+) -> tuple[list[Any], list[dict[str, Any]]]:
+    """Retrieve from semantic and episodic memory without changing either mode.
+
+    For the default two anchors, one anchor comes from semantic query matching
+    and one preserves an early episodic reference. With three or more anchors,
+    episodic memory also contributes a high-change event anchor.
+    """
+
+    if count <= 0 or not older_chunks:
+        return [], []
+
+    episodic_slots = 0 if count == 1 else min(2, count - 1)
+    semantic_slots = max(1, count - episodic_slots)
+
+    semantic_chunks, semantic_metadata = _select_semantic_memory_chunks(
+        older_chunks,
+        semantic_slots,
+        config,
+        prompt,
+    )
+    episodic_chunks, episodic_metadata = _select_episodic_memory_chunks(
+        older_chunks,
+        episodic_slots,
+        config,
+    )
+
+    chunk_to_index = {int(chunk.chunk_index): index for index, chunk in enumerate(older_chunks)}
+    selected_semantic = {
+        int(chunk.chunk_index)
+        for chunk in semantic_chunks
+    }
+    selected_episodic = {
+        int(chunk.chunk_index)
+        for chunk in episodic_chunks
+    }
+    selected_ids: list[int] = []
+    for chunk in [*semantic_chunks, *episodic_chunks]:
+        chunk_id = int(chunk.chunk_index)
+        if chunk_id not in selected_ids:
+            selected_ids.append(chunk_id)
+
+    if len(selected_ids) < count:
+        ranked_semantic = sorted(
+            semantic_metadata,
+            key=lambda item: (-float(item.get("semantic_memory_score", 0.0)), int(item["chunk_id"])),
+        )
+        for item in ranked_semantic:
+            chunk_id = int(item["chunk_id"])
+            if chunk_id not in selected_ids:
+                selected_ids.append(chunk_id)
+                selected_semantic.add(chunk_id)
+            if len(selected_ids) >= count:
+                break
+
+    if len(selected_ids) < count:
+        ranked_episodic = sorted(
+            episodic_metadata,
+            key=lambda item: (
+                -float(item.get("event_change_score") or 0.0),
+                int(item["chunk_id"]),
+            ),
+        )
+        for item in ranked_episodic:
+            chunk_id = int(item["chunk_id"])
+            if chunk_id not in selected_ids:
+                selected_ids.append(chunk_id)
+                selected_episodic.add(chunk_id)
+            if len(selected_ids) >= count:
+                break
+
+    selected_ids = sorted(selected_ids[:count], key=lambda chunk_id: chunk_to_index[chunk_id])
+    selected_id_set = set(selected_ids)
+    semantic_meta_by_id = {int(item["chunk_id"]): item for item in semantic_metadata}
+    episodic_meta_by_id = {int(item["chunk_id"]): item for item in episodic_metadata}
+
+    metadata: list[dict[str, Any]] = []
+    for chunk in older_chunks:
+        chunk_id = int(chunk.chunk_index)
+        semantic_meta = semantic_meta_by_id.get(chunk_id, {})
+        episodic_meta = episodic_meta_by_id.get(chunk_id, {})
+        semantic_selected = chunk_id in selected_semantic
+        episodic_selected = chunk_id in selected_episodic
+        if semantic_selected and episodic_selected:
+            role = "semantic_and_episodic_anchor"
+        elif episodic_selected:
+            role = "episodic_anchor"
+        elif semantic_selected:
+            role = "semantic_anchor"
+        else:
+            role = None
+
+        item = {
+            "chunk_id": chunk_id,
+            "selected": chunk_id in selected_id_set,
+            "dual_memory_role": role,
+            "semantic_selected": bool(semantic_selected),
+            "episodic_selected": bool(episodic_selected),
+            "semantic_memory_score": semantic_meta.get("semantic_memory_score"),
+            "semantic_proxy_score": semantic_meta.get("semantic_proxy_score"),
+            "online_memory_score": semantic_meta.get("online_memory_score"),
+            "event_change_score": (
+                episodic_meta.get("event_change_score")
+                if "event_change_score" in episodic_meta
+                else semantic_meta.get("event_change_score")
+            ),
+            "event_change_norm": semantic_meta.get("event_change_norm"),
+            "contrast_norm": semantic_meta.get("contrast_norm"),
+            "text_detail_norm": semantic_meta.get("text_detail_norm"),
+            "temporal_position": semantic_meta.get("temporal_position"),
+            "semantic_query": semantic_meta.get("semantic_query"),
+            "semantic_color_hits": semantic_meta.get("semantic_color_hits"),
+            "query_flags": semantic_meta.get("query_flags"),
+            "episodic_role": episodic_meta.get("episodic_role"),
+        }
+        metadata.append(item)
+
+    selected_chunks = [older_chunks[chunk_to_index[chunk_id]] for chunk_id in selected_ids]
+    return selected_chunks, metadata
+
+
 def _select_memory_chunks(
     older_chunks: list[Any],
     count: int,
@@ -864,6 +997,9 @@ def _select_memory_chunks(
             {"chunk_id": int(chunk.chunk_index), "event_change_score": None, "selected": True}
             for chunk in older_chunks
         ]
+
+    if config.semantic_episodic_memory:
+        return _select_semantic_episodic_memory_chunks(older_chunks, count, config, prompt)
 
     if config.semantic_memory:
         return _select_semantic_memory_chunks(older_chunks, count, config, prompt)
@@ -997,6 +1133,8 @@ def _select_episodic_memory_chunks(
 
 
 def _memory_selector_label(config: AdaptiveWindowConfig) -> str:
+    if config.semantic_episodic_memory:
+        return "semantic_episodic_memory"
     if config.semantic_memory:
         return "semantic_query_memory"
     if config.online_memory:

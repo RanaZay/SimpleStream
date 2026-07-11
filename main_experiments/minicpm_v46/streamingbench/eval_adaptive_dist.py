@@ -27,6 +27,7 @@ def _consume_adaptive_args() -> argparse.Namespace:
             "semantic_episodic_memory",
             "bound_semantic_episodic_memory",
             "gated_semantic_episodic_memory",
+            "strict_gated_semantic_memory",
         ],
         default=os.environ.get("MINICPM_ADAPTIVE_MODE", "adaptive"),
     )

@@ -80,6 +80,30 @@ _GATED_PROSPECTIVE_GUARD_RE = re.compile(
     r")\b",
     re.IGNORECASE,
 )
+_STRICT_MEMORY_RE = re.compile(
+    r"\b("
+    r"before|earlier|previous|previously|past|ago|throughout|"
+    r"first|initially|beginning|at the beginning|from the start|"
+    r"how many times|times in total|in total|total number|"
+    r"trace|backward|history"
+    r")\b",
+    re.IGNORECASE,
+)
+_STRICT_CURRENT_RE = re.compile(
+    r"\b("
+    r"right now|currently|current|just now|at this moment|now|"
+    r"what is|what are|what color|wearing|holding|visible|shown|"
+    r"text|ocr|word|sign|caption|object|where"
+    r")\b",
+    re.IGNORECASE,
+)
+_STRICT_RECENT_RE = re.compile(
+    r"\b("
+    r"next|most likely|will|would|after this|prospective|forward|"
+    r"action|doing|performing|spatial|text-rich"
+    r")\b",
+    re.IGNORECASE,
+)
 _WORD_RE = re.compile(r"[a-z][a-z0-9_-]*", re.IGNORECASE)
 _QUERY_STOPWORDS = {
     "about",
@@ -232,6 +256,8 @@ class AdaptiveWindowConfig:
         reinforce each other.
       gated_semantic_episodic_memory: recent-6 by default; activate bound
         semantic-episodic memory only when the question needs older evidence.
+      strict_gated_semantic_memory: recent-6 by default; activate semantic
+        memory only for explicit older-evidence questions.
     """
 
     mode: str = "adaptive"
@@ -283,6 +309,7 @@ class AdaptiveWindowConfig:
             "semantic_episodic_memory",
             "bound_semantic_episodic_memory",
             "gated_semantic_episodic_memory",
+            "strict_gated_semantic_memory",
         }
         if self.mode not in valid_modes:
             raise ValueError(f"Unknown adaptive mode {self.mode!r}; expected one of {sorted(valid_modes)}")
@@ -324,6 +351,7 @@ class AdaptiveWindowConfig:
             "semantic_episodic_memory",
             "bound_semantic_episodic_memory",
             "gated_semantic_episodic_memory",
+            "strict_gated_semantic_memory",
         }
 
     @property
@@ -349,6 +377,10 @@ class AdaptiveWindowConfig:
     @property
     def gated_semantic_episodic_memory(self) -> bool:
         return self.mode == "gated_semantic_episodic_memory"
+
+    @property
+    def strict_gated_semantic_memory(self) -> bool:
+        return self.mode == "strict_gated_semantic_memory"
 
     @property
     def fixed_memory_budget(self) -> bool:
@@ -496,6 +528,40 @@ def _gated_memory_activation(prompt: str, reason: str) -> tuple[bool, str]:
     return False, "weak_history_cue"
 
 
+def _strict_gated_memory_activation(prompt: str, reason: str) -> tuple[bool, str]:
+    """Stricter general gate for StreamingBench-style recent-state questions.
+
+    The default path is pure Recent-6. Older semantic anchors are allowed only
+    for explicit history/count prompts. Local/current/prospective questions stay
+    on the recent visual state because the added memory frames tend to distract
+    MiniCPM on StreamingBench.
+    """
+
+    text = _query_text_only(prompt)
+    count_total = bool(
+        re.search(
+            r"\b(how many times|times in total|in total|total number)\b",
+            text,
+            re.IGNORECASE,
+        )
+    )
+    explicit_history = bool(_STRICT_MEMORY_RE.search(text))
+    current_or_local = bool(_STRICT_CURRENT_RE.search(text))
+    recent_or_forward = bool(_STRICT_RECENT_RE.search(text))
+
+    if count_total:
+        return True, "strict_count_total_cue"
+    if not explicit_history:
+        return False, "strict_no_explicit_history_cue"
+    if current_or_local:
+        return False, "strict_current_or_local_guard"
+    if recent_or_forward and not _EARLY_MEMORY_RE.search(text):
+        return False, "strict_recent_or_forward_guard"
+    if reason != "history_or_temporal":
+        return False, "strict_classifier_guard"
+    return True, "strict_explicit_history_cue"
+
+
 def _memory_trigger_decision(
     prompt: str,
     reason: str,
@@ -509,6 +575,13 @@ def _memory_trigger_decision(
         }
     if config.gated_semantic_episodic_memory:
         activated, gate_reason = _gated_memory_activation(prompt, reason)
+        return activated, {
+            "enabled": True,
+            "activated": bool(activated),
+            "reason": gate_reason,
+        }
+    if config.strict_gated_semantic_memory:
+        activated, gate_reason = _strict_gated_memory_activation(prompt, reason)
         return activated, {
             "enabled": True,
             "activated": bool(activated),
@@ -1294,6 +1367,9 @@ def _select_memory_chunks(
             for chunk in older_chunks
         ]
 
+    if config.strict_gated_semantic_memory:
+        return _select_semantic_memory_chunks(older_chunks, count, config, prompt)
+
     if config.gated_semantic_episodic_memory or config.bound_semantic_episodic_memory:
         return _select_bound_semantic_episodic_memory_chunks(older_chunks, count, config, prompt)
 
@@ -1432,6 +1508,8 @@ def _select_episodic_memory_chunks(
 
 
 def _memory_selector_label(config: AdaptiveWindowConfig) -> str:
+    if config.strict_gated_semantic_memory:
+        return "strict_gated_semantic_memory"
     if config.gated_semantic_episodic_memory:
         return "gated_bound_semantic_episodic_memory"
     if config.bound_semantic_episodic_memory:

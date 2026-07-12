@@ -189,6 +189,7 @@ _COLOR_WORDS = {
     "white",
     "yellow",
 }
+_COLOR_FEATURE_NAMES = sorted(color for color in _COLOR_WORDS if color != "grey")
 _TEXT_SEMANTIC_WORDS = {
     "caption",
     "letter",
@@ -220,6 +221,16 @@ _TEXTURE_SEMANTIC_WORDS = {
     "wood",
     "wooden",
 }
+_QUESTION_AWARE_EXTRA_DIMS = [
+    "text_detail",
+    "texture_detail",
+    "object_detail",
+    "event_change",
+    "early_context",
+    "middle_context",
+    "recent_context",
+    "count_coverage",
+]
 
 
 @dataclass(frozen=True)
@@ -258,6 +269,8 @@ class AdaptiveWindowConfig:
         semantic-episodic memory only when the question needs older evidence.
       strict_gated_semantic_memory: recent-6 by default; activate semantic
         memory only for explicit older-evidence questions.
+      question_aware_memory: recent-6 backbone plus older anchors selected by
+        question-to-window similarity inspired by WindowQuant relevance scoring.
     """
 
     mode: str = "adaptive"
@@ -310,6 +323,7 @@ class AdaptiveWindowConfig:
             "bound_semantic_episodic_memory",
             "gated_semantic_episodic_memory",
             "strict_gated_semantic_memory",
+            "question_aware_memory",
         }
         if self.mode not in valid_modes:
             raise ValueError(f"Unknown adaptive mode {self.mode!r}; expected one of {sorted(valid_modes)}")
@@ -352,6 +366,7 @@ class AdaptiveWindowConfig:
             "bound_semantic_episodic_memory",
             "gated_semantic_episodic_memory",
             "strict_gated_semantic_memory",
+            "question_aware_memory",
         }
 
     @property
@@ -381,6 +396,10 @@ class AdaptiveWindowConfig:
     @property
     def strict_gated_semantic_memory(self) -> bool:
         return self.mode == "strict_gated_semantic_memory"
+
+    @property
+    def question_aware_memory(self) -> bool:
+        return self.mode == "question_aware_memory"
 
     @property
     def fixed_memory_budget(self) -> bool:
@@ -586,6 +605,13 @@ def _memory_trigger_decision(
             "enabled": True,
             "activated": bool(activated),
             "reason": gate_reason,
+        }
+    if config.question_aware_memory:
+        activated, gate_reason = _gated_memory_activation(prompt, reason)
+        return activated, {
+            "enabled": True,
+            "activated": bool(activated),
+            "reason": f"question_aware_{gate_reason}",
         }
     activated = reason == "history_or_temporal"
     return activated, {
@@ -858,6 +884,13 @@ def _normalise(values: list[float]) -> list[float]:
     return [(value - low) / (high - low) for value in values]
 
 
+def _l2_normalise(vector: np.ndarray) -> np.ndarray:
+    norm = float(np.linalg.norm(vector))
+    if norm <= 1e-8:
+        return vector
+    return vector / norm
+
+
 def _build_online_memory_bank(older_chunks: list[Any], config: AdaptiveWindowConfig) -> list[dict[str, Any]]:
     signatures = [_chunk_signature(chunk, config.dedup_resize) for chunk in older_chunks]
     change_scores: list[float] = []
@@ -898,6 +931,200 @@ def _build_online_memory_bank(older_chunks: list[Any], config: AdaptiveWindowCon
             }
         )
     return bank
+
+
+def _question_aware_query_vector(
+    semantic_query: dict[str, Any],
+    query_flags: dict[str, bool],
+    prompt: str,
+) -> tuple[np.ndarray, dict[str, Any]]:
+    """Build a lightweight text-side vector for question-window matching.
+
+    This is intentionally model-free: it mirrors WindowQuant's idea of
+    text/window relevance, but keeps the experiment cheap enough to run inside
+    the existing MiniCPM pipeline without loading a second encoder.
+    """
+
+    vector: list[float] = []
+    color_set = set(semantic_query["colors"])
+    for color in _COLOR_FEATURE_NAMES:
+        vector.append(1.0 if color in color_set else 0.0)
+
+    text_query = bool(semantic_query["text_terms"] or _TEXT_LOCALIZATION_RE.search(prompt))
+    texture_query = bool(semantic_query["texture_terms"])
+    object_query = bool(semantic_query["object_terms"] or _LOCALIZATION_RE.search(prompt))
+    action_query = bool(_ACTION_RE.search(prompt) or query_flags["early_query"] or query_flags["late_query"])
+    count_query = bool(query_flags["count_query"])
+
+    early_weight = 1.0 if query_flags["early_query"] else 0.0
+    recent_weight = 1.0 if query_flags["late_query"] else 0.0
+    middle_weight = 1.0 if count_query else 0.0
+    if not (early_weight or recent_weight or middle_weight):
+        # A weak recent prior for underspecified prompts; recent-6 still carries
+        # the main evidence, but this keeps older anchors from drifting too far.
+        recent_weight = 0.35
+
+    vector.extend(
+        [
+            1.0 if text_query else 0.0,
+            1.0 if texture_query else 0.0,
+            1.0 if object_query else 0.0,
+            1.0 if action_query else 0.0,
+            early_weight,
+            middle_weight,
+            recent_weight,
+            1.0 if count_query else 0.0,
+        ]
+    )
+    flags = {
+        "text_query": bool(text_query),
+        "texture_query": bool(texture_query),
+        "object_query": bool(object_query),
+        "action_query": bool(action_query),
+        "count_query": bool(count_query),
+        "early_query": bool(query_flags["early_query"]),
+        "late_query": bool(query_flags["late_query"]),
+    }
+    return _l2_normalise(np.asarray(vector, dtype=np.float32)), flags
+
+
+def _question_aware_visual_vector(entry: dict[str, Any]) -> np.ndarray:
+    vector: list[float] = []
+    color_features = entry["color_features"]
+    for color in _COLOR_FEATURE_NAMES:
+        vector.append(float(color_features.get(color, 0.0)))
+
+    event_score = float(entry["event_change_norm"])
+    contrast_score = float(entry["contrast_norm"])
+    text_score = float(entry["text_detail_norm"])
+    position = float(entry["temporal_position"])
+    texture_score = 0.50 * contrast_score + 0.50 * text_score
+    object_score = 0.35 * contrast_score + 0.35 * text_score + 0.30 * event_score
+    early_score = 1.0 - position
+    middle_score = max(0.0, 1.0 - abs(position - 0.5) * 2.0)
+    recent_score = position
+    count_coverage = max(event_score, middle_score)
+    vector.extend(
+        [
+            text_score,
+            texture_score,
+            object_score,
+            event_score,
+            early_score,
+            middle_score,
+            recent_score,
+            count_coverage,
+        ]
+    )
+    return _l2_normalise(np.asarray(vector, dtype=np.float32))
+
+
+def _cosine_score(left: np.ndarray, right: np.ndarray) -> float:
+    if left.size == 0 or right.size == 0:
+        return 0.0
+    return float(np.clip(np.dot(left, right), 0.0, 1.0))
+
+
+def _select_question_aware_memory_chunks(
+    older_chunks: list[Any],
+    count: int,
+    config: AdaptiveWindowConfig,
+    prompt: str,
+) -> tuple[list[Any], list[dict[str, Any]]]:
+    """Select older anchors by question-to-window similarity.
+
+    Inspired by WindowQuant's window relevance idea, but used here for frame
+    retrieval rather than KV precision assignment. Recent-6 remains the main
+    SimpleStream input; this selector only decides which older windows are
+    worth adding when the gate asks for memory.
+    """
+
+    if count <= 0 or not older_chunks:
+        return [], []
+
+    bank = _build_online_memory_bank(older_chunks, config)
+    online_scores, query_flags = _online_memory_base_scores(bank, prompt)
+    online_scores_norm = _normalise(online_scores)
+    semantic_query = _extract_bound_semantic_query(prompt)
+    query_vector, question_flags = _question_aware_query_vector(semantic_query, query_flags, prompt)
+
+    similarity_scores: list[float] = []
+    temporal_scores: list[float] = []
+    final_scores: list[float] = []
+    visual_vectors: list[np.ndarray] = []
+    for index, entry in enumerate(bank):
+        visual_vector = _question_aware_visual_vector(entry)
+        visual_vectors.append(visual_vector)
+        similarity = _cosine_score(query_vector, visual_vector)
+        temporal_score = _temporal_relevance_score(entry, query_flags)
+        event_score = float(entry["event_change_norm"])
+        online_score = float(online_scores_norm[index] if online_scores_norm else 0.0)
+
+        if question_flags["count_query"]:
+            score = 0.55 * similarity + 0.25 * temporal_score + 0.15 * event_score + 0.05 * online_score
+        elif question_flags["action_query"]:
+            score = 0.65 * similarity + 0.15 * event_score + 0.15 * temporal_score + 0.05 * online_score
+        else:
+            score = 0.75 * similarity + 0.15 * temporal_score + 0.10 * online_score
+
+        similarity_scores.append(float(similarity))
+        temporal_scores.append(float(temporal_score))
+        final_scores.append(float(score))
+
+    if count >= len(bank):
+        selected_indices = set(range(len(bank)))
+    else:
+        selected: list[int] = []
+        diversity_weight = 0.35 if question_flags["count_query"] else 0.25
+        while len(selected) < count:
+            best_index: int | None = None
+            best_score: float | None = None
+            for index in range(len(bank)):
+                if index in selected:
+                    continue
+                if selected:
+                    denom = max(1, len(bank) - 1)
+                    diversity = min(abs(index - chosen) / denom for chosen in selected)
+                else:
+                    diversity = 1.0
+                score = final_scores[index] + diversity_weight * diversity
+                if best_score is None or score > best_score or (
+                    score == best_score and best_index is not None and index < best_index
+                ):
+                    best_score = score
+                    best_index = index
+            if best_index is None:
+                break
+            selected.append(best_index)
+        selected_indices = set(selected)
+
+    selected_order = sorted(selected_indices)
+    metadata = []
+    for index, entry in enumerate(bank):
+        color_hits = {
+            color: float(entry["color_features"].get(color, 0.0))
+            for color in semantic_query["colors"]
+        }
+        metadata.append(
+            {
+                "chunk_id": int(entry["chunk_id"]),
+                "selected": index in selected_indices,
+                "question_aware_memory_score": float(final_scores[index]),
+                "question_window_similarity": float(similarity_scores[index]),
+                "temporal_relevance_score": float(temporal_scores[index]),
+                "online_memory_score": float(online_scores[index]),
+                "event_change_score": float(entry["event_change_score"]),
+                "event_change_norm": float(entry["event_change_norm"]),
+                "contrast_norm": float(entry["contrast_norm"]),
+                "text_detail_norm": float(entry["text_detail_norm"]),
+                "temporal_position": float(entry["temporal_position"]),
+                "semantic_query": semantic_query,
+                "semantic_color_hits": color_hits,
+                "query_flags": query_flags,
+                "question_aware_flags": question_flags,
+            }
+        )
+    return [bank[index]["chunk"] for index in selected_order], metadata
 
 
 def _online_memory_base_scores(bank: list[dict[str, Any]], prompt: str) -> tuple[list[float], dict[str, bool]]:
@@ -1370,6 +1597,9 @@ def _select_memory_chunks(
     if config.strict_gated_semantic_memory:
         return _select_semantic_memory_chunks(older_chunks, count, config, prompt)
 
+    if config.question_aware_memory:
+        return _select_question_aware_memory_chunks(older_chunks, count, config, prompt)
+
     if config.gated_semantic_episodic_memory or config.bound_semantic_episodic_memory:
         return _select_bound_semantic_episodic_memory_chunks(older_chunks, count, config, prompt)
 
@@ -1510,6 +1740,8 @@ def _select_episodic_memory_chunks(
 def _memory_selector_label(config: AdaptiveWindowConfig) -> str:
     if config.strict_gated_semantic_memory:
         return "strict_gated_semantic_memory"
+    if config.question_aware_memory:
+        return "question_aware_window_similarity"
     if config.gated_semantic_episodic_memory:
         return "gated_bound_semantic_episodic_memory"
     if config.bound_semantic_episodic_memory:

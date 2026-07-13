@@ -30,6 +30,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../.
 from lib.cdas_sampler import CDASConfig
 from lib.minicpm.baseline import RecentWindowQAModel
 from lib.minicpm.referential_memory import (
+    AnswerGroundedFrameScorer,
     ReferentialMemoryEntry,
     make_memory_entry,
     query_referential_memory_window,
@@ -120,16 +121,46 @@ def _memory_entry_from_record(row: dict[str, Any]) -> ReferentialMemoryEntry | N
             time_stamp=str(raw.get("time_stamp", "")),
             selected_chunk_ids=[int(value) for value in raw.get("selected_chunk_ids", [])],
             selected_timestamps=[float(value) for value in raw.get("selected_timestamps", [])],
+            anchor_chunk_ids=[int(value) for value in (raw.get("anchor_chunk_ids") or [])],
+            anchor_timestamps=[float(value) for value in (raw.get("anchor_timestamps") or [])],
+            anchor_scores=[float(value) for value in (raw.get("anchor_scores") or [])],
+            memory_text=raw.get("memory_text"),
+            anchor_scoring=raw.get("anchor_scoring"),
+            anchor_scoring_error=raw.get("anchor_scoring_error"),
         )
     except Exception:
         return None
 
 
-def _print_referential_summary(results: list[dict[str, Any]], frame_selection: str = "recent") -> None:
+def _memory_entry_to_record(entry: ReferentialMemoryEntry) -> dict[str, Any]:
+    return {
+        "question_index": entry.question_index,
+        "question": entry.question,
+        "response": entry.response,
+        "task_type": entry.task_type,
+        "time_stamp": entry.time_stamp,
+        "selected_chunk_ids": entry.selected_chunk_ids,
+        "selected_timestamps": entry.selected_timestamps,
+        "anchor_chunk_ids": entry.anchor_chunk_ids or [],
+        "anchor_timestamps": entry.anchor_timestamps or [],
+        "anchor_scores": entry.anchor_scores or [],
+        "memory_text": entry.memory_text,
+        "anchor_scoring": entry.anchor_scoring,
+        "anchor_scoring_error": entry.anchor_scoring_error,
+    }
+
+
+def _print_referential_summary(
+    results: list[dict[str, Any]],
+    frame_selection: str = "recent",
+    *,
+    answer_grounded_memory: bool = False,
+) -> None:
     summary = compute_summary(results)
     label = "All-Frames" if frame_selection == "all" else "Recent-Window"
+    method = "AnswerGroundedReferentialMemory(recent6)" if answer_grounded_memory else "ReferentialMemory(recent6)"
     print("\n" + "=" * 60)
-    print(f"StreamingBench {label} Results (MiniCPM-V-4.6 + ReferentialMemory(recent6))")
+    print(f"StreamingBench {label} Results (MiniCPM-V-4.6 + {method})")
     print("=" * 60)
     for row in summary["tasks"]:
         print(f"  {row['task_type']}: {row['accuracy']:.2f}% ({row['correct']}/{row['total']})")
@@ -153,6 +184,10 @@ def main() -> None:
     parser.add_argument("--max-samples", type=int, default=0)
     parser.add_argument("--recent-frames-only", "--recent-frames-buffer", dest="recent_frames_only", type=int, default=6)
     parser.add_argument("--reference-frames", type=int, default=2)
+    parser.add_argument("--answer-grounded-memory", action="store_true")
+    parser.add_argument("--memory-anchor-frames", type=int, default=1)
+    parser.add_argument("--memory-clip-model", default=os.environ.get("MINICPM_REF_CLIP_MODEL", "openai/clip-vit-base-patch32"))
+    parser.add_argument("--memory-clip-device", default=os.environ.get("MINICPM_REF_CLIP_DEVICE", ""))
     parser.add_argument("--context-time", type=int, default=-1)
     parser.add_argument("--frame-selection", choices=["recent"], default="recent")
     args = parser.parse_args()
@@ -183,6 +218,10 @@ def main() -> None:
     accelerator.print(
         f"Current window={args.recent_frames_only}, reference_frames={args.reference_frames}, "
         f"fps={args.fps}, chunk_duration={args.chunk_duration}, context_time={args.context_time}"
+    )
+    accelerator.print(
+        f"Answer-grounded anchors={args.answer_grounded_memory}, "
+        f"anchor_frames={args.memory_anchor_frames}, clip_model={args.memory_clip_model}"
     )
     accelerator.print(f"Results: {args.output_dir}")
     accelerator.print("=" * 60 + "\n")
@@ -217,6 +256,18 @@ def main() -> None:
             marker.write(datetime.now().isoformat() + "\n")
     else:
         qa = build_evaluator()
+
+    frame_scorer: AnswerGroundedFrameScorer | None = None
+    if args.answer_grounded_memory:
+        clip_device = args.memory_clip_device.strip() or str(accelerator.device)
+        print(
+            f"[rank {accelerator.process_index}] Loading answer-grounded frame scorer on {clip_device}",
+            flush=True,
+        )
+        frame_scorer = AnswerGroundedFrameScorer(
+            model_name=args.memory_clip_model,
+            device=clip_device,
+        )
 
     with accelerator.split_between_processes(groups) as local_groups:
         local_groups = list(local_groups)
@@ -315,16 +366,12 @@ def main() -> None:
                             task_type=str(question.get("task_type", "")),
                             time_stamp=str(question.get("time_stamp", "")),
                             selection=selection,
+                            options=list(question.get("options", []) or []),
+                            answer_grounded=bool(args.answer_grounded_memory),
+                            frame_scorer=frame_scorer,
+                            anchor_frames=int(args.memory_anchor_frames),
                         )
-                        record["referential_memory_entry"] = {
-                            "question_index": memory_entry.question_index,
-                            "question": memory_entry.question,
-                            "response": memory_entry.response,
-                            "task_type": memory_entry.task_type,
-                            "time_stamp": memory_entry.time_stamp,
-                            "selected_chunk_ids": memory_entry.selected_chunk_ids,
-                            "selected_timestamps": memory_entry.selected_timestamps,
-                        }
+                        record["referential_memory_entry"] = _memory_entry_to_record(memory_entry)
                         memory.append(memory_entry)
                         logger.info(
                             "[rank %d video %d/%d q%d/%d] %s %s -> %s (gt=%s, ref=%s)",
@@ -367,7 +414,11 @@ def main() -> None:
     accelerator.wait_for_everyone()
     if accelerator.is_main_process:
         merged = _merge_rank_outputs(args.output_dir)
-        _print_referential_summary(merged, frame_selection=args.frame_selection)
+        _print_referential_summary(
+            merged,
+            frame_selection=args.frame_selection,
+            answer_grounded_memory=bool(args.answer_grounded_memory),
+        )
         summary = compute_summary(merged)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         save_json(
@@ -384,6 +435,9 @@ def main() -> None:
                     "frame_selection": args.frame_selection,
                     "cache_enabled": False,
                     "referential_memory": True,
+                    "answer_grounded_memory": bool(args.answer_grounded_memory),
+                    "memory_anchor_frames": int(args.memory_anchor_frames),
+                    "memory_clip_model": args.memory_clip_model,
                     "attn_implementation": os.environ.get("ATTN_IMPLEMENTATION", "sdpa"),
                     "downsample_mode": os.environ.get("MINICPM_DOWNSAMPLE_MODE", "16x"),
                     "max_slice_nums": os.environ.get("MINICPM_MAX_SLICE_NUMS", "1"),

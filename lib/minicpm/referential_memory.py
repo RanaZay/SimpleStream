@@ -91,6 +91,12 @@ class ReferentialMemoryEntry:
     time_stamp: str
     selected_chunk_ids: list[int]
     selected_timestamps: list[float]
+    anchor_chunk_ids: list[int] | None = None
+    anchor_timestamps: list[float] | None = None
+    anchor_scores: list[float] | None = None
+    memory_text: str | None = None
+    anchor_scoring: str | None = None
+    anchor_scoring_error: str | None = None
 
 
 @dataclass
@@ -100,6 +106,80 @@ class ReferentialSelection:
     reference_frames: list[Image.Image]
     final_chunk_ids: list[int]
     metadata: dict[str, Any]
+
+
+class AnswerGroundedFrameScorer:
+    """Score answer frames against question+answer text with CLIP cosine similarity."""
+
+    def __init__(self, model_name: str = "openai/clip-vit-base-patch32", device: str | None = None) -> None:
+        import torch
+        from transformers import CLIPModel, CLIPProcessor
+
+        if device is None or str(device).strip().lower() in {"", "auto"}:
+            device = "cuda:0" if torch.cuda.is_available() else "cpu"
+        self.device = str(device)
+        self.model_name = str(model_name)
+        self.processor = CLIPProcessor.from_pretrained(self.model_name)
+        self.model = CLIPModel.from_pretrained(self.model_name).to(self.device)
+        self.model.eval()
+        self._torch = torch
+
+    def score(self, text: str, frames: list[Image.Image]) -> list[float]:
+        if not frames:
+            return []
+        torch = self._torch
+        with torch.inference_mode():
+            inputs = self.processor(
+                text=[text],
+                images=frames,
+                return_tensors="pt",
+                padding=True,
+                truncation=True,
+            )
+            inputs = {key: value.to(self.device) for key, value in inputs.items()}
+            outputs = self.model(**inputs)
+            image_embeds = torch.nn.functional.normalize(outputs.image_embeds.float(), dim=-1)
+            text_embeds = torch.nn.functional.normalize(outputs.text_embeds.float(), dim=-1)
+            scores = image_embeds @ text_embeds[0].unsqueeze(-1)
+        return [float(value) for value in scores.squeeze(-1).detach().cpu().tolist()]
+
+
+def _option_text_for_letter(options: list[Any] | None, letter: str | None) -> str | None:
+    if not options or not letter:
+        return None
+    idx = ord(letter.upper()) - ord("A")
+    if idx < 0 or idx >= len(options):
+        return None
+    text = str(options[idx]).strip()
+    text = re.sub(r"^[A-Da-d]\s*[\).:-]\s*", "", text).strip()
+    return text or None
+
+
+def _response_letter(response: str | None) -> str | None:
+    if not response:
+        return None
+    match = re.search(r"\b([A-D])\b", str(response).upper())
+    return match.group(1) if match else None
+
+
+def build_answer_grounded_memory_text(
+    question_text: str,
+    response: str | None,
+    options: list[Any] | None = None,
+) -> str:
+    letter = _response_letter(response)
+    option_text = _option_text_for_letter(options, letter)
+    answer_text = option_text or str(response or "").strip()
+    if answer_text:
+        return f"{_clean_question_text(question_text)} Answer: {answer_text}"
+    return _clean_question_text(question_text)
+
+
+def _top_answer_grounded_indices(scores: list[float], count: int) -> list[int]:
+    if count <= 0 or not scores:
+        return []
+    ranked = sorted(range(len(scores)), key=lambda index: (-float(scores[index]), index))
+    return sorted(ranked[: min(count, len(ranked))])
 
 
 def _clean_question_text(prompt_or_question: str) -> str:
@@ -319,7 +399,12 @@ def select_referential_frames(
             gate.get("target_question_index"),
         )
         if reference_entry is not None:
-            target_timestamps = _evenly_pick(reference_entry.selected_timestamps, int(reference_frames))
+            anchor_timestamps = list(reference_entry.anchor_timestamps or [])
+            target_timestamps = (
+                _evenly_pick(anchor_timestamps, int(reference_frames))
+                if anchor_timestamps
+                else _evenly_pick(reference_entry.selected_timestamps, int(reference_frames))
+            )
             (
                 decoded_reference_frames,
                 reference_chunk_ids,
@@ -348,11 +433,22 @@ def select_referential_frames(
                 "time_stamp": reference_entry.time_stamp,
                 "stored_selected_chunk_ids": reference_entry.selected_chunk_ids,
                 "stored_selected_timestamps": reference_entry.selected_timestamps,
+                "stored_anchor_chunk_ids": reference_entry.anchor_chunk_ids or [],
+                "stored_anchor_timestamps": reference_entry.anchor_timestamps or [],
+                "stored_anchor_scores": reference_entry.anchor_scores or [],
+                "memory_text": reference_entry.memory_text,
+                "anchor_scoring": reference_entry.anchor_scoring,
+                "anchor_scoring_error": reference_entry.anchor_scoring_error,
             }
             if reference_entry is not None
             else None
         ),
         "reference_candidate_scores": reference_candidate_scores,
+        "reference_anchor_mode": (
+            reference_entry.anchor_scoring
+            if reference_entry is not None and reference_entry.anchor_timestamps
+            else "evenly_sampled_previous_selection"
+        ),
         "reference_frames": len(decoded_reference_frames),
         "reference_chunk_ids": reference_chunk_ids,
         "reference_timestamps": reference_timestamps,
@@ -422,6 +518,12 @@ def query_referential_memory_window(
             time_stamp=str(reference_info.get("time_stamp", "")),
             selected_chunk_ids=[int(value) for value in reference_info.get("stored_selected_chunk_ids", [])],
             selected_timestamps=[float(value) for value in reference_info.get("stored_selected_timestamps", [])],
+            anchor_chunk_ids=[int(value) for value in reference_info.get("stored_anchor_chunk_ids", [])],
+            anchor_timestamps=[float(value) for value in reference_info.get("stored_anchor_timestamps", [])],
+            anchor_scores=[float(value) for value in reference_info.get("stored_anchor_scores", [])],
+            memory_text=reference_info.get("memory_text"),
+            anchor_scoring=reference_info.get("anchor_scoring"),
+            anchor_scoring_error=reference_info.get("anchor_scoring_error"),
         )
         rewritten_prompt = _build_referential_prompt(
             prompt,
@@ -480,13 +582,41 @@ def make_memory_entry(
     task_type: str,
     time_stamp: str,
     selection: ReferentialSelection,
+    options: list[Any] | None = None,
+    answer_grounded: bool = False,
+    frame_scorer: AnswerGroundedFrameScorer | None = None,
+    anchor_frames: int = 1,
 ) -> ReferentialMemoryEntry:
-    return ReferentialMemoryEntry(
+    selected_chunk_ids = [int(value) for value in selection.metadata.get("current_chunk_ids", [])]
+    selected_timestamps = [float(value) for value in selection.metadata.get("current_timestamps", [])]
+    entry = ReferentialMemoryEntry(
         question_index=int(question_index),
         question=str(question_text),
         response=response,
         task_type=str(task_type),
         time_stamp=str(time_stamp),
-        selected_chunk_ids=[int(value) for value in selection.metadata.get("current_chunk_ids", [])],
-        selected_timestamps=[float(value) for value in selection.metadata.get("current_timestamps", [])],
+        selected_chunk_ids=selected_chunk_ids,
+        selected_timestamps=selected_timestamps,
     )
+    if not answer_grounded:
+        return entry
+
+    entry.memory_text = build_answer_grounded_memory_text(question_text, response, options)
+    entry.anchor_scoring = "answer_grounded_clip_cosine"
+    if frame_scorer is None:
+        entry.anchor_scoring_error = "frame_scorer_not_available"
+        return entry
+
+    try:
+        scores = frame_scorer.score(entry.memory_text, selection.current_frames)
+        chosen_indices = _top_answer_grounded_indices(scores, int(anchor_frames))
+        entry.anchor_chunk_ids = [
+            selected_chunk_ids[index] for index in chosen_indices if index < len(selected_chunk_ids)
+        ]
+        entry.anchor_timestamps = [
+            selected_timestamps[index] for index in chosen_indices if index < len(selected_timestamps)
+        ]
+        entry.anchor_scores = [float(scores[index]) for index in chosen_indices if index < len(scores)]
+    except Exception as exc:
+        entry.anchor_scoring_error = str(exc)
+    return entry

@@ -124,6 +124,9 @@ def _memory_entry_from_record(row: dict[str, Any]) -> ReferentialMemoryEntry | N
             anchor_chunk_ids=[int(value) for value in (raw.get("anchor_chunk_ids") or [])],
             anchor_timestamps=[float(value) for value in (raw.get("anchor_timestamps") or [])],
             anchor_scores=[float(value) for value in (raw.get("anchor_scores") or [])],
+            anchor_candidate_chunk_ids=[int(value) for value in (raw.get("anchor_candidate_chunk_ids") or [])],
+            anchor_candidate_timestamps=[float(value) for value in (raw.get("anchor_candidate_timestamps") or [])],
+            anchor_candidate_scores=[float(value) for value in (raw.get("anchor_candidate_scores") or [])],
             memory_text=raw.get("memory_text"),
             anchor_scoring=raw.get("anchor_scoring"),
             anchor_scoring_error=raw.get("anchor_scoring_error"),
@@ -144,6 +147,9 @@ def _memory_entry_to_record(entry: ReferentialMemoryEntry) -> dict[str, Any]:
         "anchor_chunk_ids": entry.anchor_chunk_ids or [],
         "anchor_timestamps": entry.anchor_timestamps or [],
         "anchor_scores": entry.anchor_scores or [],
+        "anchor_candidate_chunk_ids": entry.anchor_candidate_chunk_ids or [],
+        "anchor_candidate_timestamps": entry.anchor_candidate_timestamps or [],
+        "anchor_candidate_scores": entry.anchor_candidate_scores or [],
         "memory_text": entry.memory_text,
         "anchor_scoring": entry.anchor_scoring,
         "anchor_scoring_error": entry.anchor_scoring_error,
@@ -155,10 +161,16 @@ def _print_referential_summary(
     frame_selection: str = "recent",
     *,
     answer_grounded_memory: bool = False,
+    entity_grounded_memory: bool = False,
 ) -> None:
     summary = compute_summary(results)
     label = "All-Frames" if frame_selection == "all" else "Recent-Window"
-    method = "AnswerGroundedReferentialMemory(recent6)" if answer_grounded_memory else "ReferentialMemory(recent6)"
+    if entity_grounded_memory:
+        method = "EntityGroundedReferentialMemory(recent6)"
+    elif answer_grounded_memory:
+        method = "AnswerGroundedReferentialMemory(recent6)"
+    else:
+        method = "ReferentialMemory(recent6)"
     print("\n" + "=" * 60)
     print(f"StreamingBench {label} Results (MiniCPM-V-4.6 + {method})")
     print("=" * 60)
@@ -185,6 +197,7 @@ def main() -> None:
     parser.add_argument("--recent-frames-only", "--recent-frames-buffer", dest="recent_frames_only", type=int, default=6)
     parser.add_argument("--reference-frames", type=int, default=2)
     parser.add_argument("--answer-grounded-memory", action="store_true")
+    parser.add_argument("--entity-grounded-memory", action="store_true")
     parser.add_argument("--memory-anchor-frames", type=int, default=1)
     parser.add_argument("--memory-clip-model", default=os.environ.get("MINICPM_REF_CLIP_MODEL", "openai/clip-vit-base-patch32"))
     parser.add_argument("--memory-clip-device", default=os.environ.get("MINICPM_REF_CLIP_DEVICE", ""))
@@ -221,6 +234,7 @@ def main() -> None:
     )
     accelerator.print(
         f"Answer-grounded anchors={args.answer_grounded_memory}, "
+        f"entity_grounded={args.entity_grounded_memory}, "
         f"anchor_frames={args.memory_anchor_frames}, clip_model={args.memory_clip_model}"
     )
     accelerator.print(f"Results: {args.output_dir}")
@@ -258,10 +272,10 @@ def main() -> None:
         qa = build_evaluator()
 
     frame_scorer: AnswerGroundedFrameScorer | None = None
-    if args.answer_grounded_memory:
+    if args.answer_grounded_memory or args.entity_grounded_memory:
         clip_device = args.memory_clip_device.strip() or str(accelerator.device)
         print(
-            f"[rank {accelerator.process_index}] Loading answer-grounded frame scorer on {clip_device}",
+            f"[rank {accelerator.process_index}] Loading referential frame scorer on {clip_device}",
             flush=True,
         )
         frame_scorer = AnswerGroundedFrameScorer(
@@ -367,9 +381,10 @@ def main() -> None:
                             time_stamp=str(question.get("time_stamp", "")),
                             selection=selection,
                             options=list(question.get("options", []) or []),
-                            answer_grounded=bool(args.answer_grounded_memory),
+                            answer_grounded=bool(args.answer_grounded_memory or args.entity_grounded_memory),
                             frame_scorer=frame_scorer,
                             anchor_frames=int(args.memory_anchor_frames),
+                            anchor_text_mode="entity" if args.entity_grounded_memory else "answer",
                         )
                         record["referential_memory_entry"] = _memory_entry_to_record(memory_entry)
                         memory.append(memory_entry)
@@ -418,6 +433,7 @@ def main() -> None:
             merged,
             frame_selection=args.frame_selection,
             answer_grounded_memory=bool(args.answer_grounded_memory),
+            entity_grounded_memory=bool(args.entity_grounded_memory),
         )
         summary = compute_summary(merged)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -436,6 +452,7 @@ def main() -> None:
                     "cache_enabled": False,
                     "referential_memory": True,
                     "answer_grounded_memory": bool(args.answer_grounded_memory),
+                    "entity_grounded_memory": bool(args.entity_grounded_memory),
                     "memory_anchor_frames": int(args.memory_anchor_frames),
                     "memory_clip_model": args.memory_clip_model,
                     "attn_implementation": os.environ.get("ATTN_IMPLEMENTATION", "sdpa"),

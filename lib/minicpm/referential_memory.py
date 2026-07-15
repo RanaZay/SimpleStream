@@ -94,6 +94,10 @@ class ReferentialMemoryEntry:
     anchor_chunk_ids: list[int] | None = None
     anchor_timestamps: list[float] | None = None
     anchor_scores: list[float] | None = None
+    anchor_frames: list[Image.Image] | None = None
+    anchor_candidate_chunk_ids: list[int] | None = None
+    anchor_candidate_timestamps: list[float] | None = None
+    anchor_candidate_scores: list[float] | None = None
     memory_text: str | None = None
     anchor_scoring: str | None = None
     anchor_scoring_error: str | None = None
@@ -162,17 +166,92 @@ def _response_letter(response: str | None) -> str | None:
     return match.group(1) if match else None
 
 
+def _answer_text_from_response(
+    question_text: str,
+    response: str | None,
+    options: list[Any] | None = None,
+) -> str:
+    del question_text
+    letter = _response_letter(response)
+    option_text = _option_text_for_letter(options, letter)
+    answer_text = option_text or str(response or "").strip()
+    answer_text = re.sub(r"^[A-Da-d]\s*[\).:-]\s*", "", answer_text).strip()
+    answer_text = answer_text.strip(" \t\n\r.;,")
+    return answer_text
+
+
 def build_answer_grounded_memory_text(
     question_text: str,
     response: str | None,
     options: list[Any] | None = None,
 ) -> str:
-    letter = _response_letter(response)
-    option_text = _option_text_for_letter(options, letter)
-    answer_text = option_text or str(response or "").strip()
+    answer_text = _answer_text_from_response(question_text, response, options)
     if answer_text:
         return f"{_clean_question_text(question_text)} Answer: {answer_text}"
     return _clean_question_text(question_text)
+
+
+def build_entity_grounded_memory_text(
+    question_text: str,
+    response: str | None,
+    options: list[Any] | None = None,
+) -> str:
+    """Build a visual entity query for choosing frames to store in memory.
+
+    The normal answer-grounded scorer uses the whole Q/A text. This version
+    tries to make the stored anchor about the referred visual entity itself,
+    e.g. "soccer player wearing jersey number 25", which is better suited for
+    later questions such as "the player mentioned in the previous question".
+    """
+
+    question = _clean_question_text(question_text)
+    answer_text = _answer_text_from_response(question, response, options)
+    if not answer_text:
+        return question
+
+    q = question.lower()
+    answer = answer_text.strip()
+    answer_lower = answer.lower()
+    numeric_answer = bool(re.fullmatch(r"\d+", answer))
+
+    if any(word in q for word in ("jersey", "player", "ball", "pass", "score", "goal")):
+        if numeric_answer:
+            return (
+                f"soccer player wearing jersey number {answer}; "
+                f"player number {answer} on the playing field; "
+                f"match broadcast frame where player {answer} is holding or passing the ball"
+            )
+        return (
+            f"soccer player or sports entity described as {answer}; "
+            f"match broadcast frame with visual evidence for {answer}"
+        )
+
+    if any(word in q for word in ("wearing", "outfit", "clothes", "shirt", "jacket", "person", "man", "woman")):
+        return f"person wearing or described as {answer}; referenced person in the scene"
+
+    if any(word in q for word in ("color", "colour")):
+        return f"object or person with {answer_lower} color; visual attribute {answer}"
+
+    if any(word in q for word in ("text", "word", "sign", "number", "letter")):
+        return f"visible text or number reading {answer}; text-rich visual evidence"
+
+    if any(word in q for word in ("object", "item", "thing", "holding")):
+        return f"object or item described as {answer}; referenced object in the scene"
+
+    return f"visual entity corresponding to answer {answer}; {question}"
+
+
+def build_anchor_memory_text(
+    question_text: str,
+    response: str | None,
+    options: list[Any] | None = None,
+    *,
+    anchor_text_mode: str = "answer",
+) -> tuple[str, str]:
+    mode = str(anchor_text_mode or "answer").strip().lower().replace("-", "_")
+    if mode in {"entity", "entity_grounded"}:
+        return build_entity_grounded_memory_text(question_text, response, options), "entity_grounded"
+    return build_answer_grounded_memory_text(question_text, response, options), "answer_grounded"
 
 
 def _top_answer_grounded_indices(scores: list[float], count: int) -> list[int]:
@@ -399,23 +478,33 @@ def select_referential_frames(
             gate.get("target_question_index"),
         )
         if reference_entry is not None:
-            anchor_timestamps = list(reference_entry.anchor_timestamps or [])
-            target_timestamps = (
-                _evenly_pick(anchor_timestamps, int(reference_frames))
-                if anchor_timestamps
-                else _evenly_pick(reference_entry.selected_timestamps, int(reference_frames))
-            )
-            (
-                decoded_reference_frames,
-                reference_chunk_ids,
-                reference_timestamps,
-                reference_backends,
-            ) = _decode_reference_frames(
-                video_path,
-                target_timestamps,
-                chunk_duration=chunk_duration,
-                fps=fps,
-            )
+            stored_anchor_frames = list(reference_entry.anchor_frames or [])
+            stored_anchor_chunk_ids = list(reference_entry.anchor_chunk_ids or [])
+            stored_anchor_timestamps = list(reference_entry.anchor_timestamps or [])
+            if stored_anchor_frames:
+                count = min(int(reference_frames), len(stored_anchor_frames))
+                decoded_reference_frames = [frame.copy() for frame in stored_anchor_frames[:count]]
+                reference_chunk_ids = [int(value) for value in stored_anchor_chunk_ids[:count]]
+                reference_timestamps = [float(value) for value in stored_anchor_timestamps[:count]]
+                reference_backends = ["stored_answer_grounded_anchor"] * count
+            else:
+                anchor_timestamps = stored_anchor_timestamps
+                target_timestamps = (
+                    _evenly_pick(anchor_timestamps, int(reference_frames))
+                    if anchor_timestamps
+                    else _evenly_pick(reference_entry.selected_timestamps, int(reference_frames))
+                )
+                (
+                    decoded_reference_frames,
+                    reference_chunk_ids,
+                    reference_timestamps,
+                    reference_backends,
+                ) = _decode_reference_frames(
+                    video_path,
+                    target_timestamps,
+                    chunk_duration=chunk_duration,
+                    fps=fps,
+                )
 
     all_frames = [*decoded_reference_frames, *current_frames]
     final_chunk_ids = [*reference_chunk_ids, *current_chunk_ids]
@@ -436,6 +525,9 @@ def select_referential_frames(
                 "stored_anchor_chunk_ids": reference_entry.anchor_chunk_ids or [],
                 "stored_anchor_timestamps": reference_entry.anchor_timestamps or [],
                 "stored_anchor_scores": reference_entry.anchor_scores or [],
+                "stored_anchor_candidate_chunk_ids": reference_entry.anchor_candidate_chunk_ids or [],
+                "stored_anchor_candidate_timestamps": reference_entry.anchor_candidate_timestamps or [],
+                "stored_anchor_candidate_scores": reference_entry.anchor_candidate_scores or [],
                 "memory_text": reference_entry.memory_text,
                 "anchor_scoring": reference_entry.anchor_scoring,
                 "anchor_scoring_error": reference_entry.anchor_scoring_error,
@@ -518,9 +610,18 @@ def query_referential_memory_window(
             time_stamp=str(reference_info.get("time_stamp", "")),
             selected_chunk_ids=[int(value) for value in reference_info.get("stored_selected_chunk_ids", [])],
             selected_timestamps=[float(value) for value in reference_info.get("stored_selected_timestamps", [])],
-            anchor_chunk_ids=[int(value) for value in reference_info.get("stored_anchor_chunk_ids", [])],
-            anchor_timestamps=[float(value) for value in reference_info.get("stored_anchor_timestamps", [])],
-            anchor_scores=[float(value) for value in reference_info.get("stored_anchor_scores", [])],
+            anchor_chunk_ids=[int(value) for value in (reference_info.get("stored_anchor_chunk_ids") or [])],
+            anchor_timestamps=[float(value) for value in (reference_info.get("stored_anchor_timestamps") or [])],
+            anchor_scores=[float(value) for value in (reference_info.get("stored_anchor_scores") or [])],
+            anchor_candidate_chunk_ids=[
+                int(value) for value in (reference_info.get("stored_anchor_candidate_chunk_ids") or [])
+            ],
+            anchor_candidate_timestamps=[
+                float(value) for value in (reference_info.get("stored_anchor_candidate_timestamps") or [])
+            ],
+            anchor_candidate_scores=[
+                float(value) for value in (reference_info.get("stored_anchor_candidate_scores") or [])
+            ],
             memory_text=reference_info.get("memory_text"),
             anchor_scoring=reference_info.get("anchor_scoring"),
             anchor_scoring_error=reference_info.get("anchor_scoring_error"),
@@ -586,6 +687,7 @@ def make_memory_entry(
     answer_grounded: bool = False,
     frame_scorer: AnswerGroundedFrameScorer | None = None,
     anchor_frames: int = 1,
+    anchor_text_mode: str = "answer",
 ) -> ReferentialMemoryEntry:
     selected_chunk_ids = [int(value) for value in selection.metadata.get("current_chunk_ids", [])]
     selected_timestamps = [float(value) for value in selection.metadata.get("current_timestamps", [])]
@@ -601,8 +703,13 @@ def make_memory_entry(
     if not answer_grounded:
         return entry
 
-    entry.memory_text = build_answer_grounded_memory_text(question_text, response, options)
-    entry.anchor_scoring = "answer_grounded_clip_cosine"
+    entry.memory_text, normalized_anchor_mode = build_anchor_memory_text(
+        question_text,
+        response,
+        options,
+        anchor_text_mode=anchor_text_mode,
+    )
+    entry.anchor_scoring = f"{normalized_anchor_mode}_clip_cosine"
     if frame_scorer is None:
         entry.anchor_scoring_error = "frame_scorer_not_available"
         return entry
@@ -610,6 +717,9 @@ def make_memory_entry(
     try:
         scores = frame_scorer.score(entry.memory_text, selection.current_frames)
         chosen_indices = _top_answer_grounded_indices(scores, int(anchor_frames))
+        entry.anchor_candidate_chunk_ids = selected_chunk_ids[: len(scores)]
+        entry.anchor_candidate_timestamps = selected_timestamps[: len(scores)]
+        entry.anchor_candidate_scores = [float(score) for score in scores]
         entry.anchor_chunk_ids = [
             selected_chunk_ids[index] for index in chosen_indices if index < len(selected_chunk_ids)
         ]
@@ -617,6 +727,11 @@ def make_memory_entry(
             selected_timestamps[index] for index in chosen_indices if index < len(selected_timestamps)
         ]
         entry.anchor_scores = [float(scores[index]) for index in chosen_indices if index < len(scores)]
+        entry.anchor_frames = [
+            selection.current_frames[index].copy()
+            for index in chosen_indices
+            if index < len(selection.current_frames)
+        ]
     except Exception as exc:
         entry.anchor_scoring_error = str(exc)
     return entry

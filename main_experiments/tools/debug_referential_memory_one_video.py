@@ -124,37 +124,118 @@ def _seconds_to_timestamp(seconds: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d}"
 
 
+def _wrap_text(text: str, width: int) -> list[str]:
+    words = str(text).split()
+    lines: list[str] = []
+    current: list[str] = []
+    for word in words:
+        trial = " ".join([*current, word])
+        if len(trial) <= width:
+            current.append(word)
+        else:
+            if current:
+                lines.append(" ".join(current))
+            current = [word]
+    if current:
+        lines.append(" ".join(current))
+    return lines or [""]
+
+
+def _load_font(size: int, *, bold: bool = False) -> ImageFont.ImageFont:
+    names = (
+        ["DejaVuSans-Bold.ttf", "Arial Bold.ttf", "Arial.ttf"]
+        if bold
+        else ["DejaVuSans.ttf", "Arial.ttf"]
+    )
+    paths = [
+        *(f"/usr/share/fonts/truetype/dejavu/{name}" for name in names),
+        *(f"/usr/share/fonts/truetype/msttcorefonts/{name}" for name in names),
+    ]
+    for path in paths:
+        try:
+            return ImageFont.truetype(path, size=size)
+        except OSError:
+            pass
+    return ImageFont.load_default()
+
+
 def _make_sheet(
     frames: list[Image.Image],
     labels: list[str],
     out_path: Path,
     *,
-    thumb_width: int = 256,
-    thumb_height: int = 160,
+    title_lines: list[str] | None = None,
+    thumb_width: int = 320,
+    thumb_height: int = 200,
 ) -> None:
     if not frames:
         return
     cols = min(4, len(frames))
     rows = int(math.ceil(len(frames) / cols))
     pad = 12
-    label_h = 50
+    title_lines = title_lines or []
+    title_font = _load_font(18, bold=True)
+    body_font = _load_font(14)
+    small_font = _load_font(13)
+    title_step = 24
+    label_step = 18
+    title_h = 34 + title_step * len(title_lines) if title_lines else 0
+    label_h = 168
     width = cols * thumb_width + (cols + 1) * pad
-    height = rows * (thumb_height + label_h) + (rows + 1) * pad
-    sheet = Image.new("RGB", (width, height), "white")
+    height = title_h + rows * (thumb_height + label_h) + (rows + 1) * pad
+    sheet = Image.new("RGB", (width, height), (248, 250, 252))
     draw = ImageDraw.Draw(sheet)
-    font = ImageFont.load_default()
+
+    y_offset = pad
+    if title_lines:
+        draw.rounded_rectangle(
+            [pad, pad, width - pad, pad + title_h - 10],
+            radius=10,
+            fill=(255, 255, 255),
+            outline=(203, 213, 225),
+            width=1,
+        )
+    for line_index, line in enumerate(title_lines):
+        fill = (21, 128, 61) if "Correct: True" in line else (15, 23, 42)
+        if "Correct: False" in line:
+            fill = (185, 28, 28)
+        font = title_font if line_index == 0 else body_font
+        draw.text((pad + 12, y_offset + 10 + line_index * title_step), line, fill=fill, font=font)
+    y_offset += title_h
 
     for index, frame in enumerate(frames):
         row, col = divmod(index, cols)
         x = pad + col * (thumb_width + pad)
-        y = pad + row * (thumb_height + label_h + pad)
+        y = y_offset + row * (thumb_height + label_h + pad)
+        label_lines = str(labels[index]).split("\n")
+        label_text = " ".join(label_lines).lower()
+        if "anchor" in label_text:
+            border = (22, 163, 74)
+            fill_label = (236, 253, 245)
+        elif "reference" in label_text:
+            border = (37, 99, 235)
+            fill_label = (239, 246, 255)
+        else:
+            border = (71, 85, 105)
+            fill_label = (255, 255, 255)
         image = frame.copy()
         image.thumbnail((thumb_width, thumb_height))
-        bg = Image.new("RGB", (thumb_width, thumb_height), (245, 247, 250))
+        bg = Image.new("RGB", (thumb_width, thumb_height), (226, 232, 240))
         bg.paste(image, ((thumb_width - image.width) // 2, (thumb_height - image.height) // 2))
         sheet.paste(bg, (x, y))
-        draw.rectangle([x, y, x + thumb_width, y + thumb_height], outline=(64, 79, 99), width=1)
-        draw.text((x, y + thumb_height + 6), labels[index], fill=(15, 23, 42), font=font)
+        draw.rectangle([x, y, x + thumb_width, y + thumb_height], outline=border, width=3)
+        label_y = y + thumb_height + 6
+        draw.rounded_rectangle(
+            [x, label_y, x + thumb_width, label_y + label_h - 8],
+            radius=8,
+            fill=fill_label,
+            outline=(203, 213, 225),
+            width=1,
+        )
+        for line_index, line in enumerate(label_lines[:9]):
+            fill = (21, 128, 61) if "ANCHOR" in line else (15, 23, 42)
+            font = body_font if line_index == 0 else small_font
+            draw.text((x + 8, label_y + 8 + line_index * label_step), line, fill=fill, font=font)
     sheet.save(out_path)
 
 
@@ -170,6 +251,9 @@ def _memory_entry_to_json(entry: ReferentialMemoryEntry) -> dict[str, Any]:
         "anchor_chunk_ids": entry.anchor_chunk_ids or [],
         "anchor_timestamps": entry.anchor_timestamps or [],
         "anchor_scores": entry.anchor_scores or [],
+        "anchor_candidate_chunk_ids": entry.anchor_candidate_chunk_ids or [],
+        "anchor_candidate_timestamps": entry.anchor_candidate_timestamps or [],
+        "anchor_candidate_scores": entry.anchor_candidate_scores or [],
         "memory_text": entry.memory_text,
         "anchor_scoring": entry.anchor_scoring,
         "anchor_scoring_error": entry.anchor_scoring_error,
@@ -222,11 +306,14 @@ def _write_html(
 
         reference_question_block = ""
         if isinstance(reference_question, dict):
+            q_number = int(reference_question.get("question_index", -1)) + 1
             reference_question_block = f"""
-  <p><b>Referenced question:</b> q{html.escape(str(reference_question.get('question_index')))}
+  <p><b>Referenced question:</b> Q{html.escape(str(q_number))}
      at {html.escape(str(reference_question.get('time_stamp')))}:
      {html.escape(str(reference_question.get('question')))}</p>
   <p><b>Referenced answer:</b> {html.escape(str(reference_question.get('response')))}</p>
+  <p><b>Memory text used for anchor scoring:</b>
+     {html.escape(str(reference_question.get('memory_text') or 'N/A'))}</p>
 """
 
         sections.append(
@@ -321,16 +408,97 @@ def _write_html(
     )
 
 
-def _labels_from_metadata(meta: dict[str, Any]) -> list[str]:
+def _labels_from_metadata(
+    meta: dict[str, Any],
+    *,
+    memory_entry: ReferentialMemoryEntry | None = None,
+) -> list[str]:
     reference_ids = list(meta.get("reference_chunk_ids", []))
     current_ids = list(meta.get("current_chunk_ids", []))
     timestamps = [float(ts) for ts in meta.get("selected_timestamps", [])]
+    reference_question = meta.get("reference_question") or {}
+    source_question = str(reference_question.get("question") or "")
+    source_response = str(reference_question.get("response") or "")
+    source_q_number = None
+    if "question_index" in reference_question:
+        try:
+            source_q_number = int(reference_question.get("question_index")) + 1
+        except Exception:
+            source_q_number = reference_question.get("question_index")
+    ref_anchor_ids = list(reference_question.get("stored_anchor_chunk_ids", []) or [])
+    ref_anchor_timestamps = list(reference_question.get("stored_anchor_timestamps", []) or [])
+    ref_anchor_scores = list(reference_question.get("stored_anchor_scores", []) or [])
+    current_scores = list(memory_entry.anchor_candidate_scores or []) if memory_entry is not None else []
+    current_anchor_pairs = set()
+    if memory_entry is not None:
+        for chunk_id, timestamp in zip(memory_entry.anchor_chunk_ids or [], memory_entry.anchor_timestamps or []):
+            current_anchor_pairs.add((int(chunk_id), round(float(timestamp), 3)))
     labels: list[str] = []
     for index, chunk_id in enumerate([*reference_ids, *current_ids]):
         role = "reference" if index < len(reference_ids) else "current"
         ts_text = _seconds_to_timestamp(timestamps[index]) if index < len(timestamps) else "unknown"
-        labels.append(f"{index + 1}. {role} | chunk {chunk_id} | {ts_text}")
+        lines = [f"{index + 1}. {role}", f"chunk {chunk_id} | {ts_text}"]
+        if role == "reference":
+            if source_q_number is not None:
+                lines.append(f"FROM Q{source_q_number}")
+            if source_response:
+                lines.append(f"prev answer: {source_response[:46]}")
+            if source_question:
+                question_hint = source_question[:54] + ("..." if len(source_question) > 54 else "")
+                lines.append(f"source: {question_hint}")
+            if index < len(ref_anchor_ids):
+                anchor_id = int(ref_anchor_ids[index])
+                anchor_score = (
+                    float(ref_anchor_scores[index])
+                    if index < len(ref_anchor_scores)
+                    else None
+                )
+                anchor_ts = (
+                    _seconds_to_timestamp(float(ref_anchor_timestamps[index]))
+                    if index < len(ref_anchor_timestamps)
+                    else "unknown"
+                )
+                lines.append(f"REF ANCHOR chunk {anchor_id}")
+                lines.append(f"stored time {anchor_ts}")
+                if anchor_score is not None:
+                    lines.append(f"anchor score={anchor_score:.3f}")
+        else:
+            current_index = index - len(reference_ids)
+            if current_index < len(current_scores):
+                score = float(current_scores[current_index])
+                timestamp = round(float(timestamps[index]), 3) if index < len(timestamps) else None
+                is_anchor = timestamp is not None and (int(chunk_id), timestamp) in current_anchor_pairs
+                lines.append(("ANCHOR " if is_anchor else "") + f"score={score:.3f}")
+        labels.append("\n".join(lines))
     return labels
+
+
+def _sheet_title_lines(row: dict[str, Any]) -> list[str]:
+    lines = [
+        f"Q{row['index']} | {row['task_type']} | t={row['time_stamp']} | Correct: {row['correct']}",
+        f"GT: {row['answer_gt']} | Pred: {row.get('pred')} | Response: {row.get('response')}",
+    ]
+    for wrapped in _wrap_text(f"Question: {row['question']}", 118)[:3]:
+        lines.append(wrapped)
+    ref = row.get("referential_memory") or {}
+    reference_question = ref.get("reference_question")
+    if isinstance(reference_question, dict):
+        try:
+            q_number = int(reference_question.get("question_index", -1)) + 1
+        except Exception:
+            q_number = reference_question.get("question_index")
+        source = str(reference_question.get("question") or "")
+        response = str(reference_question.get("response") or "")
+        for wrapped in _wrap_text(f"Uses memory from Q{q_number}: {source}", 118)[:2]:
+            lines.append(wrapped)
+        if response:
+            lines.append(f"Previous answer: {response}")
+    stored = row.get("stored_memory_entry") or {}
+    memory_text = stored.get("memory_text")
+    if memory_text:
+        for wrapped in _wrap_text(f"Stored after this answer: {memory_text}", 118)[:2]:
+            lines.append(wrapped)
+    return lines
 
 
 def main() -> None:
@@ -366,6 +534,7 @@ def main() -> None:
     parser.add_argument("--fps", type=float, default=1.0)
     parser.add_argument("--context-time", type=float, default=-1.0)
     parser.add_argument("--answer-grounded-memory", action="store_true")
+    parser.add_argument("--entity-grounded-memory", action="store_true")
     parser.add_argument("--memory-anchor-frames", type=int, default=1)
     parser.add_argument("--memory-clip-model", default=os.environ.get("MINICPM_REF_CLIP_MODEL", "openai/clip-vit-base-patch32"))
     parser.add_argument("--memory-clip-device", default=os.environ.get("MINICPM_REF_CLIP_DEVICE", ""))
@@ -374,11 +543,12 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.out_dir is None:
-        debug_name = (
-            "answer_grounded_referential_memory_model_debug"
-            if args.answer_grounded_memory
-            else "referential_memory_model_debug"
-        )
+        if args.entity_grounded_memory:
+            debug_name = "entity_grounded_referential_memory_model_debug"
+        elif args.answer_grounded_memory:
+            debug_name = "answer_grounded_referential_memory_model_debug"
+        else:
+            debug_name = "referential_memory_model_debug"
         args.out_dir = Path("reports/streamingbench_real_sqa_sample_1") / debug_name
 
     if not args.video_path.exists():
@@ -403,7 +573,7 @@ def main() -> None:
         attn_implementation=args.attn_implementation,
     )
     frame_scorer = None
-    if args.answer_grounded_memory:
+    if args.answer_grounded_memory or args.entity_grounded_memory:
         frame_scorer = AnswerGroundedFrameScorer(
             model_name=args.memory_clip_model,
             device=args.memory_clip_device.strip() or args.device,
@@ -479,9 +649,10 @@ def main() -> None:
                 time_stamp=str(question.get("time_stamp", "")),
                 selection=selection,
                 options=list(question.get("options", []) or []),
-                answer_grounded=bool(args.answer_grounded_memory),
+                answer_grounded=bool(args.answer_grounded_memory or args.entity_grounded_memory),
                 frame_scorer=frame_scorer,
                 anchor_frames=int(args.memory_anchor_frames),
+                anchor_text_mode="entity" if args.entity_grounded_memory else "answer",
             )
             memory.append(memory_entry)
 
@@ -489,8 +660,6 @@ def main() -> None:
                 f"{index + 1:02d}_{question.get('task_type', 'debug')}_{question.get('question', '')}"
             ) + ".jpg"
             sheet_path = frames_dir / sheet_name
-            _make_sheet(selection.frames, _labels_from_metadata(metadata), sheet_path)
-
             row = {
                 "index": index + 1,
                 "question_id": question.get("question_id"),
@@ -512,6 +681,12 @@ def main() -> None:
                 "baseline": baseline_record,
                 "sheet_rel": f"selected_frames/{sheet_name}",
             }
+            _make_sheet(
+                selection.frames,
+                _labels_from_metadata(metadata, memory_entry=memory_entry),
+                sheet_path,
+                title_lines=_sheet_title_lines(row),
+            )
             rows.append(row)
             handle.write(json.dumps(row, ensure_ascii=False) + "\n")
             handle.flush()

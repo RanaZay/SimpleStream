@@ -16,6 +16,10 @@ TimeChat-Online style token dropping is grouped under `timechat/`.
   OQM.
 - `minicpm/timechat.py`: MiniCPM-V 4.6 wrapper with TimeChat-Online
   feature-level Differential Token Drop.
+- `minicpm/adaptive.py`: SimpleStream recent-window variants with adaptive
+  windows and visual memory anchors.
+- `minicpm/story_memory.py`: text-only story memory over older streaming
+  frames plus recent MiniCPM visual frames for QA.
 
 ## StreamingTOM Components
 

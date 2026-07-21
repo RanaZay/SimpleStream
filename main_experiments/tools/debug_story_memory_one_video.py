@@ -43,13 +43,15 @@ def _normalise_options(value: Any) -> list[str]:
     return []
 
 
-def _load_questions(path: Path, max_questions: int) -> list[dict[str, Any]]:
+def _load_questions(path: Path, max_questions: int, question_id_prefix: str | None) -> list[dict[str, Any]]:
     with path.open(newline="", encoding="utf-8") as handle:
         rows = [dict(row) for row in csv.DictReader(handle)]
     questions: list[dict[str, Any]] = []
     for index, row in enumerate(rows):
         item = dict(row)
         item.setdefault("question_id", item.get("id", f"debug_{index}"))
+        if question_id_prefix and not str(item.get("question_id", "")).startswith(question_id_prefix):
+            continue
         item.setdefault("task_type", item.get("task", "Debug"))
         item.setdefault("time_stamp", item.get("timestamp", "00:00:00"))
         item["options"] = _normalise_options(item.get("options", []))
@@ -225,6 +227,11 @@ def main() -> None:
     parser.add_argument("--device", default="auto")
     parser.add_argument("--attn-implementation", default=os.environ.get("ATTN_IMPLEMENTATION", "sdpa"))
     parser.add_argument("--max-questions", type=int, default=3)
+    parser.add_argument(
+        "--question-id-prefix",
+        default="Sequential_Question_Answering_sample_1_",
+        help="Only visualize questions whose question_id starts with this prefix. Use an empty string to disable.",
+    )
     parser.add_argument("--recent-frames", type=int, default=6)
     parser.add_argument("--chunk-duration", type=float, default=1.0)
     parser.add_argument("--fps", type=float, default=1.0)
@@ -253,7 +260,10 @@ def main() -> None:
         max_new_tokens=256,
         attn_implementation=args.attn_implementation,
     )
-    questions = _load_questions(args.questions_path, args.max_questions)
+    question_id_prefix = args.question_id_prefix or None
+    questions = _load_questions(args.questions_path, args.max_questions, question_id_prefix)
+    if not questions:
+        raise ValueError(f"No questions matched {args.questions_path} with prefix={question_id_prefix!r}")
 
     rows: list[dict[str, Any]] = []
     jsonl_path = args.out_dir / "story_memory_debug_records.jsonl"

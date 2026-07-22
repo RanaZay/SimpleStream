@@ -537,6 +537,14 @@ class RecentWindowQAModel:
     ) -> str:
         effective_downsample_mode = downsample_mode or self.downsample_mode
         self._last_downsample_mode = effective_downsample_mode
+        if "pad_token_id" not in generate_kwargs:
+            pad_token_id = getattr(getattr(self.model, "generation_config", None), "pad_token_id", None)
+            if pad_token_id is None:
+                pad_token_id = getattr(getattr(self.processor, "tokenizer", None), "pad_token_id", None)
+            if pad_token_id is None:
+                pad_token_id = getattr(getattr(self.processor, "tokenizer", None), "eos_token_id", None)
+            if pad_token_id is not None:
+                generate_kwargs["pad_token_id"] = pad_token_id
         t0 = time.perf_counter()
         streamer = _GeneratedTokenTTFTStreamer(t0, prompt_length=prompt_length)
         with self._profile_model_generate_components():
@@ -599,15 +607,15 @@ class RecentWindowQAModel:
             inputs = self.processor.apply_chat_template(
                 messages,
                 **template_kwargs,
-                **processor_kwargs,
+                processor_kwargs=processor_kwargs,
             )
         except TypeError:
-            # Some processor versions route MiniCPM image/video options through
-            # this nested argument instead of accepting them directly.
+            # Older processor versions accepted MiniCPM image/video options
+            # directly instead of through the nested processor_kwargs argument.
             inputs = self.processor.apply_chat_template(
                 messages,
                 **template_kwargs,
-                processor_kwargs=processor_kwargs,
+                **processor_kwargs,
             )
         inputs = inputs.to(self.model.device)
         self._last_preprocess_seconds = time.perf_counter() - preprocess_t0

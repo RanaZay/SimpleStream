@@ -223,13 +223,13 @@ class CTRMiniCPMQAModel(_MiniCPMRecentWindowQAModel):
             inputs = self.processor.apply_chat_template(
                 messages,
                 **template_kwargs,
-                **processor_kwargs,
+                processor_kwargs=processor_kwargs,
             )
         except TypeError:
             inputs = self.processor.apply_chat_template(
                 messages,
                 **template_kwargs,
-                processor_kwargs=processor_kwargs,
+                **processor_kwargs,
             )
         self._last_preprocess_seconds = time.perf_counter() - preprocess_t0
 

@@ -20,6 +20,9 @@ TimeChat-Online style token dropping is grouped under `timechat/`.
   windows and visual memory anchors.
 - `minicpm/story_memory.py`: text-only story memory over older streaming
   frames plus recent MiniCPM visual frames for QA.
+- `minicpm/recent_description.py`: Proposal 2 wrapper that keeps the
+  SimpleStream recent-window visual frames and appends generated text
+  descriptions for those same recent frames.
 
 ## StreamingTOM Components
 

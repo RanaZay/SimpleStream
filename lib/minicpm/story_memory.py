@@ -29,6 +29,7 @@ class StoryMemoryConfig:
     duplicate_jaccard_threshold: float = 0.82
     describe_stride: int = 1
     full_context: bool = True
+    prompt_version: str = "v2_evidence"
 
     @classmethod
     def from_env(cls) -> "StoryMemoryConfig":
@@ -47,6 +48,8 @@ class StoryMemoryConfig:
             describe_stride=max(1, int(os.environ.get("MINICPM_STORY_DESCRIBE_STRIDE", "1"))),
             full_context=os.environ.get("MINICPM_STORY_FULL_CONTEXT", "1").strip().lower()
             in {"1", "true", "yes", "on"},
+            prompt_version=os.environ.get("MINICPM_STORY_PROMPT_VERSION", "v2_evidence").strip()
+            or "v2_evidence",
         )
 
 
@@ -80,8 +83,9 @@ def _clean_description(text: str) -> str:
     if not text:
         return "no salient change"
     words = text.split()
-    if len(words) > 18:
-        text = " ".join(words[:18])
+    max_words = max(12, int(os.environ.get("MINICPM_STORY_NOTE_MAX_WORDS", "36")))
+    if len(words) > max_words:
+        text = " ".join(words[:max_words])
     return text
 
 
@@ -137,16 +141,27 @@ class StoryMemoryQAModel(RecentWindowQAModel):
             return [], 0.0
 
         prompt = (
-            "You are building compact memory for streaming video question answering.\n"
-            "For each image in order, write exactly one short factual note.\n"
-            "Focus only on visible evidence: people, objects, actions, spatial relations, "
-            "colors, text/numbers, counts, and important scene changes.\n"
-            "Do not answer any question. Do not speculate. Each note must be <= 12 words.\n"
-            "If an image repeats the previous scene, still mention the key visible state.\n"
+            "You are writing compact visual memory for a streaming-video QA system.\n"
+            "For each image, write exactly one evidence note that preserves facts useful for future questions.\n"
+            "Each note should be one concise sentence, about 20-35 words.\n\n"
+            "Include visible evidence when present:\n"
+            "- people: position, clothing, jersey/ID number, role, and who they interact with\n"
+            "- actions/events: what is happening now and what changed from the previous note\n"
+            "- objects/text: object names, colors, counts, written text, numbers, signs, screens\n"
+            "- spatial relations: left/right/center, near/far, behind/in front, held by, passed to\n\n"
+            "Rules:\n"
+            "- Do not answer any benchmark question.\n"
+            "- Do not invent hidden causes, identities, or text. Use 'unclear' if uncertain.\n"
+            "- If the scene repeats, restate the stable state plus any small change.\n"
+            "- Keep names generic unless a visible label/number identifies them.\n"
             f"Return exactly {len(frames)} numbered lines, one line per image."
         )
         if previous_note:
-            prompt += f"\nPrevious memory note: {previous_note}"
+            prompt += (
+                "\n\nPrevious memory state, for continuity only:\n"
+                f"{previous_note}\n"
+                "Carry forward only persistent visible entities or actions; do not add unseen details."
+            )
 
         old_max_new_tokens = self.max_new_tokens
         self.max_new_tokens = self.story_config.description_max_new_tokens
@@ -277,12 +292,15 @@ class StoryMemoryQAModel(RecentWindowQAModel):
         prompt = (
             "You are answering a streaming-video multiple-choice question.\n"
             "Inputs:\n"
-            "1. STORY MEMORY is compact text-only memory from earlier frames.\n"
-            "2. RECENT FRAMES are the visual evidence for the current moment.\n"
-            "3. RECENT FRAME NOTES summarize the recent visual frames.\n\n"
-            "Use STORY MEMORY for cumulative, previous, before/after, count, and reference questions.\n"
-            "Use RECENT FRAMES first for right-now/current visual details.\n"
-            "If text memory and recent frames conflict for a present question, trust the recent frames.\n\n"
+            "1. STORY MEMORY is text-only evidence from earlier frames. It may contain useful history but can be incomplete.\n"
+            "2. RECENT FRAMES are the primary visual evidence for the current moment.\n"
+            "3. RECENT FRAME NOTES are auxiliary summaries of those recent frames.\n\n"
+            "Decision policy:\n"
+            "- For current/right-now/present visual questions, trust RECENT FRAMES first.\n"
+            "- For previous/earlier/first/before/after/count/reference questions, use STORY MEMORY to recover older context.\n"
+            "- Use RECENT FRAME NOTES only to clarify the recent images, not to replace the images.\n"
+            "- If text memory conflicts with the visible recent frames for a current fact, prefer the recent frames.\n"
+            "- Answer using the requested option/format from the question. Do not explain unless asked.\n\n"
             "STORY MEMORY BEFORE RECENT FRAMES:\n"
             f"{older_text}\n\n"
             "RECENT FRAME NOTES:\n"
@@ -306,7 +324,8 @@ class StoryMemoryQAModel(RecentWindowQAModel):
         older_text = "\n".join(reversed(trimmed_lines)) if trimmed_lines else "(trimmed)"
         return (
             "You are answering a streaming-video multiple-choice question.\n"
-            "Use STORY MEMORY for older events and RECENT FRAMES for present details.\n\n"
+            "Use STORY MEMORY for older events and RECENT FRAMES for present visual details.\n"
+            "If they conflict on a current fact, trust RECENT FRAMES. Answer in the requested format.\n\n"
             "STORY MEMORY BEFORE RECENT FRAMES:\n"
             f"{older_text}\n\n"
             "RECENT FRAME NOTES:\n"
@@ -400,6 +419,7 @@ def query_recent_window(
         "max_items": qa.story_config.max_items,
         "describe_stride": qa.story_config.describe_stride,
         "full_context": qa.story_config.full_context,
+        "prompt_version": qa.story_config.prompt_version,
         "older_items_used": len(older_entries),
         "recent_items_used": len(recent_entries),
         "prompt_chars": len(story_prompt),

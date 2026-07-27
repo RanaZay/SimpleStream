@@ -5,7 +5,7 @@
 #SBATCH --cpus-per-task=96
 #SBATCH --gres=gpu:8
 #SBATCH --mem=512G
-#SBATCH --time=8:00:00
+#SBATCH --time=24:00:00
 #SBATCH --qos=skqos
 #SBATCH --partition=faculty
 #SBATCH --output=/vast/users/salman.khan/SimpleStream/logs/%x-%j.out

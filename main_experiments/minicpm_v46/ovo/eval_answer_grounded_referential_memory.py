@@ -48,7 +48,8 @@ from main_experiments.qwen.evals.eval_qwen3vl_ovo import (
     write_done_marker,
 )
 
-MODEL_LABEL = "MiniCPM-V-4.6 + AnswerGroundedReferentialMemory(recent6)"
+ANSWER_GROUNDED_MODEL_LABEL = "MiniCPM-V-4.6 + AnswerGroundedReferentialMemory(recent6)"
+BASIC_MODEL_LABEL = "MiniCPM-V-4.6 + ReferentialMemory(recent6)"
 
 
 def _memory_entry_to_record(entry: ReferentialMemoryEntry) -> dict[str, Any]:
@@ -97,6 +98,7 @@ def evaluate_ovo_backward_realtime_referential(
     recent_frames_only: int,
     reference_frames: int,
     memory_anchor_frames: int,
+    answer_grounded: bool,
     cdas_config: CDASConfig,
 ) -> dict[str, Any]:
     video_path = os.path.join(chunked_dir, f"{anno['id']}.mp4")
@@ -130,7 +132,7 @@ def evaluate_ovo_backward_realtime_referential(
                 time_stamp="",
                 selection=selection,
                 options=list(anno.get("options", []) or []),
-                answer_grounded=True,
+                answer_grounded=answer_grounded,
                 frame_scorer=frame_scorer,
                 anchor_frames=int(memory_anchor_frames),
                 anchor_text_mode="answer",
@@ -171,6 +173,7 @@ def evaluate_ovo_forward_referential(
     recent_frames_only: int,
     reference_frames: int,
     memory_anchor_frames: int,
+    answer_grounded: bool,
     cdas_config: CDASConfig,
 ) -> dict[str, Any]:
     result_anno = copy.deepcopy(anno)
@@ -210,7 +213,7 @@ def evaluate_ovo_forward_referential(
                 time_stamp="",
                 selection=selection,
                 options=[],
-                answer_grounded=True,
+                answer_grounded=answer_grounded,
                 frame_scorer=frame_scorer,
                 anchor_frames=int(memory_anchor_frames),
                 anchor_text_mode="answer",
@@ -237,11 +240,14 @@ def main() -> None:
     parser.add_argument("--memory_anchor_frames", type=int, default=1)
     parser.add_argument("--memory_clip_model", default=os.environ.get("MINICPM_REF_CLIP_MODEL", "openai/clip-vit-base-patch32"))
     parser.add_argument("--memory_clip_device", default=os.environ.get("MINICPM_REF_CLIP_DEVICE", ""))
+    parser.add_argument("--basic_referential_memory", action="store_true")
     parser.add_argument("--chunk_duration", type=float, default=1.0)
     parser.add_argument("--fps", type=float, default=1.0)
     parser.add_argument("--max_qa_tokens", type=int, default=256)
     parser.add_argument("--max_samples_per_split", type=int, default=None)
     args = parser.parse_args()
+    answer_grounded = not args.basic_referential_memory
+    model_label = ANSWER_GROUNDED_MODEL_LABEL if answer_grounded else BASIC_MODEL_LABEL
 
     cdas_config = CDASConfig(enabled=False)
     accelerator = Accelerator()
@@ -265,7 +271,7 @@ def main() -> None:
         forward_anno = forward_anno[: args.max_samples_per_split]
 
     accelerator.print(f"\n{'=' * 60}")
-    accelerator.print(f"OVO-Bench Referential-Memory Evaluation ({MODEL_LABEL})")
+    accelerator.print(f"OVO-Bench Referential-Memory Evaluation ({model_label})")
     accelerator.print(f"{'=' * 60}")
     accelerator.print(f"Backward: {len(backward_anno)}, Realtime: {len(realtime_anno)}, Forward: {len(forward_anno)}")
     accelerator.print(f"Processes: {accelerator.num_processes}")
@@ -273,7 +279,10 @@ def main() -> None:
         f"recent_frames_only={args.recent_frames_only}, reference_frames={args.reference_frames}, "
         f"anchor_frames={args.memory_anchor_frames}, fps={args.fps}, chunk_duration={args.chunk_duration}"
     )
-    accelerator.print(f"CLIP scorer: {args.memory_clip_model}")
+    if answer_grounded:
+        accelerator.print(f"CLIP scorer: {args.memory_clip_model}")
+    else:
+        accelerator.print("CLIP scorer: disabled for basic referential memory")
     accelerator.print(f"Results: {args.result_dir}")
     accelerator.print(f"{'=' * 60}\n")
 
@@ -305,9 +314,12 @@ def main() -> None:
     else:
         evaluator = build_evaluator()
 
-    clip_device = args.memory_clip_device.strip() or str(accelerator.device)
-    print(f"[rank {accelerator.process_index}] Loading answer-grounded frame scorer on {clip_device}", flush=True)
-    frame_scorer = AnswerGroundedFrameScorer(model_name=args.memory_clip_model, device=clip_device)
+    if answer_grounded:
+        clip_device = args.memory_clip_device.strip() or str(accelerator.device)
+        print(f"[rank {accelerator.process_index}] Loading answer-grounded frame scorer on {clip_device}", flush=True)
+        frame_scorer = AnswerGroundedFrameScorer(model_name=args.memory_clip_model, device=clip_device)
+    else:
+        frame_scorer = None
 
     with accelerator.split_between_processes(backward_anno) as local_backward:
         local_backward = list(local_backward)
@@ -340,6 +352,7 @@ def main() -> None:
                 recent_frames_only=args.recent_frames_only,
                 reference_frames=args.reference_frames,
                 memory_anchor_frames=args.memory_anchor_frames,
+                answer_grounded=answer_grounded,
                 cdas_config=cdas_config,
             )
             backward_results.append(result)
@@ -362,6 +375,7 @@ def main() -> None:
                 recent_frames_only=args.recent_frames_only,
                 reference_frames=args.reference_frames,
                 memory_anchor_frames=args.memory_anchor_frames,
+                answer_grounded=answer_grounded,
                 cdas_config=cdas_config,
             )
             realtime_results.append(result)
@@ -382,6 +396,7 @@ def main() -> None:
                 recent_frames_only=args.recent_frames_only,
                 reference_frames=args.reference_frames,
                 memory_anchor_frames=args.memory_anchor_frames,
+                answer_grounded=answer_grounded,
                 cdas_config=cdas_config,
             )
             forward_results.append(result)
@@ -393,10 +408,11 @@ def main() -> None:
     if accelerator.is_main_process:
         wait_for_done_markers(args.result_dir, accelerator.num_processes)
         all_backward, all_realtime, all_forward = merge_shard_results(args.result_dir, accelerator.num_processes)
-        print_ovo_results(MODEL_LABEL, all_backward, all_realtime, all_forward)
+        print_ovo_results(model_label, all_backward, all_realtime, all_forward)
         os.makedirs(args.result_dir, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_path = os.path.join(args.result_dir, f"minicpmv46_answer_grounded_referential_results_{timestamp}.json")
+        result_stem = "answer_grounded_referential" if answer_grounded else "referential"
+        output_path = os.path.join(args.result_dir, f"minicpmv46_{result_stem}_results_{timestamp}.json")
         with open(output_path, "w") as handle:
             json.dump(
                 {
@@ -407,6 +423,7 @@ def main() -> None:
                         "reference_frames": args.reference_frames,
                         "memory_anchor_frames": args.memory_anchor_frames,
                         "memory_clip_model": args.memory_clip_model,
+                        "answer_grounded": answer_grounded,
                         "chunk_duration": args.chunk_duration,
                         "fps": args.fps,
                         "max_qa_tokens": args.max_qa_tokens,

@@ -271,6 +271,9 @@ class AdaptiveWindowConfig:
         memory only for explicit older-evidence questions.
       question_aware_memory: recent-6 backbone plus older anchors selected by
         question-to-window similarity inspired by WindowQuant relevance scoring.
+      event_summary_memory: recent-6 backbone plus at most one older frame
+        retrieved from a tiny bounded/diverse event-bookmark memory when a
+        history-style question confidently matches it.
     """
 
     mode: str = "adaptive"
@@ -324,6 +327,7 @@ class AdaptiveWindowConfig:
             "gated_semantic_episodic_memory",
             "strict_gated_semantic_memory",
             "question_aware_memory",
+            "event_summary_memory",
         }
         if self.mode not in valid_modes:
             raise ValueError(f"Unknown adaptive mode {self.mode!r}; expected one of {sorted(valid_modes)}")
@@ -367,6 +371,7 @@ class AdaptiveWindowConfig:
             "gated_semantic_episodic_memory",
             "strict_gated_semantic_memory",
             "question_aware_memory",
+            "event_summary_memory",
         }
 
     @property
@@ -400,6 +405,10 @@ class AdaptiveWindowConfig:
     @property
     def question_aware_memory(self) -> bool:
         return self.mode == "question_aware_memory"
+
+    @property
+    def event_summary_memory(self) -> bool:
+        return self.mode == "event_summary_memory"
 
     @property
     def fixed_memory_budget(self) -> bool:
@@ -453,6 +462,25 @@ def _mean_abs_diff(left: np.ndarray, right: np.ndarray) -> float:
     return float(np.mean(np.abs(left - right)))
 
 
+def _structural_change(left: np.ndarray, right: np.ndarray) -> float:
+    """Return a cheap SSIM-style change score in [0, 1]."""
+    left = left.astype(np.float32)
+    right = right.astype(np.float32)
+    c1 = 6.5025
+    c2 = 58.5225
+    mu_left = float(np.mean(left))
+    mu_right = float(np.mean(right))
+    var_left = float(np.var(left))
+    var_right = float(np.var(right))
+    cov = float(np.mean((left - mu_left) * (right - mu_right)))
+    numerator = (2.0 * mu_left * mu_right + c1) * (2.0 * cov + c2)
+    denominator = (mu_left * mu_left + mu_right * mu_right + c1) * (var_left + var_right + c2)
+    if denominator <= 0:
+        return 0.0
+    ssim = max(0.0, min(1.0, numerator / denominator))
+    return float(1.0 - ssim)
+
+
 def _evenly_spaced_indices(length: int, count: int) -> list[int]:
     if count <= 0 or length <= 0:
         return []
@@ -468,6 +496,13 @@ def _chunk_signature(chunk: Any, resize: int) -> np.ndarray:
     if not signatures:
         return np.zeros((resize, resize), dtype=np.float32)
     return np.mean(np.stack(signatures, axis=0), axis=0)
+
+
+def _chunk_timestamp(chunk: Any) -> float:
+    timestamps = getattr(chunk, "frame_timestamps", None) or []
+    if timestamps:
+        return float(timestamps[0])
+    return float(getattr(chunk, "chunk_index", 0))
 
 
 def _should_foveate(prompt: str, reason: str, config: AdaptiveWindowConfig) -> bool:
@@ -581,6 +616,47 @@ def _strict_gated_memory_activation(prompt: str, reason: str) -> tuple[bool, str
     return True, "strict_explicit_history_cue"
 
 
+def _event_summary_memory_activation(prompt: str, reason: str) -> tuple[bool, str]:
+    """Conservative gate for Conditional Event Bookmark Memory.
+
+    Current/local questions should remain pure Recent-6. Explicit history,
+    count, or temporal-reference questions may scan the tiny bookmark memory,
+    and weak temporal cases are allowed to scan but still need a strong
+    bookmark relevance margin before any old frame is injected.
+    """
+
+    gate_enabled = os.environ.get("MINICPM_EVENT_SUMMARY_GATE", "1").strip().lower()
+    if gate_enabled in {"0", "false", "no", "off"}:
+        return True, "event_gate_disabled"
+
+    text = _query_text_only(prompt)
+    reference_terms = re.compile(
+        r"\b(previous question|mentioned|same person|same object|that object|he|she|it|they)\b",
+        re.IGNORECASE,
+    )
+    count_total = bool(_COUNT_MEMORY_RE.search(text))
+    explicit_history = bool(_STRICT_MEMORY_RE.search(text))
+    reference_query = bool(reference_terms.search(text))
+    current_or_local = bool(_STRICT_CURRENT_RE.search(text))
+    recent_or_forward = bool(_STRICT_RECENT_RE.search(text))
+
+    if count_total:
+        return True, "event_count_total_cue"
+    if reference_query:
+        return True, "event_reference_cue"
+    if explicit_history and not current_or_local:
+        return True, "event_explicit_history_cue"
+    if explicit_history and current_or_local:
+        return True, "event_history_with_current_terms"
+    if current_or_local:
+        return False, "event_current_state_guard"
+    if recent_or_forward:
+        return False, "event_recent_or_forward_guard"
+    if reason == "history_or_temporal":
+        return True, "event_uncertain_temporal_reason"
+    return False, "event_no_history_cue"
+
+
 def _memory_trigger_decision(
     prompt: str,
     reason: str,
@@ -612,6 +688,13 @@ def _memory_trigger_decision(
             "enabled": True,
             "activated": bool(activated),
             "reason": f"question_aware_{gate_reason}",
+        }
+    if config.event_summary_memory:
+        activated, gate_reason = _event_summary_memory_activation(prompt, reason)
+        return activated, {
+            "enabled": True,
+            "activated": bool(activated),
+            "reason": gate_reason,
         }
     activated = reason == "history_or_temporal"
     return activated, {
@@ -1219,6 +1302,288 @@ def _select_online_memory_chunks(
     return [bank[index]["chunk"] for index in selected_order], metadata
 
 
+def _event_summary_words(entry: dict[str, Any]) -> list[str]:
+    words: list[str] = [str(entry.get("change_level", "change")), "visual", "event"]
+    if float(entry["structural_change_norm"]) >= 0.75:
+        words.append("large-change")
+    elif float(entry["structural_change_norm"]) >= 0.45:
+        words.append("medium-change")
+    else:
+        words.append("small-change")
+
+    colors = entry.get("top_colors") or []
+    words.extend(str(color) for color in colors[:2])
+    if float(entry["text_detail_norm"]) >= 0.55:
+        words.extend(["text", "detail"])
+    if float(entry["contrast_norm"]) >= 0.55:
+        words.append("object")
+    motion_region = entry.get("motion_region")
+    if motion_region:
+        words.extend(["motion", str(motion_region)])
+    return words
+
+
+def _chunk_motion_region(current: np.ndarray, previous: np.ndarray | None) -> str:
+    if previous is None or current.shape != previous.shape:
+        return "unknown"
+    diff = np.abs(current.astype(np.float32) - previous.astype(np.float32))
+    if diff.size == 0:
+        return "unknown"
+    rows = np.array_split(diff, 3, axis=0)
+    grid_scores: list[tuple[float, int, int]] = []
+    for row_index, row in enumerate(rows):
+        cols = np.array_split(row, 3, axis=1)
+        for col_index, cell in enumerate(cols):
+            grid_scores.append((float(np.mean(cell)), row_index, col_index))
+    _score, row_index, col_index = max(grid_scores, key=lambda item: (item[0], -item[1], -item[2]))
+    vertical = ["top", "center", "bottom"][row_index]
+    horizontal = ["left", "center", "right"][col_index]
+    if vertical == "center" and horizontal == "center":
+        return "center"
+    if vertical == "center":
+        return horizontal
+    if horizontal == "center":
+        return vertical
+    return f"{vertical}-{horizontal}"
+
+
+def _event_change_level(score: float) -> str:
+    if score >= 0.75:
+        return "large"
+    if score >= 0.45:
+        return "medium"
+    return "small"
+
+
+def _color_feature_change(left: dict[str, float], right: dict[str, float] | None) -> float:
+    if not right:
+        return 0.0
+    keys = sorted(set(left) | set(right))
+    return float(sum(abs(float(left.get(key, 0.0)) - float(right.get(key, 0.0))) for key in keys) / max(1, len(keys)))
+
+
+def _build_event_summary_bank(older_chunks: list[Any], config: AdaptiveWindowConfig) -> list[dict[str, Any]]:
+    if not older_chunks:
+        return []
+    signatures = [_chunk_signature(chunk, config.dedup_resize) for chunk in older_chunks]
+    structural_changes = [0.0]
+    abs_changes = [0.0]
+    edge_changes = [0.0]
+    color_changes = [0.0]
+    contrast_scores: list[float] = []
+    text_detail_scores: list[float] = []
+    color_features: list[dict[str, float]] = []
+    motion_regions: list[str] = []
+    for index, (chunk, signature) in enumerate(zip(older_chunks, signatures)):
+        colors = _rgb_color_features(_chunk_rgb_sample(chunk, config.dedup_resize))
+        if index > 0:
+            structural_changes.append(_structural_change(signature, signatures[index - 1]))
+            abs_changes.append(_mean_abs_diff(signature, signatures[index - 1]))
+            edge_changes.append(
+                abs(
+                    _score_crop(signature, text_query=True)
+                    - _score_crop(signatures[index - 1], text_query=True)
+                )
+            )
+            color_changes.append(_color_feature_change(colors, color_features[index - 1]))
+            motion_regions.append(_chunk_motion_region(signature, signatures[index - 1]))
+        else:
+            motion_regions.append("unknown")
+        contrast_scores.append(float(np.std(signature)))
+        text_detail_scores.append(_score_crop(signature, text_query=True))
+        color_features.append(colors)
+
+    structural_norm = _normalise(structural_changes)
+    edge_change_norm = _normalise(edge_changes)
+    color_change_norm = _normalise(color_changes)
+    contrast_norm = _normalise(contrast_scores)
+    text_norm = _normalise(text_detail_scores)
+    bank: list[dict[str, Any]] = []
+    for index, chunk in enumerate(older_chunks):
+        colors = sorted(color_features[index].items(), key=lambda item: (-float(item[1]), item[0]))
+        top_colors = [name for name, value in colors if float(value) > 0.18][:3]
+        temporal_position = index / max(1, len(older_chunks) - 1)
+        importance = (
+            0.45 * float(structural_norm[index])
+            + 0.20 * float(edge_change_norm[index])
+            + 0.15 * float(text_norm[index])
+            + 0.10 * float(color_change_norm[index])
+            + 0.10 * (1.0 - abs(temporal_position - 0.5) * 2.0)
+        )
+        entry = {
+            "index": index,
+            "chunk": chunk,
+            "chunk_id": int(chunk.chunk_index),
+            "timestamp": _chunk_timestamp(chunk),
+            "temporal_position": float(temporal_position),
+            "structural_change": float(structural_changes[index]),
+            "structural_change_norm": float(structural_norm[index]),
+            "abs_change_score": float(abs_changes[index]),
+            "edge_change_norm": float(edge_change_norm[index]),
+            "color_change_norm": float(color_change_norm[index]),
+            "contrast_norm": float(contrast_norm[index]),
+            "text_detail_norm": float(text_norm[index]),
+            "motion_region": motion_regions[index],
+            "top_colors": top_colors,
+            "event_importance": float(importance),
+            "change_level": _event_change_level(float(structural_norm[index])),
+        }
+        summary_words = _event_summary_words(entry)
+        entry["summary_words"] = summary_words
+        entry["summary"] = (
+            f"t={entry['timestamp']:.1f}s | {entry['change_level']} visual change"
+            f" | colors={','.join(top_colors) if top_colors else 'none'}"
+            f" | motion={entry['motion_region']}"
+            f" | text_likelihood={entry['text_detail_norm']:.2f}"
+        )
+        bank.append(entry)
+    return bank
+
+
+def _temporally_far_enough(entry: dict[str, Any], selected: list[dict[str, Any]], min_gap_seconds: float) -> bool:
+    timestamp = float(entry["timestamp"])
+    return all(abs(timestamp - float(other["timestamp"])) >= min_gap_seconds for other in selected)
+
+
+def _select_diverse_event_bookmarks(bank: list[dict[str, Any]], max_items: int, threshold: float) -> list[dict[str, Any]]:
+    if max_items <= 0:
+        return []
+    min_gap_seconds = float(os.environ.get("MINICPM_EVENT_SUMMARY_MIN_GAP_SECONDS", "3.0"))
+    eligible = [entry for entry in bank if float(entry["event_importance"]) >= threshold]
+    if not eligible:
+        eligible = sorted(bank, key=lambda entry: (-float(entry["event_importance"]), int(entry["chunk_id"])))[:max_items]
+
+    selected: list[dict[str, Any]] = []
+    slots = [
+        ("early", lambda e: float(e["temporal_position"]) <= 0.34),
+        ("middle", lambda e: 0.34 < float(e["temporal_position"]) < 0.67),
+        ("late", lambda e: float(e["temporal_position"]) >= 0.67),
+    ]
+    for _name, predicate in slots:
+        candidates = [entry for entry in eligible if predicate(entry)]
+        candidates.sort(key=lambda entry: (-float(entry["event_importance"]), int(entry["chunk_id"])))
+        for candidate in candidates:
+            if _temporally_far_enough(candidate, selected, min_gap_seconds):
+                selected.append(candidate)
+                break
+        if len(selected) >= max_items:
+            break
+
+    for candidate in sorted(eligible, key=lambda entry: (-float(entry["event_importance"]), int(entry["chunk_id"]))):
+        if len(selected) >= max_items:
+            break
+        if int(candidate["chunk_id"]) in {int(entry["chunk_id"]) for entry in selected}:
+            continue
+        if _temporally_far_enough(candidate, selected, min_gap_seconds):
+            selected.append(candidate)
+
+    return sorted(selected[:max_items], key=lambda entry: int(entry["chunk_id"]))
+
+
+def _select_event_summary_memory_chunks(
+    older_chunks: list[Any],
+    count: int,
+    config: AdaptiveWindowConfig,
+    prompt: str,
+) -> tuple[list[Any], list[dict[str, Any]]]:
+    if count <= 0 or not older_chunks:
+        return [], []
+
+    start_time = time.perf_counter()
+    bank = _build_event_summary_bank(older_chunks, config)
+    event_scan_latency_ms = (time.perf_counter() - start_time) * 1000.0
+    if not bank:
+        return [], []
+
+    max_items = int(os.environ.get("MINICPM_EVENT_SUMMARY_MAX_ITEMS", "5"))
+    importance_threshold = float(os.environ.get("MINICPM_EVENT_SUMMARY_IMPORTANCE_THRESHOLD", "0.45"))
+    query_threshold = float(os.environ.get("MINICPM_EVENT_SUMMARY_QUERY_THRESHOLD", "0.50"))
+    query_margin = float(os.environ.get("MINICPM_EVENT_SUMMARY_QUERY_MARGIN", "0.08"))
+    max_retrieved = max(1, min(int(os.environ.get("MINICPM_EVENT_SUMMARY_MAX_RETRIEVED", "1")), count))
+    memory_entries = _select_diverse_event_bookmarks(bank, max_items, importance_threshold)
+
+    semantic_query = _extract_semantic_query(prompt)
+    query_terms = set(semantic_query["terms"])
+    query_colors = set(semantic_query["colors"])
+    query_text = _query_text_only(prompt)
+    history_query = bool(_STRICT_MEMORY_RE.search(query_text) or _COUNT_MEMORY_RE.search(query_text))
+    early_query = bool(_EARLY_MEMORY_RE.search(query_text))
+    late_query = bool(_LATE_MEMORY_RE.search(query_text))
+    text_query = bool(_TEXT_LOCALIZATION_RE.search(query_text))
+    retrieval_start = time.perf_counter()
+    metadata: list[dict[str, Any]] = []
+    scored: list[tuple[float, int, dict[str, Any]]] = []
+    for entry in memory_entries:
+        summary_terms = {_singularise(word.lower()) for word in entry["summary_words"]}
+        summary_colors = set(entry.get("top_colors") or [])
+        term_overlap = len(query_terms & summary_terms) / max(1, len(query_terms))
+        color_overlap = 1.0 if query_colors and (query_colors & summary_colors) else 0.0
+        cue_match = color_overlap
+        if text_query:
+            cue_match = max(cue_match, float(entry["text_detail_norm"]))
+        temporal_match = 0.5
+        if early_query:
+            temporal_match = 1.0 - float(entry["temporal_position"])
+        elif late_query:
+            temporal_match = float(entry["temporal_position"])
+        elif _COUNT_MEMORY_RE.search(query_text):
+            temporal_match = 1.0 - abs(float(entry["temporal_position"]) - 0.5) * 2.0
+        score = (
+            0.35 * term_overlap
+            + 0.20 * cue_match
+            + 0.15 * (1.0 if history_query else 0.35)
+            + 0.20 * float(entry["event_importance"])
+            + 0.10 * temporal_match
+        )
+        scored.append((score, int(entry["chunk_id"]), entry))
+
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    best_score = float(scored[0][0]) if scored else 0.0
+    second_score = float(scored[1][0]) if len(scored) > 1 else 0.0
+    margin = best_score - second_score
+    selected = scored[:max_retrieved] if best_score >= query_threshold and margin >= query_margin else []
+    selected_ids = {int(entry["chunk_id"]) for _score, _chunk_id, entry in selected}
+    bookmark_retrieval_ms = (time.perf_counter() - retrieval_start) * 1000.0
+
+    for score, _chunk_id, entry in scored:
+        metadata.append(
+            {
+                "chunk_id": int(entry["chunk_id"]),
+                "selected": int(entry["chunk_id"]) in selected_ids,
+                "event_summary_score": float(score),
+                "event_summary_best_score": best_score,
+                "event_summary_second_score": second_score,
+                "event_summary_margin": margin,
+                "summary": entry["summary"],
+                "timestamp": float(entry["timestamp"]),
+                "temporal_position": float(entry["temporal_position"]),
+                "structural_change": float(entry["structural_change"]),
+                "structural_change_norm": float(entry["structural_change_norm"]),
+                "edge_change_norm": float(entry["edge_change_norm"]),
+                "color_change_norm": float(entry["color_change_norm"]),
+                "contrast_norm": float(entry["contrast_norm"]),
+                "text_detail_norm": float(entry["text_detail_norm"]),
+                "motion_region": entry.get("motion_region"),
+                "top_colors": entry.get("top_colors") or [],
+                "event_importance": float(entry["event_importance"]),
+                "change_level": entry.get("change_level"),
+                "memory_size": len(memory_entries),
+                "event_scan_latency_ms": event_scan_latency_ms,
+                "bookmark_retrieval_ms": bookmark_retrieval_ms,
+                "query_terms": sorted(query_terms),
+                "query_colors": sorted(query_colors),
+                "query_threshold": query_threshold,
+                "query_margin_threshold": query_margin,
+                "history_query": history_query,
+                "early_query": early_query,
+                "late_query": late_query,
+                "text_query": text_query,
+            }
+        )
+    selected_chunks = [entry["chunk"] for _score, _chunk_id, entry in selected]
+    return selected_chunks, metadata
+
+
 def _select_semantic_memory_chunks(
     older_chunks: list[Any],
     count: int,
@@ -1600,6 +1965,9 @@ def _select_memory_chunks(
     if config.question_aware_memory:
         return _select_question_aware_memory_chunks(older_chunks, count, config, prompt)
 
+    if config.event_summary_memory:
+        return _select_event_summary_memory_chunks(older_chunks, count, config, prompt)
+
     if config.gated_semantic_episodic_memory or config.bound_semantic_episodic_memory:
         return _select_bound_semantic_episodic_memory_chunks(older_chunks, count, config, prompt)
 
@@ -1742,6 +2110,8 @@ def _memory_selector_label(config: AdaptiveWindowConfig) -> str:
         return "strict_gated_semantic_memory"
     if config.question_aware_memory:
         return "question_aware_window_similarity"
+    if config.event_summary_memory:
+        return "conditional_event_bookmark_memory"
     if config.gated_semantic_episodic_memory:
         return "gated_bound_semantic_episodic_memory"
     if config.bound_semantic_episodic_memory:
@@ -1774,6 +2144,9 @@ def select_adaptive_frames(
         raise ValueError("No chunks available for adaptive selection.")
 
     window_size, reason = classify_adaptive_window(prompt, config)
+    if config.event_summary_memory:
+        window_size = config.mid_window
+        reason = f"event_summary_recent{config.mid_window}_backbone"
     memory_triggered, memory_gate = _memory_trigger_decision(prompt, reason, config)
     recent_window_size = window_size
     if memory_triggered and config.fixed_memory_budget and config.memory_anchors > 0:

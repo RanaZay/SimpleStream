@@ -7,6 +7,10 @@ import sys
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../../..")))
 
+from main_experiments.tools.determinism import configure_determinism
+
+SEED = configure_determinism()
+
 from lib.minicpm.adaptive import query_recent_window
 from lib.minicpm import baseline as baseline_mod
 from main_experiments.minicpm_v46.ovo import eval_baseline as ovo_eval
@@ -36,6 +40,7 @@ def _consume_adaptive_args() -> argparse.Namespace:
             "gated_semantic_episodic_memory",
             "strict_gated_semantic_memory",
             "question_aware_memory",
+            "event_summary_memory",
         ],
         default=os.environ.get("MINICPM_ADAPTIVE_MODE", "adaptive"),
     )
@@ -62,6 +67,7 @@ def _consume_adaptive_args() -> argparse.Namespace:
 
 def main() -> None:
     adaptive_args = _consume_adaptive_args()
+    os.environ["MINICPM_SEED"] = str(SEED)
     baseline_mod.query_recent_window = query_recent_window
     ovo_eval.query_recent_window = query_recent_window
     ovo_eval.MODEL_LABEL = f"MiniCPM-V-4.6 + AdaptiveSimpleStream({adaptive_args.adaptive_mode})"

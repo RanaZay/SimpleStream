@@ -7,6 +7,10 @@ import sys
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../../..")))
 
+from main_experiments.tools.determinism import configure_determinism
+
+SEED = configure_determinism()
+
 from lib.minicpm.adaptive import query_recent_window
 from main_experiments.minicpm_v46.streamingbench import eval_baseline_dist as dist_sb
 
@@ -29,6 +33,7 @@ def _consume_adaptive_args() -> argparse.Namespace:
             "gated_semantic_episodic_memory",
             "strict_gated_semantic_memory",
             "question_aware_memory",
+            "event_summary_memory",
         ],
         default=os.environ.get("MINICPM_ADAPTIVE_MODE", "adaptive"),
     )
@@ -70,6 +75,7 @@ def _print_adaptive_summary(results: list[dict], frame_selection: str = "recent"
 
 def main() -> None:
     _consume_adaptive_args()
+    os.environ["MINICPM_SEED"] = str(SEED)
     dist_sb.query_recent_window = query_recent_window
     dist_sb.print_summary = _print_adaptive_summary
     dist_sb.main()

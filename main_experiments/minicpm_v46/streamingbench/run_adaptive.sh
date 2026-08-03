@@ -34,8 +34,8 @@ else
     ADAPTIVE_CONTEXT_TIME="${ADAPTIVE_CONTEXT_TIME:--1}"
 fi
 
-SB_ANNO_PATH="${REPO_ROOT}/data/streamingbench/questions_real.json"
-SB_VIDEO_DIR="${REPO_ROOT}/data/streamingbench/videos"
+SB_ANNO_PATH="${SB_ANNO_PATH:-${REPO_ROOT}/data/streamingbench/questions_real.json}"
+SB_VIDEO_DIR="${SB_VIDEO_DIR:-${REPO_ROOT}/data/streamingbench/videos}"
 SB_RESULT_DIR="${SB_RESULT_DIR:-${REPO_ROOT}/main_experiments/results/repro_adaptive/streamingbench_minicpmv46_${ADAPTIVE_MODE}_w${ADAPTIVE_MIN_WINDOW}-${ADAPTIVE_MID_WINDOW}-${ADAPTIVE_MAX_WINDOW}_d8}"
 
 cd "${REPO_ROOT}"

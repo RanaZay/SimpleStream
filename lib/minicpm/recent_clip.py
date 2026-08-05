@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import tempfile
 import time
@@ -91,8 +92,9 @@ def cut_recent_clip(
     start_time = max(0.0, float(end_time_seconds) - float(clip_seconds))
     duration = max(0.05, float(end_time_seconds) - start_time)
     clip_path.parent.mkdir(parents=True, exist_ok=True)
+    ffmpeg_bin = os.environ.get("RECENT_CLIP_FFMPEG") or shutil.which("ffmpeg") or "ffmpeg"
     cmd = [
-        "ffmpeg",
+        ffmpeg_bin,
         "-hide_banner",
         "-loglevel",
         "error",

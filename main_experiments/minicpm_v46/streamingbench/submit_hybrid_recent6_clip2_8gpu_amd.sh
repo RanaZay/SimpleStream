@@ -14,8 +14,9 @@ conda activate stream35
 
 export PYTHONNOUSERSITE=1
 export PYTHONFAULTHANDLER=1
+export RECENT_CLIP_FFMPEG=${RECENT_CLIP_FFMPEG:-/usr/bin/ffmpeg}
 export ROCM_HOME=${ROCM_HOME:-/opt/rocm}
-export PATH="${ROCM_HOME}/bin:${PATH}"
+export PATH="${ROCM_HOME}/bin:/usr/bin:${PATH}"
 export LD_LIBRARY_PATH="${ROCM_HOME}/lib:${ROCM_HOME}/lib64:${LD_LIBRARY_PATH}"
 export MIOPEN_DISABLE_CACHE=1
 export PYTORCH_TUNABLEOP_ENABLED=0

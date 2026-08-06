@@ -137,8 +137,8 @@ class RecentDescriptionQAModel(RecentWindowQAModel):
             "If the text descriptions conflict with the images, trust the images.\n\n"
             "RECENT FRAME DESCRIPTIONS:\n"
             f"{notes_text}\n\n"
-            "QUESTION:\n"
-            f"{original_prompt}"
+            
+            f"{original_prompt}""QUESTION:\n"
         )
         if len(prompt) <= self.recent_description_config.max_prompt_chars:
             return prompt

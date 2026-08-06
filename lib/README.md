@@ -18,11 +18,14 @@ TimeChat-Online style token dropping is grouped under `timechat/`.
   feature-level Differential Token Drop.
 - `minicpm/adaptive.py`: SimpleStream recent-window variants with adaptive
   windows and visual memory anchors.
-- `minicpm/story_memory.py`: text-only story memory over older streaming
-  frames plus recent MiniCPM visual frames for QA.
-- `minicpm/recent_description.py`: Proposal 2 wrapper that keeps the
-  SimpleStream recent-window visual frames and appends generated text
-  descriptions for those same recent frames.
+- `minicpm/windowquant.py`: WindowQuant-style visual-window mixed precision
+  prototype for MiniCPM. It follows the paper's query/window scoring and
+  mixed-bit assignment policy, but uses fake quantization on MiniCPM visual
+  embeddings because the paper's custom KV-cache kernels are not public in this
+  repo.
+- Story/text proposal wrappers were archived under
+  `archive/story_text_proposals/` because they were too slow and degraded
+  accuracy in the completed runs.
 
 ## StreamingTOM Components
 

@@ -41,6 +41,7 @@ def _consume_adaptive_args() -> argparse.Namespace:
             "strict_gated_semantic_memory",
             "question_aware_memory",
             "event_summary_memory",
+            "budgeted_counterfactual_memory",
         ],
         default=os.environ.get("MINICPM_ADAPTIVE_MODE", "adaptive"),
     )

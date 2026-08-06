@@ -274,6 +274,9 @@ class AdaptiveWindowConfig:
       event_summary_memory: recent-6 backbone plus at most one older frame
         retrieved from a tiny bounded/diverse event-bookmark memory when a
         history-style question confidently matches it.
+      budgeted_counterfactual_memory: recent-6 backbone plus a utility gate
+        that retrieves K=0/1/2 older frames only when predicted answer benefit
+        exceeds the visual-token/latency cost.
     """
 
     mode: str = "adaptive"
@@ -328,6 +331,7 @@ class AdaptiveWindowConfig:
             "strict_gated_semantic_memory",
             "question_aware_memory",
             "event_summary_memory",
+            "budgeted_counterfactual_memory",
         }
         if self.mode not in valid_modes:
             raise ValueError(f"Unknown adaptive mode {self.mode!r}; expected one of {sorted(valid_modes)}")
@@ -372,6 +376,7 @@ class AdaptiveWindowConfig:
             "strict_gated_semantic_memory",
             "question_aware_memory",
             "event_summary_memory",
+            "budgeted_counterfactual_memory",
         }
 
     @property
@@ -409,6 +414,10 @@ class AdaptiveWindowConfig:
     @property
     def event_summary_memory(self) -> bool:
         return self.mode == "event_summary_memory"
+
+    @property
+    def budgeted_counterfactual_memory(self) -> bool:
+        return self.mode == "budgeted_counterfactual_memory"
 
     @property
     def fixed_memory_budget(self) -> bool:
@@ -695,6 +704,12 @@ def _memory_trigger_decision(
             "enabled": True,
             "activated": bool(activated),
             "reason": gate_reason,
+        }
+    if config.budgeted_counterfactual_memory:
+        return True, {
+            "enabled": True,
+            "activated": True,
+            "reason": "utility_gate_pending_until_recent_context",
         }
     activated = reason == "history_or_temporal"
     return activated, {
@@ -1677,6 +1692,248 @@ def _select_semantic_memory_chunks(
     return [bank[index]["chunk"] for index in selected_order], metadata
 
 
+def _recent_evidence_coverage_score(
+    recent_chunks: list[Any],
+    prompt: str,
+    config: AdaptiveWindowConfig,
+) -> tuple[float, dict[str, Any]]:
+    if not recent_chunks:
+        return 0.0, {"reason": "no_recent_chunks"}
+
+    bank = _build_online_memory_bank(recent_chunks, config)
+    query_flags = {
+        "count_query": bool(_COUNT_MEMORY_RE.search(prompt)),
+        "early_query": bool(_EARLY_MEMORY_RE.search(prompt)),
+        "late_query": bool(_LATE_MEMORY_RE.search(prompt)),
+        "text_query": bool(_TEXT_LOCALIZATION_RE.search(prompt)),
+    }
+    semantic_query = _extract_bound_semantic_query(prompt)
+    query_vector, question_flags = _question_aware_query_vector(semantic_query, query_flags, prompt)
+    semantic_query_simple = _extract_semantic_query(prompt)
+
+    similarity_scores: list[float] = []
+    semantic_scores: list[float] = []
+    for entry in bank:
+        similarity_scores.append(_cosine_score(query_vector, _question_aware_visual_vector(entry)))
+        semantic_scores.append(_semantic_proxy_score(entry, semantic_query_simple))
+
+    best_similarity = max(similarity_scores) if similarity_scores else 0.0
+    best_semantic = max(semantic_scores) if semantic_scores else 0.0
+    # Recent evidence is considered covered if either the question-window
+    # vector or the direct semantic proxy finds strong support in Recent-6.
+    coverage = max(best_similarity, best_semantic)
+    return float(coverage), {
+        "best_recent_similarity": float(best_similarity),
+        "best_recent_semantic_score": float(best_semantic),
+        "semantic_query": semantic_query_simple,
+        "question_aware_flags": question_flags,
+    }
+
+
+def _temporal_nonlocality_score(prompt: str, reason: str) -> tuple[float, dict[str, Any]]:
+    text = _query_text_only(prompt)
+    explicit_history = bool(_STRICT_MEMORY_RE.search(text) or _EARLY_MEMORY_RE.search(text))
+    count_query = bool(_COUNT_MEMORY_RE.search(text))
+    reference_query = bool(
+        re.search(
+            r"\b(previous question|mentioned|same person|same object|that person|that object|earlier person)\b",
+            text,
+            re.IGNORECASE,
+        )
+    )
+    current_guard = bool(_STRICT_CURRENT_RE.search(text))
+    prospective_guard = bool(_GATED_PROSPECTIVE_GUARD_RE.search(text))
+
+    score = 0.0
+    if explicit_history:
+        score += 0.55
+    if count_query:
+        score += 0.40
+    if reference_query:
+        score += 0.45
+    if reason == "history_or_temporal":
+        score += 0.20
+    if prospective_guard and not explicit_history and not count_query:
+        score -= 0.35
+    if current_guard and not explicit_history and not count_query and not reference_query:
+        score -= 0.45
+    return float(max(0.0, min(1.0, score))), {
+        "explicit_history": explicit_history,
+        "count_query": count_query,
+        "reference_query": reference_query,
+        "current_guard": current_guard,
+        "prospective_guard": prospective_guard,
+        "window_reason": reason,
+    }
+
+
+def _select_budgeted_counterfactual_memory_chunks(
+    older_chunks: list[Any],
+    recent_chunks: list[Any],
+    max_count: int,
+    config: AdaptiveWindowConfig,
+    prompt: str,
+    reason: str,
+) -> tuple[list[Any], list[dict[str, Any]], dict[str, Any]]:
+    """Utility-gated memory routing for mobile streaming QA.
+
+    The selector estimates whether historical frames are likely to change the
+    answer enough to justify their visual-token cost. It does not blindly turn
+    on memory for every temporal-looking prompt; it uses recent coverage and
+    best memory relevance before assigning K=0/1/2.
+    """
+
+    max_count = max(0, int(max_count))
+    if max_count <= 0 or not older_chunks:
+        return [], [], {
+            "enabled": True,
+            "activated": False,
+            "reason": "no_budget_or_no_history",
+            "selected_budget": 0,
+        }
+
+    search_chunks = int(config.memory_search_chunks)
+    if search_chunks > 0:
+        older_chunks = older_chunks[-search_chunks:]
+
+    bank = _build_online_memory_bank(older_chunks, config)
+    online_scores, query_flags = _online_memory_base_scores(bank, prompt)
+    online_norm = _normalise(online_scores)
+    semantic_query = _extract_semantic_query(prompt)
+    temporal_need, temporal_meta = _temporal_nonlocality_score(prompt, reason)
+    recent_coverage, recent_meta = _recent_evidence_coverage_score(recent_chunks, prompt, config)
+
+    utility_threshold = float(os.environ.get("MINICPM_BCM_UTILITY_THRESHOLD", "0.58"))
+    high_utility_threshold = float(os.environ.get("MINICPM_BCM_HIGH_UTILITY_THRESHOLD", "0.82"))
+    memory_relevance_threshold = float(os.environ.get("MINICPM_BCM_MEMORY_RELEVANCE_THRESHOLD", "0.46"))
+    uncertainty_weight = float(os.environ.get("MINICPM_BCM_UNCERTAINTY_WEIGHT", "0.45"))
+    temporal_weight = float(os.environ.get("MINICPM_BCM_TEMPORAL_WEIGHT", "0.55"))
+    memory_weight = float(os.environ.get("MINICPM_BCM_MEMORY_WEIGHT", "0.70"))
+    cost_weight = float(os.environ.get("MINICPM_BCM_COST_WEIGHT", "0.25"))
+    max_budget = min(max_count, int(os.environ.get("MINICPM_BCM_MAX_RETRIEVED", str(max_count))))
+    max_budget = max(0, max_budget)
+    retrieval_cost = max_budget / max(1.0, float(config.mid_window + max_budget))
+
+    candidate_scores: list[float] = []
+    temporal_scores: list[float] = []
+    semantic_scores: list[float] = []
+    for index, entry in enumerate(bank):
+        semantic_score = _semantic_proxy_score(entry, semantic_query)
+        temporal_score = _temporal_relevance_score(entry, query_flags)
+        event_score = float(entry["event_change_norm"])
+        detail_score = 0.5 * float(entry["contrast_norm"]) + 0.5 * float(entry["text_detail_norm"])
+        online_score = float(online_norm[index] if online_norm else 0.0)
+        score = (
+            0.45 * semantic_score
+            + 0.20 * temporal_score
+            + 0.15 * event_score
+            + 0.10 * detail_score
+            + 0.10 * online_score
+        )
+        candidate_scores.append(float(score))
+        temporal_scores.append(float(temporal_score))
+        semantic_scores.append(float(semantic_score))
+
+    best_memory_relevance = max(candidate_scores) if candidate_scores else 0.0
+    recent_uncertainty_proxy = max(0.0, 1.0 - recent_coverage)
+    utility_score = (
+        temporal_weight * temporal_need
+        + uncertainty_weight * recent_uncertainty_proxy
+        + memory_weight * best_memory_relevance
+        - cost_weight * retrieval_cost
+    )
+
+    if temporal_need <= 0.0:
+        selected_budget = 0
+        gate_reason = "no_temporal_need"
+    elif best_memory_relevance < memory_relevance_threshold:
+        selected_budget = 0
+        gate_reason = "memory_relevance_below_threshold"
+    elif utility_score < utility_threshold:
+        selected_budget = 0
+        gate_reason = "utility_below_threshold"
+    elif utility_score >= high_utility_threshold and max_budget >= 2 and temporal_need >= 0.65:
+        selected_budget = 2
+        gate_reason = "high_utility_two_frames"
+    else:
+        selected_budget = min(1, max_budget)
+        gate_reason = "utility_one_frame"
+
+    selected_indices: list[int] = []
+    if selected_budget > 0:
+        diversity_weight = 0.30 if query_flags.get("count_query") else 0.18
+        while len(selected_indices) < selected_budget:
+            best_index: int | None = None
+            best_score: float | None = None
+            for index in range(len(bank)):
+                if index in selected_indices:
+                    continue
+                if selected_indices:
+                    denom = max(1, len(bank) - 1)
+                    diversity = min(abs(index - chosen) / denom for chosen in selected_indices)
+                else:
+                    diversity = 1.0
+                score = candidate_scores[index] + diversity_weight * diversity
+                if best_score is None or score > best_score or (
+                    score == best_score and best_index is not None and index < best_index
+                ):
+                    best_index = index
+                    best_score = score
+            if best_index is None:
+                break
+            selected_indices.append(best_index)
+
+    selected_set = set(selected_indices)
+    gate = {
+        "enabled": True,
+        "activated": bool(selected_indices),
+        "reason": gate_reason,
+        "selected_budget": len(selected_indices),
+        "max_budget": max_budget,
+        "temporal_need": float(temporal_need),
+        "recent_coverage": float(recent_coverage),
+        "recent_uncertainty_proxy": float(recent_uncertainty_proxy),
+        "memory_relevance": float(best_memory_relevance),
+        "retrieval_cost": float(retrieval_cost),
+        "utility_score": float(utility_score),
+        "utility_threshold": utility_threshold,
+        "high_utility_threshold": high_utility_threshold,
+        "memory_relevance_threshold": memory_relevance_threshold,
+        "weights": {
+            "temporal": temporal_weight,
+            "uncertainty": uncertainty_weight,
+            "memory": memory_weight,
+            "cost": cost_weight,
+        },
+        "temporal_meta": temporal_meta,
+        "recent_meta": recent_meta,
+    }
+
+    metadata = []
+    for index, entry in enumerate(bank):
+        metadata.append(
+            {
+                "chunk_id": int(entry["chunk_id"]),
+                "selected": index in selected_set,
+                "budgeted_counterfactual_score": float(candidate_scores[index]),
+                "semantic_proxy_score": float(semantic_scores[index]),
+                "temporal_relevance_score": float(temporal_scores[index]),
+                "online_memory_score": float(online_scores[index]),
+                "event_change_score": float(entry["event_change_score"]),
+                "event_change_norm": float(entry["event_change_norm"]),
+                "contrast_norm": float(entry["contrast_norm"]),
+                "text_detail_norm": float(entry["text_detail_norm"]),
+                "temporal_position": float(entry["temporal_position"]),
+                "semantic_query": semantic_query,
+                "query_flags": query_flags,
+                "utility_gate": gate,
+            }
+        )
+
+    selected_order = sorted(selected_indices)
+    return [bank[index]["chunk"] for index in selected_order], metadata, gate
+
+
 def _select_semantic_episodic_memory_chunks(
     older_chunks: list[Any],
     count: int,
@@ -1968,6 +2225,9 @@ def _select_memory_chunks(
     if config.event_summary_memory:
         return _select_event_summary_memory_chunks(older_chunks, count, config, prompt)
 
+    if config.budgeted_counterfactual_memory:
+        return _select_semantic_memory_chunks(older_chunks, count, config, prompt)
+
     if config.gated_semantic_episodic_memory or config.bound_semantic_episodic_memory:
         return _select_bound_semantic_episodic_memory_chunks(older_chunks, count, config, prompt)
 
@@ -2112,6 +2372,8 @@ def _memory_selector_label(config: AdaptiveWindowConfig) -> str:
         return "question_aware_window_similarity"
     if config.event_summary_memory:
         return "conditional_event_bookmark_memory"
+    if config.budgeted_counterfactual_memory:
+        return "budgeted_counterfactual_utility_gate"
     if config.gated_semantic_episodic_memory:
         return "gated_bound_semantic_episodic_memory"
     if config.bound_semantic_episodic_memory:
@@ -2144,9 +2406,12 @@ def select_adaptive_frames(
         raise ValueError("No chunks available for adaptive selection.")
 
     window_size, reason = classify_adaptive_window(prompt, config)
-    if config.event_summary_memory:
+    if config.event_summary_memory or config.budgeted_counterfactual_memory:
         window_size = config.mid_window
-        reason = f"event_summary_recent{config.mid_window}_backbone"
+        if config.event_summary_memory:
+            reason = f"event_summary_recent{config.mid_window}_backbone"
+        else:
+            reason = f"budgeted_counterfactual_recent{config.mid_window}_backbone"
     memory_triggered, memory_gate = _memory_trigger_decision(prompt, reason, config)
     recent_window_size = window_size
     if memory_triggered and config.fixed_memory_budget and config.memory_anchors > 0:
@@ -2157,12 +2422,23 @@ def select_adaptive_frames(
     memory_scores: list[dict[str, Any]] = []
     if memory_triggered and config.memory_anchors > 0:
         older_chunks = chunks[: max(0, len(chunks) - recent_window_size)]
-        memory_chunks, memory_scores = _select_memory_chunks(
-            older_chunks,
-            config.memory_anchors,
-            config,
-            prompt=prompt,
-        )
+        if config.budgeted_counterfactual_memory:
+            memory_chunks, memory_scores, memory_gate = _select_budgeted_counterfactual_memory_chunks(
+                older_chunks,
+                recent_chunks,
+                config.memory_anchors,
+                config,
+                prompt=prompt,
+                reason=reason,
+            )
+            memory_triggered = bool(memory_chunks)
+        else:
+            memory_chunks, memory_scores = _select_memory_chunks(
+                older_chunks,
+                config.memory_anchors,
+                config,
+                prompt=prompt,
+            )
 
     selected_chunks = [*memory_chunks, *recent_chunks]
     candidate_frames = [frame for chunk in selected_chunks for frame in chunk.frames]

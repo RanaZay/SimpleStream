@@ -48,6 +48,30 @@ export MAIN_PROCESS_PORT=${MAIN_PROCESS_PORT:-29911}
 export RECENT_FRAMES_ONLY=6
 export RECENT_CLIP_SECONDS=2
 
+echo "[PREFLIGHT] RECENT_CLIP_FFMPEG=${RECENT_CLIP_FFMPEG}"
+echo "[PREFLIGHT] PATH=${PATH}"
+"${RECENT_CLIP_FFMPEG}" -version | head -1
+python - <<'PY'
+from pathlib import Path
+from lib.minicpm.recent_clip import cut_recent_clip, resolve_ffmpeg_binary
+
+video_dir = Path("data/streamingbench/videos")
+video = next(video_dir.glob("*.mp4"))
+out = Path("/tmp/minicpm_hybrid_recent_clip_preflight.mp4")
+start, end = cut_recent_clip(
+    video_path=video,
+    clip_path=out,
+    end_time_seconds=10.0,
+    clip_seconds=2.0,
+)
+size = out.stat().st_size if out.exists() else 0
+print(f"[PREFLIGHT] ffmpeg={resolve_ffmpeg_binary()}")
+print(f"[PREFLIGHT] video={video}")
+print(f"[PREFLIGHT] clip={out} start={start:.3f} end={end:.3f} size={size}")
+if size <= 0:
+    raise SystemExit("[PREFLIGHT] recent clip extraction produced an empty file")
+PY
+
 RESULT_DIR="$REPO_ROOT/main_experiments/results/repro_hybrid_clip/streamingbench_minicpmv46_hybrid_recent6_clip2_d8"
 ts=$(date +%Y%m%d_%H%M%S)
 if [[ "${RESUME:-0}" != "1" ]]; then

@@ -20,6 +20,31 @@ from lib.minicpm.baseline import (
 from lib.shared.recent_window import RecentWindowResult
 
 
+def resolve_ffmpeg_binary() -> str:
+    """Return an ffmpeg executable path that works in batch environments."""
+
+    candidates = [
+        os.environ.get("RECENT_CLIP_FFMPEG"),
+        shutil.which("ffmpeg"),
+        "/usr/bin/ffmpeg",
+        "/bin/ffmpeg",
+    ]
+    for candidate in candidates:
+        if not candidate:
+            continue
+        candidate_path = Path(candidate)
+        if candidate_path.is_file() and os.access(candidate_path, os.X_OK):
+            return str(candidate_path)
+        if os.path.sep not in candidate:
+            resolved = shutil.which(candidate)
+            if resolved:
+                return resolved
+    raise FileNotFoundError(
+        "Could not find ffmpeg for recent-clip extraction. "
+        f"Set RECENT_CLIP_FFMPEG explicitly. PATH={os.environ.get('PATH', '')!r}"
+    )
+
+
 class RecentClipQAModel(RecentWindowQAModel):
     """MiniCPM wrapper that feeds a short video clip instead of sampled frames."""
 
@@ -92,7 +117,7 @@ def cut_recent_clip(
     start_time = max(0.0, float(end_time_seconds) - float(clip_seconds))
     duration = max(0.05, float(end_time_seconds) - start_time)
     clip_path.parent.mkdir(parents=True, exist_ok=True)
-    ffmpeg_bin = os.environ.get("RECENT_CLIP_FFMPEG") or shutil.which("ffmpeg") or "ffmpeg"
+    ffmpeg_bin = resolve_ffmpeg_binary()
     cmd = [
         ffmpeg_bin,
         "-hide_banner",

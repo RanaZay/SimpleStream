@@ -84,6 +84,12 @@ def main() -> None:
         default=None,
         help="Optional sample cap applied independently to backward/realtime/forward after shuffle.",
     )
+    parser.add_argument(
+        "--max_samples_total",
+        type=int,
+        default=None,
+        help="Optional total cap distributed across backward/realtime/forward after shuffle.",
+    )
     args = parser.parse_args()
     cdas_config = CDASConfig(
         enabled=bool(args.cdas_enable),
@@ -119,6 +125,14 @@ def main() -> None:
         backward_anno = backward_anno[: args.max_samples_per_split]
         realtime_anno = realtime_anno[: args.max_samples_per_split]
         forward_anno = forward_anno[: args.max_samples_per_split]
+    if args.max_samples_total is not None:
+        if args.max_samples_total < 1:
+            raise ValueError("--max_samples_total must be >= 1")
+        base, remainder = divmod(args.max_samples_total, 3)
+        quotas = [base + int(index < remainder) for index in range(3)]
+        backward_anno = backward_anno[: quotas[0]]
+        realtime_anno = realtime_anno[: quotas[1]]
+        forward_anno = forward_anno[: quotas[2]]
 
     accelerator.print(f"\n{'=' * 60}")
     run_mode = "All-Frames" if args.frame_selection == "all" else "Recent-Window"
@@ -144,6 +158,8 @@ def main() -> None:
         )
     if args.max_samples_per_split is not None:
         accelerator.print(f"Sample cap per split: {args.max_samples_per_split}")
+    if args.max_samples_total is not None:
+        accelerator.print(f"Total sample cap: {args.max_samples_total}")
     accelerator.print(f"{'=' * 60}\n")
 
     def build_evaluator() -> RecentWindowQAModel:
@@ -270,6 +286,7 @@ def main() -> None:
                         "fps": args.fps,
                         "max_qa_tokens": args.max_qa_tokens,
                         "max_samples_per_split": args.max_samples_per_split,
+                        "max_samples_total": args.max_samples_total,
                         "attn_implementation": os.environ.get("ATTN_IMPLEMENTATION", "sdpa"),
                         "downsample_mode": os.environ.get("MINICPM_DOWNSAMPLE_MODE", "16x"),
                         "max_slice_nums": os.environ.get("MINICPM_MAX_SLICE_NUMS", "1"),

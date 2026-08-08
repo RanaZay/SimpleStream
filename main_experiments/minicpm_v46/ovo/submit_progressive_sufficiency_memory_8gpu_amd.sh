@@ -53,7 +53,9 @@ export NUM_PROCESSES=8
 export MAIN_PROCESS_PORT=${MAIN_PROCESS_PORT:-29920}
 
 LIMIT_TAG=full
-if [[ -n "${MAX_SAMPLES_PER_SPLIT:-}" ]]; then
+if [[ -n "${MAX_SAMPLES_TOTAL:-}" ]]; then
+    LIMIT_TAG="limit${MAX_SAMPLES_TOTAL}"
+elif [[ -n "${MAX_SAMPLES_PER_SPLIT:-}" ]]; then
     LIMIT_TAG="limit${MAX_SAMPLES_PER_SPLIT}_per_split"
 fi
 RESULT_DIR="$REPO_ROOT/main_experiments/results/repro_adaptive/ovo_minicpmv46_progressive_sufficiency_memory_recent6_h64_p12_m3_${LIMIT_TAG}_d8"

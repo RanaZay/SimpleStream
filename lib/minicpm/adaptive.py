@@ -277,6 +277,11 @@ class AdaptiveWindowConfig:
       budgeted_counterfactual_memory: recent-6 backbone plus a utility gate
         that retrieves K=0/1/2 older frames only when predicted answer benefit
         exceeds the visual-token/latency cost.
+      progressive_evidence_memory: recent-6 backbone plus demand-driven
+        semantic memory acquisition. It starts with recent evidence, estimates
+        whether the selected evidence is sufficient, and adds at most K older
+        anchors one by one until the evidence score is high enough or the
+        marginal gain becomes too small.
     """
 
     mode: str = "adaptive"
@@ -332,6 +337,7 @@ class AdaptiveWindowConfig:
             "question_aware_memory",
             "event_summary_memory",
             "budgeted_counterfactual_memory",
+            "progressive_evidence_memory",
         }
         if self.mode not in valid_modes:
             raise ValueError(f"Unknown adaptive mode {self.mode!r}; expected one of {sorted(valid_modes)}")
@@ -377,6 +383,7 @@ class AdaptiveWindowConfig:
             "question_aware_memory",
             "event_summary_memory",
             "budgeted_counterfactual_memory",
+            "progressive_evidence_memory",
         }
 
     @property
@@ -418,6 +425,10 @@ class AdaptiveWindowConfig:
     @property
     def budgeted_counterfactual_memory(self) -> bool:
         return self.mode == "budgeted_counterfactual_memory"
+
+    @property
+    def progressive_evidence_memory(self) -> bool:
+        return self.mode == "progressive_evidence_memory"
 
     @property
     def fixed_memory_budget(self) -> bool:
@@ -710,6 +721,12 @@ def _memory_trigger_decision(
             "enabled": True,
             "activated": True,
             "reason": "utility_gate_pending_until_recent_context",
+        }
+    if config.progressive_evidence_memory:
+        return True, {
+            "enabled": True,
+            "activated": True,
+            "reason": "progressive_evidence_pending_until_recent_context",
         }
     activated = reason == "history_or_temporal"
     return activated, {
@@ -1934,6 +1951,200 @@ def _select_budgeted_counterfactual_memory_chunks(
     return [bank[index]["chunk"] for index in selected_order], metadata, gate
 
 
+def _select_progressive_evidence_memory_chunks(
+    older_chunks: list[Any],
+    recent_chunks: list[Any],
+    max_count: int,
+    config: AdaptiveWindowConfig,
+    prompt: str,
+) -> tuple[list[Any], list[dict[str, Any]], dict[str, Any]]:
+    """Demand-driven semantic memory acquisition.
+
+    This is intentionally not a hard-coded recent/history classifier. Recent-6
+    is treated as the cheapest evidence context. Historical frames are admitted
+    only when the recent evidence coverage is low and each retrieved candidate
+    gives enough additional question-grounded support.
+    """
+
+    max_count = max(0, int(max_count))
+    if max_count <= 0 or not older_chunks:
+        return [], [], {
+            "enabled": True,
+            "activated": False,
+            "reason": "no_budget_or_no_history",
+            "selected_budget": 0,
+        }
+
+    search_chunks = int(config.memory_search_chunks)
+    if search_chunks > 0:
+        older_chunks = older_chunks[-search_chunks:]
+
+    bank = _build_online_memory_bank(older_chunks, config)
+    online_scores, query_flags = _online_memory_base_scores(bank, prompt)
+    semantic_query = _extract_semantic_query(prompt)
+    semantic_scores = [_semantic_proxy_score(entry, semantic_query) for entry in bank]
+    has_semantic_signal = bool(
+        semantic_query["colors"]
+        or semantic_query["text_terms"]
+        or semantic_query["texture_terms"]
+        or semantic_query["object_terms"]
+    )
+    recent_coverage, recent_meta = _recent_evidence_coverage_score(recent_chunks, prompt, config)
+
+    sufficiency_threshold = float(os.environ.get("MINICPM_PEM_SUFFICIENCY_THRESHOLD", "0.62"))
+    low_evidence_threshold = float(os.environ.get("MINICPM_PEM_LOW_EVIDENCE_THRESHOLD", "0.42"))
+    memory_relevance_threshold = float(os.environ.get("MINICPM_PEM_MEMORY_RELEVANCE_THRESHOLD", "0.46"))
+    marginal_gain_threshold = float(os.environ.get("MINICPM_PEM_MARGINAL_GAIN_THRESHOLD", "0.06"))
+    diversity_weight = float(os.environ.get("MINICPM_PEM_DIVERSITY_WEIGHT", "0.18"))
+    max_budget = min(max_count, int(os.environ.get("MINICPM_PEM_MAX_RETRIEVED", str(max_count))))
+    max_budget = max(0, max_budget)
+
+    evidence_scores: list[float] = []
+    for index, entry in enumerate(bank):
+        event_score = float(entry["event_change_norm"])
+        contrast_score = float(entry["contrast_norm"])
+        recency_score = float(entry["temporal_position"])
+        if has_semantic_signal:
+            score = (
+                0.62 * semantic_scores[index]
+                + 0.16 * event_score
+                + 0.12 * contrast_score
+                + 0.10 * recency_score
+            )
+        else:
+            score = online_scores[index]
+        evidence_scores.append(float(score))
+
+    selected_indices: list[int] = []
+    current_support = float(recent_coverage)
+    stop_reason = "recent_evidence_sufficient"
+    acquisition_trace: list[dict[str, Any]] = [
+        {
+            "step": 0,
+            "context": "recent",
+            "evidence_support": current_support,
+            "selected_chunk_id": None,
+            "marginal_gain": 0.0,
+            "decision": "stop" if current_support >= sufficiency_threshold else "expand",
+        }
+    ]
+
+    if current_support < sufficiency_threshold and max_budget > 0:
+        stop_reason = "budget_exhausted"
+        while len(selected_indices) < max_budget:
+            best_index: int | None = None
+            best_score: float | None = None
+            for index in range(len(bank)):
+                if index in selected_indices:
+                    continue
+                if selected_indices:
+                    denom = max(1, len(bank) - 1)
+                    diversity = min(abs(index - chosen) / denom for chosen in selected_indices)
+                else:
+                    diversity = 1.0
+                score = evidence_scores[index] + diversity_weight * diversity
+                if best_score is None or score > best_score or (
+                    score == best_score and best_index is not None and index < best_index
+                ):
+                    best_index = index
+                    best_score = score
+
+            if best_index is None:
+                stop_reason = "no_candidate"
+                break
+
+            candidate_support = float(evidence_scores[best_index])
+            marginal_gain = max(0.0, candidate_support - current_support)
+            if candidate_support < memory_relevance_threshold:
+                stop_reason = "candidate_relevance_below_threshold"
+                acquisition_trace.append(
+                    {
+                        "step": len(selected_indices) + 1,
+                        "context": "candidate_rejected",
+                        "selected_chunk_id": int(bank[best_index]["chunk_id"]),
+                        "candidate_support": candidate_support,
+                        "evidence_support": current_support,
+                        "marginal_gain": float(marginal_gain),
+                        "decision": stop_reason,
+                    }
+                )
+                break
+            if current_support >= low_evidence_threshold and marginal_gain < marginal_gain_threshold:
+                stop_reason = "marginal_gain_too_small"
+                acquisition_trace.append(
+                    {
+                        "step": len(selected_indices) + 1,
+                        "context": "candidate_rejected",
+                        "selected_chunk_id": int(bank[best_index]["chunk_id"]),
+                        "candidate_support": candidate_support,
+                        "evidence_support": current_support,
+                        "marginal_gain": float(marginal_gain),
+                        "decision": stop_reason,
+                    }
+                )
+                break
+
+            selected_indices.append(best_index)
+            current_support = max(current_support, candidate_support)
+            if current_support >= sufficiency_threshold:
+                stop_reason = "evidence_sufficient_after_retrieval"
+            acquisition_trace.append(
+                {
+                    "step": len(selected_indices),
+                    "context": "recent_plus_memory",
+                    "selected_chunk_id": int(bank[best_index]["chunk_id"]),
+                    "candidate_support": candidate_support,
+                    "evidence_support": float(current_support),
+                    "marginal_gain": float(marginal_gain),
+                    "decision": "stop" if current_support >= sufficiency_threshold else "expand",
+                }
+            )
+            if current_support >= sufficiency_threshold:
+                break
+
+    selected_set = set(selected_indices)
+    gate = {
+        "enabled": True,
+        "activated": bool(selected_indices),
+        "reason": stop_reason,
+        "selected_budget": len(selected_indices),
+        "max_budget": max_budget,
+        "recent_coverage": float(recent_coverage),
+        "final_evidence_support": float(current_support),
+        "sufficiency_threshold": sufficiency_threshold,
+        "low_evidence_threshold": low_evidence_threshold,
+        "memory_relevance_threshold": memory_relevance_threshold,
+        "marginal_gain_threshold": marginal_gain_threshold,
+        "has_semantic_signal": has_semantic_signal,
+        "semantic_query": semantic_query,
+        "recent_meta": recent_meta,
+        "acquisition_trace": acquisition_trace,
+    }
+
+    metadata = []
+    for index, entry in enumerate(bank):
+        metadata.append(
+            {
+                "chunk_id": int(entry["chunk_id"]),
+                "selected": index in selected_set,
+                "progressive_evidence_score": float(evidence_scores[index]),
+                "semantic_proxy_score": float(semantic_scores[index]),
+                "online_memory_score": float(online_scores[index]),
+                "event_change_score": float(entry["event_change_score"]),
+                "event_change_norm": float(entry["event_change_norm"]),
+                "contrast_norm": float(entry["contrast_norm"]),
+                "text_detail_norm": float(entry["text_detail_norm"]),
+                "temporal_position": float(entry["temporal_position"]),
+                "semantic_query": semantic_query,
+                "query_flags": query_flags,
+                "evidence_gate": gate,
+            }
+        )
+
+    selected_order = sorted(selected_indices)
+    return [bank[index]["chunk"] for index in selected_order], metadata, gate
+
+
 def _select_semantic_episodic_memory_chunks(
     older_chunks: list[Any],
     count: int,
@@ -2228,6 +2439,9 @@ def _select_memory_chunks(
     if config.budgeted_counterfactual_memory:
         return _select_semantic_memory_chunks(older_chunks, count, config, prompt)
 
+    if config.progressive_evidence_memory:
+        return _select_semantic_memory_chunks(older_chunks, count, config, prompt)
+
     if config.gated_semantic_episodic_memory or config.bound_semantic_episodic_memory:
         return _select_bound_semantic_episodic_memory_chunks(older_chunks, count, config, prompt)
 
@@ -2374,6 +2588,8 @@ def _memory_selector_label(config: AdaptiveWindowConfig) -> str:
         return "conditional_event_bookmark_memory"
     if config.budgeted_counterfactual_memory:
         return "budgeted_counterfactual_utility_gate"
+    if config.progressive_evidence_memory:
+        return "progressive_evidence_acquisition"
     if config.gated_semantic_episodic_memory:
         return "gated_bound_semantic_episodic_memory"
     if config.bound_semantic_episodic_memory:
@@ -2406,12 +2622,14 @@ def select_adaptive_frames(
         raise ValueError("No chunks available for adaptive selection.")
 
     window_size, reason = classify_adaptive_window(prompt, config)
-    if config.event_summary_memory or config.budgeted_counterfactual_memory:
+    if config.event_summary_memory or config.budgeted_counterfactual_memory or config.progressive_evidence_memory:
         window_size = config.mid_window
         if config.event_summary_memory:
             reason = f"event_summary_recent{config.mid_window}_backbone"
-        else:
+        elif config.budgeted_counterfactual_memory:
             reason = f"budgeted_counterfactual_recent{config.mid_window}_backbone"
+        else:
+            reason = f"progressive_evidence_recent{config.mid_window}_backbone"
     memory_triggered, memory_gate = _memory_trigger_decision(prompt, reason, config)
     recent_window_size = window_size
     if memory_triggered and config.fixed_memory_budget and config.memory_anchors > 0:
@@ -2430,6 +2648,15 @@ def select_adaptive_frames(
                 config,
                 prompt=prompt,
                 reason=reason,
+            )
+            memory_triggered = bool(memory_chunks)
+        elif config.progressive_evidence_memory:
+            memory_chunks, memory_scores, memory_gate = _select_progressive_evidence_memory_chunks(
+                older_chunks,
+                recent_chunks,
+                config.memory_anchors,
+                config,
+                prompt=prompt,
             )
             memory_triggered = bool(memory_chunks)
         else:

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
+import torch
 from PIL import Image, ImageDraw
 
 from lib.cdas_sampler import CDASConfig
@@ -105,6 +106,7 @@ _STRICT_RECENT_RE = re.compile(
     re.IGNORECASE,
 )
 _WORD_RE = re.compile(r"[a-z][a-z0-9_-]*", re.IGNORECASE)
+_MCQ_OPTION_RE = re.compile(r"^\s*([A-D])[\.\)]\s*(.+?)\s*$", re.MULTILINE)
 _QUERY_STOPWORDS = {
     "about",
     "after",
@@ -282,6 +284,11 @@ class AdaptiveWindowConfig:
         whether the selected evidence is sufficient, and adds at most K older
         anchors one by one until the evidence score is high enough or the
         marginal gain becomes too small.
+      full_progressive_evidence_memory: the full version of progressive
+        evidence acquisition. It starts from recent-6, scores MiniCPM's MCQ
+        option probabilities, combines answer confidence with evidence support,
+        and retrieves semantic anchors one by one only while the answer is
+        insufficient.
     """
 
     mode: str = "adaptive"
@@ -338,6 +345,7 @@ class AdaptiveWindowConfig:
             "event_summary_memory",
             "budgeted_counterfactual_memory",
             "progressive_evidence_memory",
+            "full_progressive_evidence_memory",
         }
         if self.mode not in valid_modes:
             raise ValueError(f"Unknown adaptive mode {self.mode!r}; expected one of {sorted(valid_modes)}")
@@ -384,6 +392,7 @@ class AdaptiveWindowConfig:
             "event_summary_memory",
             "budgeted_counterfactual_memory",
             "progressive_evidence_memory",
+            "full_progressive_evidence_memory",
         }
 
     @property
@@ -429,6 +438,14 @@ class AdaptiveWindowConfig:
     @property
     def progressive_evidence_memory(self) -> bool:
         return self.mode == "progressive_evidence_memory"
+
+    @property
+    def full_progressive_evidence_memory(self) -> bool:
+        return self.mode == "full_progressive_evidence_memory"
+
+    @property
+    def progressive_evidence_like(self) -> bool:
+        return self.mode in {"progressive_evidence_memory", "full_progressive_evidence_memory"}
 
     @property
     def fixed_memory_budget(self) -> bool:
@@ -722,11 +739,13 @@ def _memory_trigger_decision(
             "activated": True,
             "reason": "utility_gate_pending_until_recent_context",
         }
-    if config.progressive_evidence_memory:
+    if config.progressive_evidence_like:
         return True, {
             "enabled": True,
             "activated": True,
-            "reason": "progressive_evidence_pending_until_recent_context",
+            "reason": "full_progressive_evidence_pending_until_model_score"
+            if config.full_progressive_evidence_memory
+            else "progressive_evidence_pending_until_recent_context",
         }
     activated = reason == "history_or_temporal"
     return activated, {
@@ -2145,6 +2164,373 @@ def _select_progressive_evidence_memory_chunks(
     return [bank[index]["chunk"] for index in selected_order], metadata, gate
 
 
+def _extract_mcq_options(prompt: str) -> list[dict[str, str]]:
+    options: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for match in _MCQ_OPTION_RE.finditer(prompt):
+        letter = match.group(1).upper()
+        if letter in seen:
+            continue
+        text = match.group(2).strip()
+        if text:
+            options.append({"letter": letter, "text": text})
+            seen.add(letter)
+    return options
+
+
+def _option_token_ids(tokenizer: Any, letter: str) -> list[int]:
+    token_ids: list[int] = []
+    for variant in (letter, f" {letter}", f"{letter}.", f" {letter}.", f"({letter}", f" ({letter}"):
+        try:
+            ids = tokenizer.encode(variant, add_special_tokens=False)
+        except TypeError:
+            ids = tokenizer.encode(variant)
+        if ids:
+            token_id = int(ids[0])
+            if token_id not in token_ids:
+                token_ids.append(token_id)
+    return token_ids
+
+
+@torch.inference_mode()
+def _score_mcq_options_from_frames(
+    qa: RecentWindowQAModel,
+    frames: list[Image.Image],
+    prompt: str,
+    options: list[dict[str, str]],
+) -> dict[str, Any]:
+    """Cheap MiniCPM confidence pass for A/B/C/D without generating a full answer."""
+
+    if not options:
+        return {
+            "available": False,
+            "reason": "no_mcq_options",
+            "predicted_letter": None,
+            "predicted_text": "",
+            "confidence": 0.0,
+            "margin": 0.0,
+            "entropy": 1.0,
+            "option_probs": {},
+        }
+
+    tokenizer = getattr(qa.processor, "tokenizer", None)
+    if tokenizer is None:
+        return {
+            "available": False,
+            "reason": "missing_tokenizer",
+            "predicted_letter": None,
+            "predicted_text": "",
+            "confidence": 0.0,
+            "margin": 0.0,
+            "entropy": 1.0,
+            "option_probs": {},
+        }
+
+    content = [{"type": "image", "image": frame} for frame in frames]
+    content.append({"type": "text", "text": prompt})
+    messages = [{"role": "user", "content": content}]
+    template_kwargs: dict[str, Any] = {
+        "tokenize": True,
+        "add_generation_prompt": True,
+        "return_dict": True,
+        "return_tensors": "pt",
+    }
+    processor_kwargs: dict[str, Any] = {
+        "downsample_mode": getattr(qa, "downsample_mode", None),
+        "max_slice_nums": getattr(qa, "max_slice_nums", 1),
+        "use_image_id": False,
+    }
+    processor_kwargs = {key: value for key, value in processor_kwargs.items() if value is not None}
+    score_t0 = time.perf_counter()
+    try:
+        inputs = qa.processor.apply_chat_template(
+            messages,
+            **template_kwargs,
+            processor_kwargs=processor_kwargs,
+        )
+    except TypeError:
+        inputs = qa.processor.apply_chat_template(
+            messages,
+            **template_kwargs,
+            **processor_kwargs,
+        )
+    inputs = inputs.to(qa.model.device)
+    preprocess_seconds = time.perf_counter() - score_t0
+
+    forward_t0 = time.perf_counter()
+    outputs = qa.model(**inputs)
+    _synchronize_gpu_devices()
+    forward_seconds = time.perf_counter() - forward_t0
+
+    logits = outputs.logits[:, -1, :].float().squeeze(0)
+    option_logits: list[torch.Tensor] = []
+    option_letters: list[str] = []
+    option_text_by_letter = {item["letter"]: item["text"] for item in options}
+    token_ids_by_letter: dict[str, list[int]] = {}
+    for item in options:
+        letter = item["letter"]
+        ids = _option_token_ids(tokenizer, letter)
+        token_ids_by_letter[letter] = ids
+        if ids:
+            ids_tensor = torch.tensor(ids, device=logits.device, dtype=torch.long)
+            option_logits.append(torch.max(logits.index_select(0, ids_tensor)))
+            option_letters.append(letter)
+
+    if not option_logits:
+        return {
+            "available": False,
+            "reason": "no_option_token_ids",
+            "predicted_letter": None,
+            "predicted_text": "",
+            "confidence": 0.0,
+            "margin": 0.0,
+            "entropy": 1.0,
+            "option_probs": {},
+            "option_token_ids": token_ids_by_letter,
+            "score_preprocess_ms": preprocess_seconds * 1000.0,
+            "score_forward_ms": forward_seconds * 1000.0,
+        }
+
+    stacked = torch.stack(option_logits)
+    probs_tensor = torch.softmax(stacked, dim=0)
+    probs = {letter: float(probs_tensor[index].item()) for index, letter in enumerate(option_letters)}
+    sorted_probs = sorted(probs.items(), key=lambda item: (-item[1], item[0]))
+    predicted_letter = sorted_probs[0][0]
+    top_prob = sorted_probs[0][1]
+    second_prob = sorted_probs[1][1] if len(sorted_probs) > 1 else 0.0
+    margin = max(0.0, top_prob - second_prob)
+    entropy = 0.0
+    for prob in probs.values():
+        if prob > 0.0:
+            entropy -= prob * float(np.log(prob))
+    entropy_norm = entropy / max(float(np.log(max(2, len(probs)))), 1e-6)
+    confidence = 0.65 * margin + 0.35 * (1.0 - entropy_norm)
+    return {
+        "available": True,
+        "predicted_letter": predicted_letter,
+        "predicted_text": option_text_by_letter.get(predicted_letter, ""),
+        "confidence": float(confidence),
+        "margin": float(margin),
+        "entropy": float(entropy_norm),
+        "top_prob": float(top_prob),
+        "second_prob": float(second_prob),
+        "option_probs": probs,
+        "option_token_ids": token_ids_by_letter,
+        "score_preprocess_ms": preprocess_seconds * 1000.0,
+        "score_forward_ms": forward_seconds * 1000.0,
+    }
+
+
+def _rank_full_progressive_candidates(
+    older_chunks: list[Any],
+    recent_chunks: list[Any],
+    config: AdaptiveWindowConfig,
+    prompt: str,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    search_chunks = int(config.memory_search_chunks)
+    if search_chunks > 0:
+        older_chunks = older_chunks[-search_chunks:]
+    if not older_chunks:
+        return [], {"semantic_query": _extract_semantic_query(prompt), "recent_meta": {}}
+
+    bank = _build_online_memory_bank(older_chunks, config)
+    online_scores, query_flags = _online_memory_base_scores(bank, prompt)
+    semantic_query = _extract_semantic_query(prompt)
+    semantic_scores = [_semantic_proxy_score(entry, semantic_query) for entry in bank]
+    recent_support, recent_meta = _recent_evidence_coverage_score(recent_chunks, prompt, config)
+    candidates: list[dict[str, Any]] = []
+    for index, entry in enumerate(bank):
+        score = (
+            0.60 * float(semantic_scores[index])
+            + 0.15 * float(entry["event_change_norm"])
+            + 0.15 * float(entry["contrast_norm"])
+            + 0.10 * float(entry["temporal_position"])
+        )
+        candidates.append(
+            {
+                "bank_index": index,
+                "chunk": entry["chunk"],
+                "chunk_id": int(entry["chunk_id"]),
+                "full_progressive_candidate_score": float(score),
+                "semantic_proxy_score": float(semantic_scores[index]),
+                "online_memory_score": float(online_scores[index]),
+                "event_change_score": float(entry["event_change_score"]),
+                "event_change_norm": float(entry["event_change_norm"]),
+                "contrast_norm": float(entry["contrast_norm"]),
+                "text_detail_norm": float(entry["text_detail_norm"]),
+                "temporal_position": float(entry["temporal_position"]),
+                "semantic_query": semantic_query,
+                "query_flags": query_flags,
+            }
+        )
+    candidates.sort(key=lambda item: (-float(item["full_progressive_candidate_score"]), int(item["chunk_id"])))
+    return candidates, {
+        "semantic_query": semantic_query,
+        "query_flags": query_flags,
+        "recent_proxy_support": float(recent_support),
+        "recent_meta": recent_meta,
+    }
+
+
+def _full_progressive_evidence_selection(
+    qa: RecentWindowQAModel,
+    chunks: list[Any],
+    prompt: str,
+    config: AdaptiveWindowConfig,
+) -> AdaptiveSelection:
+    recent_window_size = config.mid_window
+    recent_chunks = chunks[-recent_window_size:]
+    older_chunks = chunks[: max(0, len(chunks) - recent_window_size)]
+    options = _extract_mcq_options(prompt)
+    candidates, rank_meta = _rank_full_progressive_candidates(older_chunks, recent_chunks, config, prompt)
+
+    max_budget = min(
+        max(0, int(config.memory_anchors)),
+        max(0, int(os.environ.get("MINICPM_FPEM_MAX_RETRIEVED", str(config.memory_anchors)))),
+    )
+    sufficiency_threshold = float(os.environ.get("MINICPM_FPEM_SUFFICIENCY_THRESHOLD", "0.55"))
+    marginal_gain_threshold = float(os.environ.get("MINICPM_FPEM_MARGINAL_GAIN_THRESHOLD", "0.025"))
+    confidence_weight = float(os.environ.get("MINICPM_FPEM_CONFIDENCE_WEIGHT", "0.55"))
+    evidence_weight = float(os.environ.get("MINICPM_FPEM_EVIDENCE_WEIGHT", "0.45"))
+    relevance_threshold = float(os.environ.get("MINICPM_FPEM_MEMORY_RELEVANCE_THRESHOLD", "0.35"))
+
+    selected_memory_chunks: list[Any] = []
+    selected_candidate_ids: set[int] = set()
+    trace: list[dict[str, Any]] = []
+    previous_sufficiency: float | None = None
+    stop_reason = "budget_exhausted"
+
+    for step in range(max_budget + 1):
+        context_chunks = [*sorted(selected_memory_chunks, key=lambda chunk: int(chunk.chunk_index)), *recent_chunks]
+        context_frames = [frame for chunk in context_chunks for frame in chunk.frames]
+        option_score = _score_mcq_options_from_frames(qa, context_frames, prompt, options)
+        support_prompt = prompt
+        predicted_text = str(option_score.get("predicted_text") or "")
+        if predicted_text:
+            support_prompt = f"{_query_text_only(prompt)} {predicted_text}"
+        evidence_support, evidence_meta = _recent_evidence_coverage_score(context_chunks, support_prompt, config)
+        answer_confidence = float(option_score.get("confidence", 0.0))
+        sufficiency = (
+            confidence_weight * answer_confidence
+            + evidence_weight * float(evidence_support)
+        )
+        marginal_gain = 0.0 if previous_sufficiency is None else sufficiency - previous_sufficiency
+        trace_entry = {
+            "step": step,
+            "context": "recent" if not selected_memory_chunks else "recent_plus_memory",
+            "selected_memory_chunk_ids": [int(chunk.chunk_index) for chunk in selected_memory_chunks],
+            "num_frames": len(context_frames),
+            "predicted_letter": option_score.get("predicted_letter"),
+            "predicted_text": option_score.get("predicted_text"),
+            "answer_confidence": answer_confidence,
+            "answer_margin": float(option_score.get("margin", 0.0)),
+            "answer_entropy": float(option_score.get("entropy", 1.0)),
+            "option_probs": option_score.get("option_probs", {}),
+            "evidence_support": float(evidence_support),
+            "sufficiency": float(sufficiency),
+            "marginal_gain": float(marginal_gain),
+            "score_available": bool(option_score.get("available")),
+            "score_reason": option_score.get("reason"),
+            "score_preprocess_ms": option_score.get("score_preprocess_ms"),
+            "score_forward_ms": option_score.get("score_forward_ms"),
+            "evidence_meta": evidence_meta,
+        }
+        if sufficiency >= sufficiency_threshold:
+            stop_reason = "answer_sufficient"
+            trace_entry["decision"] = "stop"
+            trace.append(trace_entry)
+            break
+        if step > 0 and marginal_gain < marginal_gain_threshold:
+            stop_reason = "marginal_gain_too_small"
+            trace_entry["decision"] = "stop"
+            trace.append(trace_entry)
+            break
+        if step >= max_budget:
+            trace_entry["decision"] = "stop"
+            trace.append(trace_entry)
+            break
+
+        next_candidate: dict[str, Any] | None = None
+        for candidate in candidates:
+            if int(candidate["chunk_id"]) in selected_candidate_ids:
+                continue
+            if float(candidate["full_progressive_candidate_score"]) < relevance_threshold:
+                continue
+            next_candidate = candidate
+            break
+        if next_candidate is None:
+            stop_reason = "no_relevant_candidate"
+            trace_entry["decision"] = "stop_no_candidate"
+            trace.append(trace_entry)
+            break
+        trace_entry["decision"] = "retrieve"
+        trace_entry["retrieved_next_chunk_id"] = int(next_candidate["chunk_id"])
+        trace_entry["retrieved_next_score"] = float(next_candidate["full_progressive_candidate_score"])
+        trace.append(trace_entry)
+        selected_candidate_ids.add(int(next_candidate["chunk_id"]))
+        selected_memory_chunks.append(next_candidate["chunk"])
+        previous_sufficiency = sufficiency
+
+    selected_memory_chunks = sorted(selected_memory_chunks, key=lambda chunk: int(chunk.chunk_index))
+    selected_chunks = [*selected_memory_chunks, *recent_chunks]
+    frames = [frame for chunk in selected_chunks for frame in chunk.frames]
+    chunk_ids = [int(chunk.chunk_index) for chunk in selected_chunks for _frame in chunk.frames]
+    timestamps = [float(ts) for chunk in selected_chunks for ts in chunk.frame_timestamps]
+    memory_scores = []
+    selected_ids = {int(chunk.chunk_index) for chunk in selected_memory_chunks}
+    for candidate in candidates:
+        item = {key: value for key, value in candidate.items() if key != "chunk"}
+        item["selected"] = int(item["chunk_id"]) in selected_ids
+        memory_scores.append(item)
+
+    metadata = {
+        "mode": config.mode,
+        "window_size": config.mid_window,
+        "window_reason": f"full_progressive_evidence_recent{config.mid_window}_backbone",
+        "config": {
+            "min_window": config.min_window,
+            "mid_window": config.mid_window,
+            "max_window": config.max_window,
+            "memory_anchors": config.memory_anchors,
+            "memory_search_chunks": config.memory_search_chunks,
+            "full_progressive_sufficiency_threshold": sufficiency_threshold,
+            "full_progressive_marginal_gain_threshold": marginal_gain_threshold,
+            "full_progressive_confidence_weight": confidence_weight,
+            "full_progressive_evidence_weight": evidence_weight,
+            "full_progressive_relevance_threshold": relevance_threshold,
+        },
+        "decoded_chunks": len(chunks),
+        "recent_window_size": recent_window_size,
+        "recent_chunk_ids": [int(chunk.chunk_index) for chunk in recent_chunks],
+        "memory_triggered": bool(selected_memory_chunks),
+        "memory_gate": {
+            "enabled": True,
+            "activated": bool(selected_memory_chunks),
+            "reason": stop_reason,
+            "selected_budget": len(selected_memory_chunks),
+            "max_budget": max_budget,
+            "mcq_options": options,
+            "rank_meta": rank_meta,
+            "sufficiency_trace": trace,
+        },
+        "memory_fixed_budget": False,
+        "memory_selector": _memory_selector_label(config),
+        "memory_chunk_ids": [int(chunk.chunk_index) for chunk in selected_memory_chunks],
+        "memory_scores": memory_scores,
+        "candidate_frames": len(frames),
+        "selected_frames": len(frames),
+        "candidate_chunk_ids": chunk_ids,
+        "selected_chunk_ids": chunk_ids,
+        "candidate_timestamps": timestamps,
+        "selected_timestamps": timestamps,
+        "dedup_applied": False,
+        "dedup_scores": [],
+        "foveation_applied": False,
+        "foveation_boxes": [],
+    }
+    return AdaptiveSelection(frames=frames, final_chunk_ids=chunk_ids, metadata=metadata)
+
+
 def _select_semantic_episodic_memory_chunks(
     older_chunks: list[Any],
     count: int,
@@ -2590,6 +2976,8 @@ def _memory_selector_label(config: AdaptiveWindowConfig) -> str:
         return "budgeted_counterfactual_utility_gate"
     if config.progressive_evidence_memory:
         return "progressive_evidence_acquisition"
+    if config.full_progressive_evidence_memory:
+        return "full_progressive_evidence_acquisition"
     if config.gated_semantic_episodic_memory:
         return "gated_bound_semantic_episodic_memory"
     if config.bound_semantic_episodic_memory:
@@ -2622,7 +3010,11 @@ def select_adaptive_frames(
         raise ValueError("No chunks available for adaptive selection.")
 
     window_size, reason = classify_adaptive_window(prompt, config)
-    if config.event_summary_memory or config.budgeted_counterfactual_memory or config.progressive_evidence_memory:
+    if (
+        config.event_summary_memory
+        or config.budgeted_counterfactual_memory
+        or config.progressive_evidence_like
+    ):
         window_size = config.mid_window
         if config.event_summary_memory:
             reason = f"event_summary_recent{config.mid_window}_backbone"
@@ -2650,7 +3042,7 @@ def select_adaptive_frames(
                 reason=reason,
             )
             memory_triggered = bool(memory_chunks)
-        elif config.progressive_evidence_memory:
+        elif config.progressive_evidence_like:
             memory_chunks, memory_scores, memory_gate = _select_progressive_evidence_memory_chunks(
                 older_chunks,
                 recent_chunks,
@@ -2796,7 +3188,10 @@ def query_adaptive_window(
         raise ValueError(f"No chunks decoded from video: {video_path}")
 
     selection_t0 = time.perf_counter()
-    selection = select_adaptive_frames(chunks, prompt=prompt, config=config)
+    if config.full_progressive_evidence_memory:
+        selection = _full_progressive_evidence_selection(qa, chunks, prompt=prompt, config=config)
+    else:
+        selection = select_adaptive_frames(chunks, prompt=prompt, config=config)
     selection_time = time.perf_counter() - selection_t0
     if not selection.frames:
         raise ValueError(f"No frames selected from video: {video_path}")

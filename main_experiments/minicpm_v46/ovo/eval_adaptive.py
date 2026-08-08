@@ -43,6 +43,7 @@ def _consume_adaptive_args() -> argparse.Namespace:
             "event_summary_memory",
             "budgeted_counterfactual_memory",
             "progressive_evidence_memory",
+            "full_progressive_evidence_memory",
         ],
         default=os.environ.get("MINICPM_ADAPTIVE_MODE", "adaptive"),
     )

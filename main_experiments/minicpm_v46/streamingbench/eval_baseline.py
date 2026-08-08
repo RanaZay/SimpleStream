@@ -332,6 +332,9 @@ def run_benchmark(
                     cdas_metadata = getattr(result, "cdas_metadata", None)
                     if cdas_metadata is not None:
                         record["cdas"] = cdas_metadata
+                    adaptive_metadata = getattr(result, "adaptive_metadata", None)
+                    if adaptive_metadata is not None:
+                        record["adaptive"] = adaptive_metadata
                     logger.info(
                         "  [%d/%d] %s %s -> %s (gt=%s%s)",
                         processed,

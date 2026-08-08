@@ -289,6 +289,9 @@ class AdaptiveWindowConfig:
         option probabilities, combines answer confidence with evidence support,
         and retrieves semantic anchors one by one only while the answer is
         insufficient.
+      progressive_sufficiency_memory: isolated PRISM-style mode using Recent-6,
+        a diverse CLIP-ranked history queue, iterative option-logit/visual-support
+        sufficiency, and at most three historical frames.
     """
 
     mode: str = "adaptive"
@@ -346,6 +349,7 @@ class AdaptiveWindowConfig:
             "budgeted_counterfactual_memory",
             "progressive_evidence_memory",
             "full_progressive_evidence_memory",
+            "progressive_sufficiency_memory",
         }
         if self.mode not in valid_modes:
             raise ValueError(f"Unknown adaptive mode {self.mode!r}; expected one of {sorted(valid_modes)}")
@@ -393,6 +397,7 @@ class AdaptiveWindowConfig:
             "budgeted_counterfactual_memory",
             "progressive_evidence_memory",
             "full_progressive_evidence_memory",
+            "progressive_sufficiency_memory",
         }
 
     @property
@@ -446,6 +451,10 @@ class AdaptiveWindowConfig:
     @property
     def progressive_evidence_like(self) -> bool:
         return self.mode in {"progressive_evidence_memory", "full_progressive_evidence_memory"}
+
+    @property
+    def progressive_sufficiency_memory(self) -> bool:
+        return self.mode == "progressive_sufficiency_memory"
 
     @property
     def fixed_memory_budget(self) -> bool:
@@ -746,6 +755,12 @@ def _memory_trigger_decision(
             "reason": "full_progressive_evidence_pending_until_model_score"
             if config.full_progressive_evidence_memory
             else "progressive_evidence_pending_until_recent_context",
+        }
+    if config.progressive_sufficiency_memory:
+        return True, {
+            "enabled": True,
+            "activated": True,
+            "reason": "progressive_sufficiency_pending",
         }
     activated = reason == "history_or_temporal"
     return activated, {
@@ -2978,6 +2993,8 @@ def _memory_selector_label(config: AdaptiveWindowConfig) -> str:
         return "progressive_evidence_acquisition"
     if config.full_progressive_evidence_memory:
         return "full_progressive_evidence_acquisition"
+    if config.progressive_sufficiency_memory:
+        return "progressive_sufficiency_memory"
     if config.gated_semantic_episodic_memory:
         return "gated_bound_semantic_episodic_memory"
     if config.bound_semantic_episodic_memory:
@@ -3188,7 +3205,23 @@ def query_adaptive_window(
         raise ValueError(f"No chunks decoded from video: {video_path}")
 
     selection_t0 = time.perf_counter()
-    if config.full_progressive_evidence_memory:
+    answer_prompt = prompt
+    if config.progressive_sufficiency_memory:
+        from lib.minicpm.progressive_sufficiency import select_progressive_sufficiency_memory
+
+        progressive_selection = select_progressive_sufficiency_memory(
+            qa,
+            chunks,
+            prompt=prompt,
+            config=config,
+        )
+        selection = AdaptiveSelection(
+            frames=progressive_selection.frames,
+            final_chunk_ids=progressive_selection.final_chunk_ids,
+            metadata=progressive_selection.metadata,
+        )
+        answer_prompt = progressive_selection.answer_prompt
+    elif config.full_progressive_evidence_memory:
         selection = _full_progressive_evidence_selection(qa, chunks, prompt=prompt, config=config)
     else:
         selection = select_adaptive_frames(chunks, prompt=prompt, config=config)
@@ -3197,7 +3230,7 @@ def query_adaptive_window(
         raise ValueError(f"No frames selected from video: {video_path}")
 
     t0 = time.perf_counter()
-    answer = qa.generate_from_frames(selection.frames, prompt)
+    answer = qa.generate_from_frames(selection.frames, answer_prompt)
     _synchronize_gpu_devices()
     generate_time = time.perf_counter() - t0
     ttft_seconds = getattr(qa, "_last_ttft_seconds", 0.0) or 0.0
@@ -3215,6 +3248,12 @@ def query_adaptive_window(
         after_memory=after_memory,
         qa=qa,
     )
+    if config.progressive_sufficiency_memory:
+        selection.metadata["final_generation_ms"] = float(generate_time * 1000.0)
+        selection.metadata["ttft_seconds"] = float(ttft_seconds)
+        selection.metadata["end_to_end_time_seconds"] = float(decode_time + selection_time + generate_time)
+        selection.metadata["peak_allocated_gpu_mb"] = float(profile_metadata.get("gpu_peak_allocated_mb", 0.0))
+        selection.metadata["peak_reserved_gpu_mb"] = float(profile_metadata.get("gpu_peak_reserved_mb", 0.0))
     profile_metadata["adaptive"] = selection.metadata
     profile_metadata["decoded_chunks"] = len(chunks)
     profile_metadata["decoded_frames"] = sum(len(chunk.frames) for chunk in chunks)

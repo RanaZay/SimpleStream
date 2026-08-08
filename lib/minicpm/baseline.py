@@ -856,6 +856,9 @@ def _result_metadata(result: RecentWindowResult, decode_backend: str) -> dict[st
     cdas_metadata = getattr(result, "cdas_metadata", None)
     if cdas_metadata is not None:
         metadata["cdas"] = cdas_metadata
+    adaptive_metadata = getattr(result, "adaptive_metadata", None)
+    if adaptive_metadata is not None:
+        metadata["adaptive"] = adaptive_metadata
     return metadata
 
 

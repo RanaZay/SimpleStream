@@ -37,6 +37,7 @@ def _consume_adaptive_args() -> argparse.Namespace:
             "budgeted_counterfactual_memory",
             "progressive_evidence_memory",
             "full_progressive_evidence_memory",
+            "progressive_sufficiency_memory",
         ],
         default=os.environ.get("MINICPM_ADAPTIVE_MODE", "adaptive"),
     )

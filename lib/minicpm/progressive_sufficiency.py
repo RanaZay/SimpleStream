@@ -101,6 +101,10 @@ def _score_chunks_with_clip(
     return [max(-1.0, score) for score in scores]
 
 
+def _normalize_clip_support(raw_score: float) -> float:
+    return float(np.clip((float(raw_score) - 0.15) / 0.30, 0.0, 1.0))
+
+
 def _rank_candidates(
     qa: RecentWindowQAModel,
     older_chunks: list[Any],
@@ -116,7 +120,8 @@ def _rank_candidates(
     semantic_query = adaptive_mod._extract_semantic_query(prompt)
     cue_scores = [adaptive_mod._semantic_proxy_score(entry, semantic_query) for entry in bank]
     scorer = _get_clip_scorer(qa)
-    semantic_scores = _score_chunks_with_clip(scorer, _question_text(prompt), older_chunks)
+    semantic_scores_raw = _score_chunks_with_clip(scorer, _question_text(prompt), older_chunks)
+    semantic_scores = [_normalize_clip_support(score) for score in semantic_scores_raw]
 
     candidates: list[dict[str, Any]] = []
     for index, entry in enumerate(bank):
@@ -127,6 +132,7 @@ def _rank_candidates(
                 "chunk_id": int(entry["chunk_id"]),
                 "timestamp": float(adaptive_mod._chunk_timestamp(entry["chunk"])),
                 "semantic_score": float(semantic_scores[index]),
+                "semantic_score_raw": float(semantic_scores_raw[index]),
                 "event_score": float(entry["event_change_norm"]),
                 "detail_score": float(
                     0.50 * float(entry["contrast_norm"]) + 0.50 * float(entry["text_detail_norm"])
@@ -249,6 +255,38 @@ def _sequence_option_logits(
     return torch.stack(scores), (time.perf_counter() - forward_t0) * 1000.0
 
 
+def _minimal_decode_option_logits(
+    qa: RecentWindowQAModel,
+    frames: list[Image.Image],
+    prompt: str,
+    options: list[dict[str, str]],
+    fallback_error: Exception,
+) -> tuple[torch.Tensor, float, str]:
+    inputs = _build_minicpm_inputs(qa, frames, prompt)
+    forward_t0 = time.perf_counter()
+    generated = qa.model.generate(
+        **inputs,
+        downsample_mode=qa.downsample_mode,
+        max_new_tokens=1,
+        do_sample=False,
+        pad_token_id=getattr(qa.processor.tokenizer, "eos_token_id", None),
+    )
+    _synchronize_gpu_devices()
+    forward_ms = (time.perf_counter() - forward_t0) * 1000.0
+    prompt_len = int(inputs.input_ids.shape[1])
+    decoded = qa.processor.tokenizer.decode(
+        generated[0][prompt_len:],
+        skip_special_tokens=True,
+        clean_up_tokenization_spaces=False,
+    ).strip().upper()
+    match = re.search(r"\b([A-D])\b", decoded)
+    letters = [item["letter"] for item in options]
+    predicted_letter = match.group(1) if match and match.group(1) in letters else letters[0]
+    logits = torch.full((len(options),), -20.0, dtype=torch.float32, device=qa.model.device)
+    logits[letters.index(predicted_letter)] = 20.0
+    return logits, forward_ms, repr(fallback_error)
+
+
 @torch.inference_mode()
 def _score_options(
     qa: RecentWindowQAModel,
@@ -277,9 +315,17 @@ def _score_options(
         logits = outputs.logits[0, -1].float()
         selected_logits = torch.stack([logits[token_ids[letter]] for letter in letters])
         scoring_mechanism = "direct_option_logits"
+        fallback_error = None
     else:
-        selected_logits, forward_ms = _sequence_option_logits(qa, frames, prompt, options)
-        scoring_mechanism = "sequence_log_likelihood"
+        try:
+            selected_logits, forward_ms = _sequence_option_logits(qa, frames, prompt, options)
+            scoring_mechanism = "sequence_log_likelihood"
+            fallback_error = None
+        except Exception as exc:
+            selected_logits, forward_ms, fallback_error = _minimal_decode_option_logits(
+                qa, frames, prompt, options, exc
+            )
+            scoring_mechanism = "minimal_one_token_decode_fallback"
     probabilities_tensor = torch.softmax(selected_logits, dim=0)
     probabilities = {
         letter: float(probabilities_tensor[index].item()) for index, letter in enumerate(letters)
@@ -291,7 +337,7 @@ def _score_options(
     normalized_entropy = entropy / max(math.log(len(probabilities)), 1e-8)
     predicted_letter = ordered[0][0]
     predicted_text = next(item["text"] for item in options if item["letter"] == predicted_letter)
-    return {
+    result = {
         "predicted_option": predicted_letter,
         "predicted_answer_text": predicted_text,
         "option_probabilities": probabilities,
@@ -302,6 +348,9 @@ def _score_options(
         "option_scoring_mechanism": scoring_mechanism,
         "option_forward_ms": float(forward_ms),
     }
+    if fallback_error is not None:
+        result["option_scoring_fallback_error"] = fallback_error
+    return result
 
 
 def _evaluate_sufficiency(
@@ -320,7 +369,7 @@ def _evaluate_sufficiency(
     support_text = f"{_question_text(prompt)} Answer: {option_score['predicted_answer_text']}"
     support_scores = scorer.score(support_text, frames)
     visual_support_raw = max(support_scores) if support_scores else -1.0
-    visual_support_norm = float(np.clip((visual_support_raw - 0.15) / 0.30, 0.0, 1.0))
+    visual_support_norm = _normalize_clip_support(visual_support_raw)
     sufficiency = (
         margin_weight * float(option_score["answer_margin"])
         + entropy_weight * float(option_score["entropy_confidence"])
@@ -338,7 +387,7 @@ def _evaluate_sufficiency(
 
 
 def _candidate_metadata(candidate: dict[str, Any]) -> dict[str, Any]:
-    return {
+    metadata = {
         key: candidate[key]
         for key in (
             "chunk_id",
@@ -351,6 +400,9 @@ def _candidate_metadata(candidate: dict[str, Any]) -> dict[str, Any]:
             "total_score",
         )
     }
+    if "semantic_score_raw" in candidate:
+        metadata["semantic_score_raw"] = candidate["semantic_score_raw"]
+    return metadata
 
 
 def _print_trace(metadata: dict[str, Any]) -> None:

@@ -354,7 +354,8 @@ def main() -> None:
     del existing_rows
 
     tasks = _load_tasks(args)
-    local_tasks = list(accelerator.split_between_processes(tasks))
+    with accelerator.split_between_processes(tasks) as split_tasks:
+        local_tasks = list(split_tasks)
     logger.info(
         "[rank %s] EgoSchema tasks local=%s total=%s mode=%s",
         accelerator.process_index,

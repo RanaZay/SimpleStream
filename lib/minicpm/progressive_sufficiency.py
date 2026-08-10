@@ -16,7 +16,7 @@ from lib.minicpm.referential_memory import AnswerGroundedFrameScorer
 
 
 _PSM_OPTION_RE = re.compile(
-    r"([A-D])[\.)]\s*(.+?)(?=(?:\s*;?\s*[A-D][\.)]\s)|$)",
+    r"([A-E])[\.)]\s*(.+?)(?=(?:\s*;?\s*[A-E][\.)]\s)|$)",
     re.IGNORECASE | re.DOTALL,
 )
 _PSM_HISTORY_INSTRUCTION = (
@@ -279,7 +279,7 @@ def _minimal_decode_option_logits(
         skip_special_tokens=True,
         clean_up_tokenization_spaces=False,
     ).strip().upper()
-    match = re.search(r"\b([A-D])\b", decoded)
+    match = re.search(r"\b([A-E])\b", decoded)
     letters = [item["letter"] for item in options]
     predicted_letter = match.group(1) if match and match.group(1) in letters else letters[0]
     logits = torch.full((len(options),), -20.0, dtype=torch.float32, device=qa.model.device)

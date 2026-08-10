@@ -106,7 +106,7 @@ _STRICT_RECENT_RE = re.compile(
     re.IGNORECASE,
 )
 _WORD_RE = re.compile(r"[a-z][a-z0-9_-]*", re.IGNORECASE)
-_MCQ_OPTION_RE = re.compile(r"^\s*([A-D])[\.\)]\s*(.+?)\s*$", re.MULTILINE)
+_MCQ_OPTION_RE = re.compile(r"^\s*([A-E])[\.\)]\s*(.+?)\s*$", re.MULTILINE)
 _QUERY_STOPWORDS = {
     "about",
     "after",

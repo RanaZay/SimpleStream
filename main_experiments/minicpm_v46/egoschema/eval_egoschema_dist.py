@@ -311,10 +311,10 @@ def print_summary(records: list[dict[str, Any]], label: str) -> None:
     print("=" * 78)
 
 
-def _build_model(args: argparse.Namespace) -> RecentWindowQAModel:
+def _build_model(args: argparse.Namespace, device: Any) -> RecentWindowQAModel:
     return RecentWindowQAModel(
         model_name=args.qa_model,
-        device=args.qa_device,
+        device=args.qa_device or device,
         max_new_tokens=args.max_qa_tokens,
         attn_implementation=os.environ.get("ATTN_IMPLEMENTATION", "sdpa"),
     )
@@ -363,7 +363,7 @@ def main() -> None:
         len(tasks),
         args.mode,
     )
-    qa = _build_model(args)
+    qa = _build_model(args, accelerator.device)
 
     with incremental_path.open("a", encoding="utf-8") as handle:
         for local_index, task in enumerate(local_tasks, start=1):

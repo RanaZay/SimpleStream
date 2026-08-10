@@ -26,7 +26,10 @@ os.environ.setdefault("TORCH_NCCL_BLOCKING_WAIT", "0")
 
 from accelerate import Accelerator
 from accelerate.utils import InitProcessGroupKwargs
-from datasets import load_dataset
+try:
+    from datasets import load_dataset
+except ImportError:  # Local annotation JSON mode does not require datasets.
+    load_dataset = None
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../../..")))
 
@@ -138,8 +141,31 @@ def make_key(video_id: str) -> str:
     return f"egoschema::{video_id}"
 
 
+def _load_annotation_rows(annotation_json: str) -> list[dict[str, Any]]:
+    with open(annotation_json, "r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+    if isinstance(payload, dict):
+        rows = payload.get("records", payload.get("rows", payload.get("data")))
+        if rows is None:
+            raise ValueError(
+                f"Annotation JSON {annotation_json} must contain records/rows/data or be a list."
+            )
+    else:
+        rows = payload
+    if not isinstance(rows, list):
+        raise ValueError(f"Annotation JSON {annotation_json} did not contain a list of rows.")
+    return [dict(row) for row in rows]
+
+
 def _load_tasks(args: argparse.Namespace) -> list[dict[str, Any]]:
-    dataset = load_dataset(args.dataset_path, args.dataset_name, split=args.split)
+    if args.annotation_json:
+        dataset = _load_annotation_rows(args.annotation_json)
+    else:
+        if load_dataset is None:
+            raise ImportError(
+                "datasets is required unless --annotation-json is provided."
+            )
+        dataset = load_dataset(args.dataset_path, args.dataset_name, split=args.split)
     video_dir = args.video_dir or _video_cache_dir()
     tasks: list[dict[str, Any]] = []
     for index, item in enumerate(dataset):
@@ -299,6 +325,11 @@ def main() -> None:
     parser.add_argument("--dataset-path", default="lmms-lab/egoschema")
     parser.add_argument("--dataset-name", default="Subset")
     parser.add_argument("--split", default="test")
+    parser.add_argument(
+        "--annotation-json",
+        default="",
+        help="Optional local EgoSchema annotation JSON. Avoids Hugging Face dataset loading.",
+    )
     parser.add_argument("--video-dir", default="")
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--mode", choices=["recent6", "progressive_sufficiency_memory"], required=True)

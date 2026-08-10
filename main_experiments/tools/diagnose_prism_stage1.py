@@ -488,15 +488,64 @@ def _same_context(rows: list[dict[str, Any]]) -> tuple[dict[str, Any], list[dict
     same = []
     diff = []
     by_label: dict[str, Counter] = defaultdict(Counter)
+    reason_counts: Counter = Counter()
+    reason_by_label: dict[str, Counter] = defaultdict(Counter)
+    chunk_match_counts: Counter = Counter()
+    examples: list[dict[str, Any]] = []
     for row in no_memory:
         answer_equal = row["baseline_prediction"] == row["prism_prediction"]
         by_label[row["label"]]["same_answer" if answer_equal else "different_answer"] += 1
+        try:
+            baseline_ids = json.loads(str(row.get("baseline_chunk_ids") or "[]"))
+            prism_ids = json.loads(str(row.get("prism_final_selected_chunk_ids") or "[]"))
+        except json.JSONDecodeError:
+            baseline_ids = []
+            prism_ids = []
+        chunks_equal = baseline_ids == prism_ids
+        chunk_match_counts["same_final_chunk_ids" if chunks_equal else "different_final_chunk_ids"] += 1
+        if answer_equal:
+            reason = "same_answer"
+        elif not chunks_equal:
+            reason = "different_recent_chunk_ids"
+        elif row.get("baseline_decode_backend") != row.get("prism_decode_backend"):
+            reason = "different_decode_backend"
+        elif row.get("baseline_prompt_available") or row.get("prism_prompt_available"):
+            reason = "prompt_field_available_needs_manual_compare"
+        else:
+            reason = "same_chunk_ids_prompt_not_stored_generation_differs"
+        reason_counts[reason] += 1
+        reason_by_label[row["label"]][reason] += 1
+        if not answer_equal and len(examples) < 30:
+            examples.append(
+                {
+                    "benchmark": row["benchmark"],
+                    "task": row["task"],
+                    "label": row["label"],
+                    "question": row["question"],
+                    "ground_truth": row["ground_truth"],
+                    "baseline_prediction": row["baseline_prediction"],
+                    "prism_prediction": row["prism_prediction"],
+                    "reason": reason,
+                    "baseline_chunk_ids": baseline_ids,
+                    "prism_final_selected_chunk_ids": prism_ids,
+                    "baseline_decode_backend": row.get("baseline_decode_backend"),
+                    "prism_decode_backend": row.get("prism_decode_backend"),
+                    "baseline_file": row.get("baseline_file"),
+                    "prism_file": row.get("prism_file"),
+                }
+            )
         (same if answer_equal else diff).append(row)
     return {
         "no_historical_frame_samples": len(no_memory),
         "baseline_answer_equals_prism_answer": len(same),
         "baseline_answer_differs_from_prism_answer": len(diff),
         "by_label": {label: dict(counter) for label, counter in sorted(by_label.items())},
+        "chunk_id_match_counts": dict(chunk_match_counts),
+        "different_answer_reason_counts": dict(reason_counts),
+        "different_answer_reason_by_label": {
+            label: dict(counter) for label, counter in sorted(reason_by_label.items())
+        },
+        "different_answer_examples": examples,
         "known_call_path_difference": (
             "PRISM performs an iteration-0 option-scoring forward pass before final generation; "
             "when memory is not selected, final generation uses the same recent frames and prompt "

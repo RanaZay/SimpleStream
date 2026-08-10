@@ -34,7 +34,7 @@ export HIP_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 
 export NUM_PROCESSES=8
 export MAIN_PROCESS_PORT=${MAIN_PROCESS_PORT:-29963}
-RESULT_DIR="$REPO_ROOT/main_experiments/results/repro_egoschema/egoschema_subset_minicpmv46_progressive_sufficiency_memory_recent6_h64_p12_m3_d8"
+RESULT_DIR="${EGOSCHEMA_RESULT_DIR:-$REPO_ROOT/main_experiments/results/repro_egoschema/egoschema_subset_minicpmv46_progressive_sufficiency_memory_recent6_h64_p12_m3_d8}"
 ts=$(date +%Y%m%d_%H%M%S)
 if [[ "${RESUME:-0}" != "1" ]]; then
     mv "$RESULT_DIR" "${RESULT_DIR}.old_$ts" 2>/dev/null || true

@@ -30,6 +30,7 @@ class ProgressiveSufficiencySelection:
     final_chunk_ids: list[int]
     metadata: dict[str, Any]
     answer_prompt: str
+    downsample_mode: str | None = None
 
 
 def _env_int(name: str, default: int) -> int:
@@ -430,6 +431,11 @@ def select_progressive_sufficiency_memory(
     chunks: list[Any],
     prompt: str,
     config: Any,
+    recent_chunks: list[Any] | None = None,
+    recent_frames: list[Image.Image] | None = None,
+    recent_chunk_ids: list[int] | None = None,
+    recent_downsample_mode: str | None = None,
+    baseline_recent_metadata: dict[str, Any] | None = None,
 ) -> ProgressiveSufficiencySelection:
     recent_window = 6
     history_search_chunks = _env_int("MINICPM_PSM_HISTORY_SEARCH_CHUNKS", 64)
@@ -443,10 +449,25 @@ def select_progressive_sufficiency_memory(
     entropy_weight = _env_float("MINICPM_PSM_ENTROPY_WEIGHT", 0.20)
     visual_support_weight = _env_float("MINICPM_PSM_VISUAL_SUPPORT_WEIGHT", 0.30)
 
-    recent_chunks = list(chunks[-recent_window:])
-    all_older_chunks = list(chunks[: max(0, len(chunks) - recent_window)])
+    if recent_chunks is None:
+        recent_chunks = list(chunks[-recent_window:])
+    else:
+        recent_chunks = list(recent_chunks)
+    if recent_frames is None:
+        recent_frames = [frame for chunk in recent_chunks for frame in chunk.frames]
+    else:
+        recent_frames = list(recent_frames)
+    if recent_chunk_ids is None:
+        recent_ids = [int(chunk.chunk_index) for chunk in recent_chunks]
+    else:
+        recent_ids = [int(value) for value in recent_chunk_ids]
+
+    recent_id_set = set(recent_ids)
+    if recent_chunk_ids is None:
+        all_older_chunks = list(chunks[: max(0, len(chunks) - recent_window)])
+    else:
+        all_older_chunks = [chunk for chunk in chunks if int(chunk.chunk_index) not in recent_id_set]
     older_chunks = all_older_chunks[-history_search_chunks:] if history_search_chunks > 0 else all_older_chunks
-    recent_ids = [int(chunk.chunk_index) for chunk in recent_chunks]
     options = _extract_mcq_options(prompt)
 
     if not options:
@@ -454,6 +475,14 @@ def select_progressive_sufficiency_memory(
         metadata = {
             "mode": "progressive_sufficiency_memory",
             "recent_chunk_ids": recent_ids,
+            "baseline_recent_equivalence": {
+                "enabled": recent_chunk_ids is not None,
+                "source": "select_recent_window_frames",
+                "prompt_equal_to_final": True,
+                "final_equals_recent": True,
+                "downsample_mode": recent_downsample_mode,
+                "baseline_recent": baseline_recent_metadata or {},
+            },
             "history_search_start": int(older_chunks[0].chunk_index) if older_chunks else None,
             "history_search_end": int(older_chunks[-1].chunk_index) if older_chunks else None,
             "candidate_queue": [],
@@ -474,10 +503,11 @@ def select_progressive_sufficiency_memory(
         _validate_metadata(metadata)
         _print_trace(metadata)
         return ProgressiveSufficiencySelection(
-            frames=[frame for chunk in recent_chunks for frame in chunk.frames],
+            frames=recent_frames,
             final_chunk_ids=final_ids,
             metadata=metadata,
             answer_prompt=prompt,
+            downsample_mode=recent_downsample_mode,
         )
 
     candidate_queue, ranking_ms = _rank_candidates(
@@ -582,6 +612,14 @@ def select_progressive_sufficiency_memory(
             "visual_support_raw_span": 0.30,
         },
         "recent_chunk_ids": recent_ids,
+        "baseline_recent_equivalence": {
+            "enabled": recent_chunk_ids is not None,
+            "source": "select_recent_window_frames",
+            "prompt_equal_to_final": not bool(memory_ids),
+            "final_equals_recent": final_ids == recent_ids,
+            "downsample_mode": recent_downsample_mode,
+            "baseline_recent": baseline_recent_metadata or {},
+        },
         "history_search_start": int(older_chunks[0].chunk_index) if older_chunks else None,
         "history_search_end": int(older_chunks[-1].chunk_index) if older_chunks else None,
         "candidate_queue": [_candidate_metadata(candidate) for candidate in candidate_queue],
@@ -602,11 +640,13 @@ def select_progressive_sufficiency_memory(
     _validate_metadata(metadata)
     _print_trace(metadata)
     answer_prompt = f"{_PSM_HISTORY_INSTRUCTION}{prompt}" if memory_ids else prompt
+    memory_frames = [frame for chunk in best_memory for frame in chunk.frames]
     return ProgressiveSufficiencySelection(
-        frames=[frame for chunk in final_chunks for frame in chunk.frames],
+        frames=[*memory_frames, *recent_frames],
         final_chunk_ids=final_ids,
         metadata=metadata,
         answer_prompt=answer_prompt,
+        downsample_mode=recent_downsample_mode,
     )
 
 

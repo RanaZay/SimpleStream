@@ -17,6 +17,7 @@ from lib.minicpm.baseline import (
     _capture_gpu_memory,
     _reset_gpu_memory_peaks,
     _synchronize_gpu_devices,
+    select_recent_window_frames,
 )
 from lib.shared.recent_window import RecentWindowResult, decode_video_to_chunks_qwen
 
@@ -484,6 +485,7 @@ class AdaptiveSelection:
     frames: list[Image.Image]
     final_chunk_ids: list[int]
     metadata: dict[str, Any]
+    downsample_mode: str | None = None
 
 
 def classify_adaptive_window(prompt: str, config: AdaptiveWindowConfig) -> tuple[int, str]:
@@ -3182,7 +3184,6 @@ def query_adaptive_window(
     evaluator, but adaptive runs do not apply CDAS.
     """
 
-    del cdas_config
     config = AdaptiveWindowConfig.from_env()
     config.validate()
     before_memory = _reset_gpu_memory_peaks()
@@ -3209,16 +3210,45 @@ def query_adaptive_window(
     if config.progressive_sufficiency_memory:
         from lib.minicpm.progressive_sufficiency import select_progressive_sufficiency_memory
 
+        recent_window = max(1, int(config.max_window))
+        recent_video_start = video_start
+        if video_end is not None:
+            recent_video_start = max(0.0, float(video_end) - float(recent_window) * float(chunk_duration))
+        baseline_recent = select_recent_window_frames(
+            qa=qa,
+            video_path=video_path,
+            chunk_duration=chunk_duration,
+            fps=fps,
+            recent_frames_only=recent_window,
+            video_start=recent_video_start,
+            video_end=video_end,
+            cdas_config=cdas_config,
+        )
         progressive_selection = select_progressive_sufficiency_memory(
             qa,
             chunks,
             prompt=prompt,
             config=config,
+            recent_chunks=baseline_recent.selected_chunks,
+            recent_frames=baseline_recent.frames,
+            recent_chunk_ids=baseline_recent.final_chunk_ids,
+            recent_downsample_mode=baseline_recent.downsample_mode,
+            baseline_recent_metadata={
+                "decode_backend": baseline_recent.decode_backend,
+                "decode_time": baseline_recent.decode_time,
+                "selection_time": baseline_recent.selection_time,
+                "decoded_chunks": baseline_recent.decoded_chunks,
+                "decoded_frames": baseline_recent.decoded_frames,
+                "video_start": baseline_recent.video_start,
+                "video_end": baseline_recent.video_end,
+                "cdas": baseline_recent.cdas_metadata,
+            },
         )
         selection = AdaptiveSelection(
             frames=progressive_selection.frames,
             final_chunk_ids=progressive_selection.final_chunk_ids,
             metadata=progressive_selection.metadata,
+            downsample_mode=progressive_selection.downsample_mode,
         )
         answer_prompt = progressive_selection.answer_prompt
     elif config.full_progressive_evidence_memory:
@@ -3230,7 +3260,7 @@ def query_adaptive_window(
         raise ValueError(f"No frames selected from video: {video_path}")
 
     t0 = time.perf_counter()
-    answer = qa.generate_from_frames(selection.frames, answer_prompt)
+    answer = qa.generate_from_frames(selection.frames, answer_prompt, downsample_mode=selection.downsample_mode)
     _synchronize_gpu_devices()
     generate_time = time.perf_counter() - t0
     ttft_seconds = getattr(qa, "_last_ttft_seconds", 0.0) or 0.0

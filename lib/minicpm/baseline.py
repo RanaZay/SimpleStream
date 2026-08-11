@@ -5,6 +5,8 @@ import os
 import re
 import time
 from contextlib import contextmanager
+from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any
 
 import torch
@@ -17,6 +19,22 @@ from lib.shared.recent_window import (
     print_ovo_results,
 )
 from lib.cdas_sampler import CDASConfig, select_recent_frames_cdas
+
+
+@dataclass
+class RecentFrameSelection:
+    frames: list[Image.Image]
+    final_chunk_ids: list[int]
+    selected_chunks: list[Any]
+    downsample_mode: str | None
+    cdas_metadata: dict[str, Any] | None
+    decode_time: float
+    selection_time: float
+    decode_backend: str
+    decoded_chunks: int
+    decoded_frames: int
+    video_start: float | None
+    video_end: float | None
 
 
 def _synchronize_gpu_devices() -> None:
@@ -631,18 +649,62 @@ class RecentWindowQAModel:
         )
 
 
-def query_recent_window(
+def _chunks_from_selected_frames(frames: list[Image.Image], chunk_ids: list[int]) -> list[Any]:
+    """Create lightweight chunk-like objects for selectors that return frames only."""
+
+    if not frames:
+        return []
+    if not chunk_ids:
+        return [
+            SimpleNamespace(
+                frames=list(frames),
+                frame_timestamps=[],
+                start_time=0.0,
+                end_time=0.0,
+                chunk_index=0,
+                fps=1.0,
+            )
+        ]
+    chunks: list[Any] = []
+    if len(chunk_ids) == len(frames):
+        for frame, chunk_id in zip(frames, chunk_ids):
+            chunks.append(
+                SimpleNamespace(
+                    frames=[frame],
+                    frame_timestamps=[],
+                    start_time=float(chunk_id),
+                    end_time=float(chunk_id),
+                    chunk_index=int(chunk_id),
+                    fps=1.0,
+                )
+            )
+        return chunks
+    for chunk_id in chunk_ids:
+        chunks.append(
+            SimpleNamespace(
+                frames=list(frames),
+                frame_timestamps=[],
+                start_time=float(chunk_id),
+                end_time=float(chunk_id),
+                chunk_index=int(chunk_id),
+                fps=1.0,
+            )
+        )
+    return chunks
+
+
+def select_recent_window_frames(
     qa: RecentWindowQAModel,
     video_path: str,
-    prompt: str,
     chunk_duration: float,
     fps: float,
     recent_frames_only: int,
     video_start: float | None = None,
     video_end: float | None = None,
     cdas_config: CDASConfig | None = None,
-) -> tuple[RecentWindowResult, str]:
-    before_memory = _reset_gpu_memory_peaks()
+) -> RecentFrameSelection:
+    """Decode and select the exact SimpleStream recent-window visual input."""
+
     decode_t0 = time.perf_counter()
     chunks, decode_backend = decode_video_to_chunks_qwen(
         video_path=video_path,
@@ -661,30 +723,69 @@ def query_recent_window(
     cdas_metadata: dict[str, Any] | None = None
     selected_downsample_mode: str | None = None
     if cdas_config is not None and cdas_config.enabled:
-        selection = select_recent_frames_cdas(
+        cdas_selection = select_recent_frames_cdas(
             chunks=chunks,
             window_size=window_size,
             config=cdas_config,
             default_downsample_mode=qa.downsample_mode,
         )
-        recent_chunks = []
-        recent_frames = selection.frames
-        final_chunk_ids = selection.final_chunk_ids
-        selected_downsample_mode = selection.downsample_mode
-        cdas_metadata = selection.metadata
+        frames = cdas_selection.frames
+        final_chunk_ids = [int(value) for value in cdas_selection.final_chunk_ids]
+        selected_chunks = _chunks_from_selected_frames(frames, final_chunk_ids)
+        selected_downsample_mode = cdas_selection.downsample_mode
+        cdas_metadata = cdas_selection.metadata
     else:
-        recent_chunks = chunks[-window_size:]
-        recent_frames = [frame for chunk in recent_chunks for frame in chunk.frames]
-        final_chunk_ids = [chunk.chunk_index for chunk in recent_chunks]
+        selected_chunks = chunks[-window_size:]
+        frames = [frame for chunk in selected_chunks for frame in chunk.frames]
+        final_chunk_ids = [int(chunk.chunk_index) for chunk in selected_chunks]
     selection_time = time.perf_counter() - selection_t0
-    if not recent_frames:
+
+    return RecentFrameSelection(
+        frames=frames,
+        final_chunk_ids=final_chunk_ids,
+        selected_chunks=list(selected_chunks),
+        downsample_mode=selected_downsample_mode,
+        cdas_metadata=cdas_metadata,
+        decode_time=decode_time,
+        selection_time=selection_time,
+        decode_backend=decode_backend,
+        decoded_chunks=len(chunks),
+        decoded_frames=sum(len(chunk.frames) for chunk in chunks),
+        video_start=video_start,
+        video_end=video_end,
+    )
+
+
+def query_recent_window(
+    qa: RecentWindowQAModel,
+    video_path: str,
+    prompt: str,
+    chunk_duration: float,
+    fps: float,
+    recent_frames_only: int,
+    video_start: float | None = None,
+    video_end: float | None = None,
+    cdas_config: CDASConfig | None = None,
+) -> tuple[RecentWindowResult, str]:
+    before_memory = _reset_gpu_memory_peaks()
+    selection = select_recent_window_frames(
+        qa=qa,
+        video_path=video_path,
+        chunk_duration=chunk_duration,
+        fps=fps,
+        recent_frames_only=recent_frames_only,
+        video_start=video_start,
+        video_end=video_end,
+        cdas_config=cdas_config,
+    )
+    if not selection.frames:
         raise ValueError(f"No frames decoded from video: {video_path}")
 
     t0 = time.perf_counter()
     answer = qa.generate_from_frames(
-        recent_frames,
+        selection.frames,
         prompt,
-        downsample_mode=selected_downsample_mode,
+        downsample_mode=selection.downsample_mode,
     )
     _synchronize_gpu_devices()
     generate_time = time.perf_counter() - t0
@@ -694,9 +795,9 @@ def query_recent_window(
     _synchronize_gpu_devices()
     after_memory = _capture_gpu_memory()
     profile_metadata = _build_profile(
-        mode="recent_window_cdas" if cdas_metadata is not None else "recent_window",
-        decode_time=decode_time,
-        selection_time=selection_time,
+        mode="recent_window_cdas" if selection.cdas_metadata is not None else "recent_window",
+        decode_time=selection.decode_time,
+        selection_time=selection.selection_time,
         generate_time=generate_time,
         before_memory=before_memory,
         after_memory=after_memory,
@@ -704,7 +805,7 @@ def query_recent_window(
     )
     result = RecentWindowResult(
         answer=answer,
-        final_chunk_ids=final_chunk_ids,
+        final_chunk_ids=selection.final_chunk_ids,
         generate_time=generate_time,
         ttft_seconds=ttft_seconds,
         num_vision_tokens=num_vision_tokens,
@@ -713,12 +814,12 @@ def query_recent_window(
         num_frames=num_frames,
     )
     result.profile_metadata = profile_metadata
-    if cdas_metadata is not None:
-        cdas_metadata["actual_vision_tokens"] = num_vision_tokens
-        cdas_metadata["actual_vision_frames"] = num_frames
-        cdas_metadata["actual_downsample_mode"] = getattr(qa, "_last_downsample_mode", qa.downsample_mode)
-        result.cdas_metadata = cdas_metadata
-    return result, decode_backend
+    if selection.cdas_metadata is not None:
+        selection.cdas_metadata["actual_vision_tokens"] = num_vision_tokens
+        selection.cdas_metadata["actual_vision_frames"] = num_frames
+        selection.cdas_metadata["actual_downsample_mode"] = getattr(qa, "_last_downsample_mode", qa.downsample_mode)
+        result.cdas_metadata = selection.cdas_metadata
+    return result, selection.decode_backend
 
 
 def query_all_frames(

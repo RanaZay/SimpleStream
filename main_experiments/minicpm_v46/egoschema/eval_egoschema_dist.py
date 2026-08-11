@@ -50,8 +50,9 @@ LETTERS = ["A", "B", "C", "D", "E"]
 
 
 def _video_cache_dir() -> str:
-    hf_home = os.environ.get("HF_HOME", os.path.expanduser("~/.cache/huggingface/hub"))
-    return os.path.join(hf_home, "egoschema", "videos")
+    hf_home = os.environ.get("HF_HOME", os.path.expanduser("~/.cache/huggingface"))
+    hub_dir = hf_home if os.path.basename(os.path.normpath(hf_home)) == "hub" else os.path.join(hf_home, "hub")
+    return os.path.join(hub_dir, "egoschema", "videos")
 
 
 def _normalize_video_id(raw: Any) -> str:

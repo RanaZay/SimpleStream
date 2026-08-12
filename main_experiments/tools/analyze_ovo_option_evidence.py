@@ -76,22 +76,39 @@ def _maybe_load_summary(path: Path) -> dict[str, Any]:
         search_dir = path.parent
     else:
         search_dir = path
-    for name in ("oracle_summary.json", "official_oracle_reconciliation_summary.json"):
+    summaries: list[dict[str, Any]] = []
+    for name in ("official_oracle_reconciliation_summary.json", "oracle_summary.json"):
         candidate = search_dir / name
         if candidate.exists():
             value = _load_json(candidate)
-            return value if isinstance(value, dict) else {}
-    return {}
+            if isinstance(value, dict):
+                summaries.append(value)
+                if isinstance(value.get("official_protocol_reconciliation"), dict):
+                    return value
+    return summaries[0] if summaries else {}
 
 
 def _check_official_sanity(
     summary: dict[str, Any],
     *,
+    rows: list[dict[str, Any]] | None,
     require: bool,
     expected_recent6: float | None,
     expected_prism: float | None,
 ) -> dict[str, Any]:
     reconciliation = summary.get("official_protocol_reconciliation")
+    if not isinstance(reconciliation, dict) and rows is not None and (expected_recent6 is not None or expected_prism is not None):
+        from main_experiments.tools.ovo_prism_oracle_headroom import (
+            _dedupe_oracle_rows_for_official,
+            _official_reconciliation_report,
+        )
+
+        rows, _dedupe_info = _dedupe_oracle_rows_for_official(rows)
+        reconciliation = _official_reconciliation_report(
+            rows,
+            expected_recent6=expected_recent6,
+            expected_prism=expected_prism,
+        )
     checks = reconciliation.get("sanity_checks") if isinstance(reconciliation, dict) else None
     if not isinstance(checks, dict) or not checks:
         official = reconciliation.get("official_ovo") if isinstance(reconciliation, dict) else None
@@ -616,13 +633,14 @@ def main() -> None:
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
     summary = _maybe_load_summary(args.oracle_run)
+    rows, rows_source = _load_oracle_rows(args.oracle_run)
     sanity = _check_official_sanity(
         summary,
+        rows=rows,
         require=args.require_official_sanity,
         expected_recent6=args.expected_official_recent6,
         expected_prism=args.expected_official_prism,
     )
-    rows, rows_source = _load_oracle_rows(args.oracle_run)
     annotations = _annotations_by_id(args.anno_path)
     mcq_rows = [row for row in rows if str(row.get("task") or "") in MCQ_TASKS]
     if args.max_samples > 0:

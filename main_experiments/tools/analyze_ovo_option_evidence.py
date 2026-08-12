@@ -39,7 +39,7 @@ def _load_jsonl(path: Path) -> list[dict[str, Any]]:
         return [json.loads(line) for line in handle if line.strip()]
 
 
-def _find_oracle_rows(path: Path) -> Path:
+def _find_oracle_rows(path: Path) -> Path | list[Path]:
     if path.is_file():
         return path
     for name in ("oracle_rows.jsonl", "official_oracle_rows.jsonl"):
@@ -49,7 +49,26 @@ def _find_oracle_rows(path: Path) -> Path:
     matches = sorted(path.glob("**/oracle_rows.jsonl"))
     if matches:
         return matches[-1]
-    raise FileNotFoundError(f"No oracle_rows.jsonl found under {path}")
+    shard_matches = sorted(path.glob("oracle_rank_*.jsonl"))
+    if shard_matches:
+        return shard_matches
+    shard_matches = sorted(path.glob("**/oracle_rank_*.jsonl"))
+    if shard_matches:
+        return shard_matches
+    raise FileNotFoundError(
+        f"No oracle_rows.jsonl or oracle_rank_*.jsonl shards found under {path}. "
+        "Run the completed oracle tool, or pass the original oracle_rows.jsonl file via --oracle-run."
+    )
+
+
+def _load_oracle_rows(path: Path) -> tuple[list[dict[str, Any]], str]:
+    source = _find_oracle_rows(path)
+    if isinstance(source, list):
+        rows: list[dict[str, Any]] = []
+        for shard in source:
+            rows.extend(_load_jsonl(shard))
+        return rows, ",".join(str(item) for item in source)
+    return _load_jsonl(source), str(source)
 
 
 def _maybe_load_summary(path: Path) -> dict[str, Any]:
@@ -555,10 +574,9 @@ def main() -> None:
     args = parser.parse_args()
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
-    rows_path = _find_oracle_rows(args.oracle_run)
     summary = _maybe_load_summary(args.oracle_run)
     sanity = _check_official_sanity(summary, require=args.require_official_sanity)
-    rows = _load_jsonl(rows_path)
+    rows, rows_source = _load_oracle_rows(args.oracle_run)
     annotations = _annotations_by_id(args.anno_path)
     mcq_rows = [row for row in rows if str(row.get("task") or "") in MCQ_TASKS]
     if args.max_samples > 0:
@@ -611,7 +629,7 @@ def main() -> None:
     max_heg_hits = sum(1 for row in max_heg_rows if row.get("HEG_candidate_in_oracle_correct_prefix"))
     report = {
         "inputs": {
-            "oracle_rows": str(rows_path),
+            "oracle_rows": rows_source,
             "annotation_path": str(args.anno_path),
             "chunked_dir": str(args.chunked_dir),
             "clip_model": args.clip_model,

@@ -749,6 +749,10 @@ def main() -> None:
             json.dumps(summary, indent=2, ensure_ascii=False) + "\n",
             encoding="utf-8",
         )
+        (args.out_dir / "oracle_rows.jsonl").write_text(
+            "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows),
+            encoding="utf-8",
+        )
         print(json.dumps(summary, indent=2, ensure_ascii=False))
         failed = [
             name

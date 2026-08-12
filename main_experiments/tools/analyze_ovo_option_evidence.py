@@ -61,8 +61,44 @@ def _find_oracle_rows(path: Path) -> Path | list[Path]:
     )
 
 
-def _load_oracle_rows(path: Path) -> tuple[list[dict[str, Any]], str]:
-    source = _find_oracle_rows(path)
+def _candidate_source_row_paths(path: Path, summary: dict[str, Any]) -> list[Path]:
+    source_rows = summary.get("source_rows")
+    if not isinstance(source_rows, str) or not source_rows.strip():
+        return []
+    source_path = Path(source_rows)
+    candidates = [source_path]
+    if not source_path.is_absolute():
+        search_dir = path.parent if path.is_file() else path
+        candidates.extend([search_dir / source_path, search_dir.parent / source_path])
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = str(candidate)
+        if key not in seen:
+            unique.append(candidate)
+            seen.add(key)
+    return unique
+
+
+def _load_oracle_rows(path: Path, summary: dict[str, Any] | None = None) -> tuple[list[dict[str, Any]], str]:
+    source: Path | list[Path]
+    try:
+        source = _find_oracle_rows(path)
+    except FileNotFoundError as original_error:
+        summary = summary or {}
+        for candidate in _candidate_source_row_paths(path, summary):
+            try:
+                source = _find_oracle_rows(candidate)
+                break
+            except FileNotFoundError:
+                continue
+        else:
+            source_hint = summary.get("source_rows") if isinstance(summary, dict) else None
+            if source_hint:
+                raise FileNotFoundError(
+                    f"{original_error} Also tried source_rows from the summary: {source_hint}"
+                ) from original_error
+            raise
     if isinstance(source, list):
         rows: list[dict[str, Any]] = []
         for shard in source:
@@ -633,7 +669,7 @@ def main() -> None:
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
     summary = _maybe_load_summary(args.oracle_run)
-    rows, rows_source = _load_oracle_rows(args.oracle_run)
+    rows, rows_source = _load_oracle_rows(args.oracle_run, summary)
     sanity = _check_official_sanity(
         summary,
         rows=rows,

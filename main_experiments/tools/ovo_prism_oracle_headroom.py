@@ -29,27 +29,33 @@ from main_experiments.tools.determinism import configure_determinism  # noqa: E4
 
 SEED = configure_determinism()
 
-from accelerate import Accelerator  # noqa: E402
-
 from ovo_constants import BACKWARD_TASKS, FORWARD_TASKS, REAL_TIME_TASKS  # noqa: E402
-from lib.minicpm.baseline import RecentWindowQAModel, build_ovo_prompt  # noqa: E402
-from lib.minicpm.progressive_sufficiency import _PSM_HISTORY_INSTRUCTION  # noqa: E402
-from lib.shared.recent_window import decode_video_to_chunks_qwen  # noqa: E402
+
+RecentWindowQAModel = None
+build_ovo_prompt = None
+_PSM_HISTORY_INSTRUCTION = None
+decode_video_to_chunks_qwen = None
 
 
 OVO_GROUPS = {
     "EPM": "backward",
     "HLD": "backward",
     "ASI": "backward",
-    "OCR": "real_time",
-    "OJR": "real_time",
-    "ACR": "real_time",
-    "STU": "real_time",
-    "ATR": "real_time",
-    "FPD": "real_time",
+    "OCR": "realtime",
+    "OJR": "realtime",
+    "ACR": "realtime",
+    "STU": "realtime",
+    "ATR": "realtime",
+    "FPD": "realtime",
     "REC": "forward",
     "SSR": "forward",
     "CRR": "forward",
+}
+
+OFFICIAL_SECTION_TITLES = {
+    "backward": "Backward Avg",
+    "realtime": "Real-Time Avg",
+    "forward": "Forward Avg",
 }
 
 
@@ -85,6 +91,123 @@ def _flatten(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
         else:
             flat.append(row)
     return flat
+
+
+def _make_ovo_key(row: dict[str, Any]) -> str:
+    return f"{row.get('task', '')}:{row.get('id')}"
+
+
+def _strip_internal_fields(row: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in row.items() if key != "_key"}
+
+
+def _official_json_path(result_dir: Path) -> Path | None:
+    if result_dir.is_file():
+        rows = _read_json_rows(result_dir)
+        if rows or result_dir.suffix == ".json":
+            return result_dir
+        return None
+    candidates = sorted(result_dir.glob("minicpmv46_results_*.json"))
+    if candidates:
+        return candidates[-1]
+    merged = result_dir / "merged_results.json"
+    if merged.exists():
+        return merged
+    return None
+
+
+def _split_official_rows(rows: Iterable[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    grouped = {"backward": [], "realtime": [], "forward": []}
+    for row in rows:
+        task = str(row.get("task") or "")
+        section = _group(task)
+        if section in grouped:
+            grouped[section].append(row)
+    return grouped
+
+
+def _load_official_grouped_records(result_dir: Path) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Any]]:
+    """Load records exactly as the official OVO scorer sees them.
+
+    The official runner writes a final grouped JSON after merging rank checkpoint
+    JSONL files. If that JSON exists, prefer it. Otherwise, reconstruct the same
+    first-seen `_key = task:id` deduplication used by merge_shard_results().
+    """
+    official_json = _official_json_path(result_dir)
+    if official_json is not None and official_json.suffix == ".json":
+        with official_json.open(encoding="utf-8") as handle:
+            value = json.load(handle)
+        if isinstance(value, dict) and all(key in value for key in ("backward", "realtime", "forward")):
+            grouped = {
+                "backward": [dict(row) for row in value.get("backward", []) if isinstance(row, dict)],
+                "realtime": [dict(row) for row in value.get("realtime", []) if isinstance(row, dict)],
+                "forward": [dict(row) for row in value.get("forward", []) if isinstance(row, dict)],
+            }
+            return grouped, {
+                "source": str(official_json),
+                "source_kind": "official_grouped_json",
+                "duplicate_policy": "final official JSON already merged/deduplicated by task:id",
+            }
+
+    checkpoint_paths = (
+        [result_dir / "results_incremental.jsonl"]
+        if (result_dir / "results_incremental.jsonl").exists()
+        else sorted(result_dir.glob("rank_*/results_incremental.jsonl"))
+    )
+    grouped = {"backward": [], "realtime": [], "forward": []}
+    seen: set[str] = set()
+    raw_records = 0
+    duplicate_records = 0
+    for path in checkpoint_paths:
+        for raw in _read_json_rows(path):
+            raw_records += 1
+            row = _strip_internal_fields(raw)
+            key = raw.get("_key")
+            if not isinstance(key, str) or not key:
+                key = _make_ovo_key(row)
+            if key in seen:
+                duplicate_records += 1
+                continue
+            seen.add(key)
+            section = _group(str(row.get("task") or ""))
+            if section in grouped:
+                grouped[section].append(row)
+    if not seen:
+        raise FileNotFoundError(f"No official grouped JSON or checkpoint records found under {result_dir}")
+    return grouped, {
+        "source": [str(path) for path in checkpoint_paths],
+        "source_kind": "reconstructed_from_incremental_checkpoints",
+        "raw_checkpoint_records": raw_records,
+        "deduplicated_records": len(seen),
+        "duplicate_records_skipped": duplicate_records,
+        "duplicate_policy": "mirror merge_shard_results(): first record per _key/task:id is kept, later incremental duplicates are skipped",
+    }
+
+
+def _official_grouped_to_flat(grouped: dict[str, list[dict[str, Any]]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for section in ("backward", "realtime", "forward"):
+        for record_index, row in enumerate(grouped.get(section, [])):
+            parent = dict(row)
+            parent["_source_group"] = section
+            parent["_record_index"] = record_index
+            if section == "forward" and isinstance(parent.get("test_info"), list):
+                for question_index, item in enumerate(parent["test_info"]):
+                    if isinstance(item, dict):
+                        rows.append({**parent, **item, "_source_group": section, "_question_index": question_index})
+            else:
+                rows.append(parent)
+    for index, row in enumerate(rows):
+        row["_load_index"] = index
+    return rows
+
+
+def _load_official_records(result_dir: Path) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, list[dict[str, Any]]]]:
+    grouped, info = _load_official_grouped_records(result_dir)
+    rows = _official_grouped_to_flat(grouped)
+    info["official_group_counts"] = {key: len(value) for key, value in grouped.items()}
+    info["official_flat_question_records"] = len(rows)
+    return rows, info, grouped
 
 
 def _load_records(result_dir: Path) -> list[dict[str, Any]]:
@@ -156,7 +279,21 @@ def _score_yesno(response: Any, gt_type: Any) -> bool | None:
     return False
 
 
+def _official_score_row_response(task: str, row: dict[str, Any], response: Any) -> bool:
+    """Match scoring/score_ovo_bench.py and lib.shared.recent_window exactly."""
+    if task == "REC":
+        return bool(_score_rec(response, row.get("count")))
+    if task in {"SSR", "CRR"}:
+        return bool(_score_yesno(response, row.get("type")))
+    if response is None:
+        return False
+    gt = row.get("ground_truth")
+    return bool(gt is not None and str(gt) in str(response))
+
+
 def _score_row_response(task: str, row: dict[str, Any], response: Any) -> bool | None:
+    if task in OVO_GROUPS:
+        return _official_score_row_response(task, row, response)
     if task in {"REC"}:
         return _score_rec(response, row.get("count"))
     if task in {"SSR", "CRR"}:
@@ -215,6 +352,134 @@ def _sample_key(row: dict[str, Any]) -> str:
 
 def _group(task: str) -> str:
     return OVO_GROUPS.get(task, "unknown")
+
+
+def _task_accuracy_summary(task_scores: dict[str, list[bool]]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for task, values in sorted(task_scores.items()):
+        total = len(values)
+        correct = sum(1 for value in values if value)
+        out[task] = {
+            "correct": correct,
+            "total": total,
+            "accuracy": 100.0 * correct / total if total else None,
+        }
+    return out
+
+
+def _official_variant_summary(rows: list[dict[str, Any]], variant_key: str) -> dict[str, Any]:
+    by_section_task: dict[str, dict[str, list[bool]]] = {
+        "backward": defaultdict(list),
+        "realtime": defaultdict(list),
+        "forward": defaultdict(list),
+    }
+    for row in rows:
+        task = str(row.get("task") or "")
+        section = _group(task)
+        if section not in by_section_task:
+            continue
+        if variant_key == "prism":
+            correct = bool(row.get("prism_correct"))
+        elif variant_key == "oracle":
+            correct = any(bool(branch.get("correct")) for branch in row.get("branches", []) if isinstance(branch, dict))
+        elif variant_key.startswith("k"):
+            k = int(variant_key[1:])
+            branches = row.get("branches", [])
+            correct = bool(branches[k].get("correct")) if isinstance(branches, list) and len(branches) > k and isinstance(branches[k], dict) else False
+        else:
+            correct = bool(row.get(f"{variant_key}_correct"))
+        by_section_task[section][task].append(correct)
+
+    sections: dict[str, Any] = {}
+    category_avgs: list[float] = []
+    for section in ("backward", "realtime", "forward"):
+        task_summary = _task_accuracy_summary(by_section_task[section])
+        task_accs = [
+            float(stats["accuracy"])
+            for stats in task_summary.values()
+            if isinstance(stats.get("accuracy"), (int, float))
+        ]
+        avg = sum(task_accs) / len(task_accs) if task_accs else None
+        if avg is not None:
+            category_avgs.append(avg)
+        sections[section] = {
+            "tasks": task_summary,
+            "average": avg,
+            "label": OFFICIAL_SECTION_TITLES[section],
+        }
+    return {
+        "backward_avg": sections["backward"]["average"],
+        "realtime_avg": sections["realtime"]["average"],
+        "forward_avg": sections["forward"]["average"],
+        "total_avg": sum(category_avgs) / len(category_avgs) if category_avgs else None,
+        "sections": sections,
+        "aggregation": (
+            "Official OVO macro average: per-task accuracy, then category average "
+            "for backward/realtime/forward, then Total Avg over category averages."
+        ),
+    }
+
+
+def _dedupe_oracle_rows_for_official(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    kept: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    duplicate_count = 0
+    for row in rows:
+        key = str(row.get("key") or _sample_key(row))
+        if key in seen:
+            duplicate_count += 1
+            continue
+        seen.add(key)
+        kept.append(row)
+    return kept, {
+        "input_rows": len(rows),
+        "official_unique_rows": len(kept),
+        "duplicate_rows_skipped": duplicate_count,
+        "duplicate_policy": "first row per oracle sample key, matching official first-seen checkpoint deduplication",
+    }
+
+
+def _official_reconciliation_report(rows: list[dict[str, Any]], *, expected_recent6: float | None, expected_prism: float | None) -> dict[str, Any]:
+    flat_recent_correct = sum(1 for row in rows if row.get("k0_correct"))
+    flat_prism_correct = sum(1 for row in rows if row.get("prism_correct"))
+    old_flat = {
+        "samples": len(rows),
+        "recent6_correct": flat_recent_correct,
+        "recent6_accuracy": 100.0 * flat_recent_correct / len(rows) if rows else None,
+        "prism_correct": flat_prism_correct,
+        "prism_accuracy": 100.0 * flat_prism_correct / len(rows) if rows else None,
+        "note": "Old oracle-style micro average over flat rows; not official OVO.",
+    }
+    official = {
+        "recent6_k0": _official_variant_summary(rows, "k0"),
+        "prism": _official_variant_summary(rows, "prism"),
+        "fixed_k1": _official_variant_summary(rows, "k1"),
+        "fixed_k2": _official_variant_summary(rows, "k2"),
+        "fixed_k3": _official_variant_summary(rows, "k3"),
+        "oracle_k": _official_variant_summary(rows, "oracle"),
+    }
+    checks: dict[str, Any] = {}
+    if expected_recent6 is not None:
+        actual = official["recent6_k0"]["total_avg"]
+        checks["recent6_k0_matches_expected"] = {
+            "expected": expected_recent6,
+            "actual": actual,
+            "absolute_error": abs(float(actual) - expected_recent6) if actual is not None else None,
+            "passes_rounding_check": actual is not None and round(float(actual), 2) == round(expected_recent6, 2),
+        }
+    if expected_prism is not None:
+        actual = official["prism"]["total_avg"]
+        checks["prism_matches_expected"] = {
+            "expected": expected_prism,
+            "actual": actual,
+            "absolute_error": abs(float(actual) - expected_prism) if actual is not None else None,
+            "passes_rounding_check": actual is not None and round(float(actual), 2) == round(expected_prism, 2),
+        }
+    return {
+        "old_flat_micro_average": old_flat,
+        "official_ovo": official,
+        "sanity_checks": checks,
+    }
 
 
 def _load_annotations(path: Path) -> dict[str, dict[str, Any]]:
@@ -421,8 +686,8 @@ def _wait_for_files(paths: list[Path], timeout_seconds: float, description: str)
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--baseline", type=Path, required=True)
-    parser.add_argument("--prism", type=Path, required=True)
+    parser.add_argument("--baseline", type=Path, default=None)
+    parser.add_argument("--prism", type=Path, default=None)
     parser.add_argument("--anno-path", type=Path, default=Path("data/ovo_bench/ovo_bench_new.json"))
     parser.add_argument("--chunked-dir", type=Path, default=Path("data/ovo_bench/chunked_videos"))
     parser.add_argument("--out-dir", type=Path, required=True)
@@ -435,10 +700,80 @@ def main() -> None:
     parser.add_argument("--max-samples", type=int, default=0)
     parser.add_argument("--run-id", default=None, help="Unique id for this distributed run's shard files.")
     parser.add_argument("--file-sync-timeout", type=float, default=86400.0)
+    parser.add_argument(
+        "--rescore-existing",
+        type=Path,
+        default=None,
+        help="Rescore an existing oracle_rows.jsonl with the official OVO protocol without rerunning MiniCPM.",
+    )
+    parser.add_argument(
+        "--expected-official-recent6",
+        type=float,
+        default=None,
+        help="Optional publication baseline sanity check. Example: 53.57.",
+    )
+    parser.add_argument(
+        "--expected-official-prism",
+        type=float,
+        default=None,
+        help="Optional official PRISM sanity check. Example: 54.25.",
+    )
+    parser.add_argument(
+        "--fail-on-official-mismatch",
+        action="store_true",
+        help="Exit nonzero if supplied official expected scores do not match after rounding to 2 decimals.",
+    )
     args = parser.parse_args()
 
-    accelerator = Accelerator()
     args.out_dir.mkdir(parents=True, exist_ok=True)
+
+    if args.rescore_existing is not None:
+        with args.rescore_existing.open(encoding="utf-8") as handle:
+            existing_rows = [json.loads(line) for line in handle if line.strip()]
+        rows, dedupe_info = _dedupe_oracle_rows_for_official(existing_rows)
+        reconciliation = _official_reconciliation_report(
+            rows,
+            expected_recent6=args.expected_official_recent6,
+            expected_prism=args.expected_official_prism,
+        )
+        summary = {
+            "mode": "rescore_existing_official_ovo",
+            "source_rows": str(args.rescore_existing),
+            "dedupe": dedupe_info,
+            "official_protocol_reconciliation": reconciliation,
+            "oracle_overall_flat_legacy": _oracle_summary(rows),
+            "oracle_by_group_flat_legacy": {name: _oracle_summary(items) for name, items in sorted(_group_by(rows, "group").items())},
+            "oracle_by_task_flat_legacy": {name: _oracle_summary(items) for name, items in sorted(_group_by(rows, "task").items())},
+        }
+        (args.out_dir / "official_oracle_reconciliation_summary.json").write_text(
+            json.dumps(summary, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        print(json.dumps(summary, indent=2, ensure_ascii=False))
+        failed = [
+            name
+            for name, check in reconciliation.get("sanity_checks", {}).items()
+            if not check.get("passes_rounding_check")
+        ]
+        if failed and args.fail_on_official_mismatch:
+            raise SystemExit(f"Official score sanity check failed: {failed}")
+        print(f"saved: {args.out_dir}")
+        return
+
+    if args.baseline is None or args.prism is None:
+        raise SystemExit("--baseline and --prism are required unless --rescore-existing is used")
+
+    from accelerate import Accelerator  # noqa: PLC0415
+    from lib.minicpm.baseline import RecentWindowQAModel as _RecentWindowQAModel, build_ovo_prompt as _build_ovo_prompt  # noqa: PLC0415
+    from lib.minicpm.progressive_sufficiency import _PSM_HISTORY_INSTRUCTION as _history_instruction  # noqa: PLC0415
+    from lib.shared.recent_window import decode_video_to_chunks_qwen as _decode_video_to_chunks_qwen  # noqa: PLC0415
+
+    globals()["RecentWindowQAModel"] = _RecentWindowQAModel
+    globals()["build_ovo_prompt"] = _build_ovo_prompt
+    globals()["_PSM_HISTORY_INSTRUCTION"] = _history_instruction
+    globals()["decode_video_to_chunks_qwen"] = _decode_video_to_chunks_qwen
+
+    accelerator = Accelerator()
     run_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", args.run_id or _default_run_id())
     ready_path = args.out_dir / f"oracle_run_{run_id}.ready"
     merge_done_path = args.out_dir / f"oracle_run_{run_id}.merge_done"
@@ -456,8 +791,8 @@ def main() -> None:
     else:
         _wait_for_files([ready_path], args.file_sync_timeout, "main-process run setup")
 
-    baseline_rows = _load_records(args.baseline)
-    prism_rows = _load_records(args.prism)
+    baseline_rows, baseline_load_info, baseline_grouped = _load_official_records(args.baseline)
+    prism_rows, prism_load_info, prism_grouped = _load_official_records(args.prism)
     annotations = _load_annotations(args.anno_path)
 
     baseline_by_key = {_sample_key(row): row for row in baseline_rows}
@@ -606,7 +941,16 @@ def main() -> None:
             "baseline_records": len(baseline_rows),
             "prism_records": len(prism_rows),
             "scoreable_pairs": len(rows),
+            "baseline_load_info": baseline_load_info,
+            "prism_load_info": prism_load_info,
+            "official_baseline_group_counts": {key: len(value) for key, value in baseline_grouped.items()},
+            "official_prism_group_counts": {key: len(value) for key, value in prism_grouped.items()},
         },
+        "official_protocol_reconciliation": _official_reconciliation_report(
+            rows,
+            expected_recent6=args.expected_official_recent6,
+            expected_prism=args.expected_official_prism,
+        ),
         "oracle_overall": _oracle_summary(rows),
         "oracle_by_group": {name: _oracle_summary(items) for name, items in sorted(_group_by(rows, "group").items())},
         "oracle_by_task": {name: _oracle_summary(items) for name, items in sorted(_group_by(rows, "task").items())},
@@ -720,6 +1064,13 @@ def main() -> None:
     (args.out_dir / "oracle_summary.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     merge_done_path.write_text(str(time.time()) + "\n", encoding="utf-8")
     print(json.dumps(summary, indent=2, ensure_ascii=False))
+    failed = [
+        name
+        for name, check in summary["official_protocol_reconciliation"].get("sanity_checks", {}).items()
+        if not check.get("passes_rounding_check")
+    ]
+    if failed and args.fail_on_official_mismatch:
+        raise SystemExit(f"Official score sanity check failed: {failed}")
     print(f"saved: {args.out_dir}")
 
 

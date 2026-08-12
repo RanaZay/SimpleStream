@@ -281,7 +281,7 @@ def _decode_context(
         video_path=str(video_path),
         chunk_duration=chunk_duration,
         fps=fps,
-        recent_frames_only=max(recent_window + len(candidate_ids), recent_window),
+        recent_frames_only=None,
     )
     by_id = {int(chunk.chunk_index): chunk for chunk in chunks}
     recent = list(chunks[-recent_window:])
@@ -395,6 +395,30 @@ def _classify_prism_vs_oracle(row: dict[str, Any]) -> str:
     return "other"
 
 
+def _default_run_id() -> str:
+    for key in ("SLURM_JOB_ID", "TORCHELASTIC_RUN_ID"):
+        value = os.environ.get(key)
+        if value and value.lower() != "none":
+            return re.sub(r"[^A-Za-z0-9_.-]+", "_", value)
+    port = os.environ.get("MASTER_PORT")
+    if port:
+        return f"port_{port}"
+    return "manual"
+
+
+def _wait_for_files(paths: list[Path], timeout_seconds: float, description: str) -> None:
+    deadline = time.time() + timeout_seconds
+    while True:
+        missing = [path for path in paths if not path.exists()]
+        if not missing:
+            return
+        if time.time() > deadline:
+            names = ", ".join(str(path) for path in missing[:8])
+            extra = "" if len(missing) <= 8 else f", ... ({len(missing)} missing)"
+            raise TimeoutError(f"Timed out waiting for {description}: {names}{extra}")
+        time.sleep(10.0)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--baseline", type=Path, required=True)
@@ -409,10 +433,29 @@ def main() -> None:
     parser.add_argument("--recent-window", type=int, default=6)
     parser.add_argument("--max-qa-tokens", type=int, default=256)
     parser.add_argument("--max-samples", type=int, default=0)
+    parser.add_argument("--run-id", default=None, help="Unique id for this distributed run's shard files.")
+    parser.add_argument("--file-sync-timeout", type=float, default=86400.0)
     args = parser.parse_args()
 
     accelerator = Accelerator()
     args.out_dir.mkdir(parents=True, exist_ok=True)
+    run_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", args.run_id or _default_run_id())
+    ready_path = args.out_dir / f"oracle_run_{run_id}.ready"
+    merge_done_path = args.out_dir / f"oracle_run_{run_id}.merge_done"
+    done_paths = [args.out_dir / f"oracle_rank_{run_id}_{index}.done" for index in range(accelerator.num_processes)]
+    if accelerator.is_main_process:
+        for pattern in (
+            f"oracle_rank_{run_id}_*.jsonl",
+            f"oracle_rank_{run_id}_*.done",
+            f"oracle_run_{run_id}.ready",
+            f"oracle_run_{run_id}.merge_done",
+        ):
+            for path in args.out_dir.glob(pattern):
+                path.unlink()
+        ready_path.write_text(str(time.time()) + "\n", encoding="utf-8")
+    else:
+        _wait_for_files([ready_path], args.file_sync_timeout, "main-process run setup")
+
     baseline_rows = _load_records(args.baseline)
     prism_rows = _load_records(args.prism)
     annotations = _load_annotations(args.anno_path)
@@ -445,7 +488,7 @@ def main() -> None:
         attn_implementation=os.environ.get("ATTN_IMPLEMENTATION", "sdpa"),
     )
 
-    rank_path = args.out_dir / f"oracle_rank_{accelerator.process_index}.jsonl"
+    rank_path = args.out_dir / f"oracle_rank_{run_id}_{accelerator.process_index}.jsonl"
     with rank_path.open("w", encoding="utf-8") as handle:
         for index, (key, base, prism) in enumerate(local_pairs, start=1):
             task = str(base.get("task") or prism.get("task") or "")
@@ -544,12 +587,14 @@ def main() -> None:
                 flush=True,
             )
 
-    accelerator.wait_for_everyone()
+    done_paths[accelerator.process_index].write_text(str(time.time()) + "\n", encoding="utf-8")
     if not accelerator.is_main_process:
+        _wait_for_files([merge_done_path], args.file_sync_timeout, "main-process merge")
         return
 
+    _wait_for_files(done_paths, args.file_sync_timeout, "rank shards")
     rows: list[dict[str, Any]] = []
-    for path in sorted(args.out_dir.glob("oracle_rank_*.jsonl")):
+    for path in sorted(args.out_dir.glob(f"oracle_rank_{run_id}_*.jsonl")):
         with path.open(encoding="utf-8") as handle:
             rows.extend(json.loads(line) for line in handle if line.strip())
 
@@ -673,6 +718,7 @@ def main() -> None:
         encoding="utf-8",
     )
     (args.out_dir / "oracle_summary.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    merge_done_path.write_text(str(time.time()) + "\n", encoding="utf-8")
     print(json.dumps(summary, indent=2, ensure_ascii=False))
     print(f"saved: {args.out_dir}")
 

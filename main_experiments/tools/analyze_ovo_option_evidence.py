@@ -10,6 +10,7 @@ then reports how well those evidence signals predict oracle-useful history.
 from __future__ import annotations
 
 import argparse
+import ast
 import csv
 import json
 import math
@@ -39,14 +40,54 @@ def _load_jsonl(path: Path) -> list[dict[str, Any]]:
         return [json.loads(line) for line in handle if line.strip()]
 
 
+def _parse_csv_value(value: str) -> Any:
+    text = value.strip()
+    if text == "":
+        return None
+    if text in {"True", "False"}:
+        return text == "True"
+    if text == "None":
+        return None
+    if text[0] in "[{\"'" or text in {"true", "false", "null"}:
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            try:
+                return ast.literal_eval(text)
+            except (SyntaxError, ValueError):
+                return value
+    try:
+        if re.fullmatch(r"[-+]?\d+", text):
+            return int(text)
+        if re.fullmatch(r"[-+]?(?:\d+\.\d*|\.\d+)(?:[eE][-+]?\d+)?", text) or re.fullmatch(r"[-+]?\d+[eE][-+]?\d+", text):
+            return float(text)
+    except ValueError:
+        return value
+    return value
+
+
+def _load_csv_rows(path: Path) -> list[dict[str, Any]]:
+    with path.open(encoding="utf-8", newline="") as handle:
+        rows = []
+        for row in csv.DictReader(handle):
+            parsed = {key: _parse_csv_value(value) for key, value in row.items() if key is not None and value is not None}
+            if "k0_correct" not in parsed and "baseline_correct" in parsed:
+                parsed["k0_correct"] = bool(parsed["baseline_correct"])
+            rows.append(parsed)
+        return rows
+
+
 def _find_oracle_rows(path: Path) -> Path | list[Path]:
     if path.is_file():
         return path
-    for name in ("oracle_rows.jsonl", "official_oracle_rows.jsonl"):
+    for name in ("oracle_rows.jsonl", "official_oracle_rows.jsonl", "oracle_rows.csv", "official_oracle_rows.csv"):
         candidate = path / name
         if candidate.exists():
             return candidate
     matches = sorted(path.glob("**/oracle_rows.jsonl"))
+    if matches:
+        return matches[-1]
+    matches = sorted(path.glob("**/oracle_rows.csv"))
     if matches:
         return matches[-1]
     shard_matches = sorted(path.glob("oracle_rank_*.jsonl"))
@@ -56,8 +97,8 @@ def _find_oracle_rows(path: Path) -> Path | list[Path]:
     if shard_matches:
         return shard_matches
     raise FileNotFoundError(
-        f"No oracle_rows.jsonl or oracle_rank_*.jsonl shards found under {path}. "
-        "Run the completed oracle tool, or pass the original oracle_rows.jsonl file via --oracle-run."
+        f"No oracle_rows.jsonl, oracle_rows.csv, or oracle_rank_*.jsonl shards found under {path}. "
+        "Run the completed oracle tool, or pass the original oracle rows file via --oracle-run."
     )
 
 
@@ -67,9 +108,14 @@ def _candidate_source_row_paths(path: Path, summary: dict[str, Any]) -> list[Pat
         return []
     source_path = Path(source_rows)
     candidates = [source_path]
+    if source_path.suffix == ".jsonl":
+        candidates.append(source_path.with_suffix(".csv"))
     if not source_path.is_absolute():
         search_dir = path.parent if path.is_file() else path
         candidates.extend([search_dir / source_path, search_dir.parent / source_path])
+        if source_path.suffix == ".jsonl":
+            csv_path = source_path.with_suffix(".csv")
+            candidates.extend([search_dir / csv_path, search_dir.parent / csv_path])
     unique: list[Path] = []
     seen: set[str] = set()
     for candidate in candidates:
@@ -104,6 +150,8 @@ def _load_oracle_rows(path: Path, summary: dict[str, Any] | None = None) -> tupl
         for shard in source:
             rows.extend(_load_jsonl(shard))
         return rows, ",".join(str(item) for item in source)
+    if source.suffix.lower() == ".csv":
+        return _load_csv_rows(source), str(source)
     return _load_jsonl(source), str(source)
 
 

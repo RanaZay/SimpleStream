@@ -156,12 +156,29 @@ def _best_matching_variant(
             "common_unique_keys": len(common),
             "left_duplicate_rows": left_duplicate_rows,
             "right_duplicate_rows": right_duplicate_rows,
+            "unambiguous": left_duplicate_rows == 0 and right_duplicate_rows == 0,
         }
-        score = (len(common), -left_duplicate_rows - right_duplicate_rows, len(left) + len(right))
+        has_common = len(common) > 0
+        unambiguous = left_duplicate_rows == 0 and right_duplicate_rows == 0
+        score = (has_common, unambiguous, len(common), -left_duplicate_rows - right_duplicate_rows, len(left) + len(right))
         if score > best_score:
             best_score = score
             best_variant = variant
     return best_variant, diagnostics
+
+
+def _max_common_keys(diagnostics: dict[str, Any]) -> dict[str, Any]:
+    if not diagnostics:
+        return {"count": 0, "variants": []}
+    max_count = max(int(item.get("common_unique_keys") or 0) for item in diagnostics.values())
+    return {
+        "count": max_count,
+        "variants": [
+            name
+            for name, item in sorted(diagnostics.items())
+            if int(item.get("common_unique_keys") or 0) == max_count
+        ],
+    }
 
 
 def _matched_rows(
@@ -460,8 +477,14 @@ def main() -> None:
             "oracle_rows_after_filter": len(oracle_rows),
             "result_match_key_variant": baseline_variant,
             "subset_match_key_variant": subset_variant,
+            "match_policy": (
+                "Prefer key formats with nonzero overlap and no duplicate rows on either side. "
+                "Loose question-only overlaps are reported for diagnostics but not used when an unambiguous key overlaps."
+            ),
             "key_overlap_diagnostics_vs_baseline": baseline_overlap,
             "key_overlap_diagnostics_vs_subset": subset_overlap,
+            "max_loose_overlap_vs_baseline": _max_common_keys(baseline_overlap),
+            "max_loose_overlap_vs_subset": _max_common_keys(subset_overlap),
             "duplicate_diagnostics": {
                 "oracle": _duplicate_summary(oracle_rows, variants),
                 "baseline": _duplicate_summary(baseline_rows, variants),

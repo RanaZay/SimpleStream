@@ -202,6 +202,27 @@ def _matched_rows(
     return matched
 
 
+def _matched_pairs(
+    left_rows: list[dict[str, Any]],
+    right_rows: list[dict[str, Any]],
+    variant: str | None,
+) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+    if not variant:
+        return []
+    right_by_key = _index_by_variant(right_rows, variant)
+    pairs: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    seen: set[str] = set()
+    for left_row in left_rows:
+        key = _key_variants(left_row).get(variant)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        matches = right_by_key.get(key) or []
+        if matches:
+            pairs.append((left_row, matches[0]))
+    return pairs
+
+
 def _prediction(row: dict[str, Any]) -> str | None:
     value = row.get("prediction") or row.get("pred")
     if isinstance(value, str):
@@ -324,6 +345,13 @@ def _heg_activated(row: dict[str, Any]) -> bool:
     return False
 
 
+def _pure_heg_activated(row: dict[str, Any]) -> bool:
+    for item in _adaptive(row).get("iterations", []) or []:
+        if str(item.get("retrieval_trigger_reason")) == "historical_evidence_gain":
+            return True
+    return False
+
+
 def _memory_frames(row: dict[str, Any]) -> int:
     return int(_adaptive(row).get("num_memory_frames", 0) or 0)
 
@@ -421,12 +449,79 @@ def _split_accuracy(rows: list[dict[str, Any]], tasks: set[str]) -> dict[str, An
     return {"samples": len(subset), "accuracy": correct / len(subset) if subset else None}
 
 
+def _summarize_oracle_false_stop_run(
+    matched_rows: list[dict[str, Any]],
+    total_present: int,
+) -> dict[str, Any]:
+    activated = [row for row in matched_rows if _heg_activated(row)]
+    corrected = [row for row in activated if _correct(row) is True]
+    remain_wrong = [row for row in activated if _correct(row) is False]
+    return {
+        "false_stop_samples_present": total_present,
+        "activated_by_heg_trigger": len(activated),
+        "activated_became_correct": len(corrected),
+        "activated_remained_wrong": len(remain_wrong),
+        "not_activated": total_present - len(activated),
+        "recovery_rate": _percent(len(corrected), total_present),
+        "activation_recall": _percent(len(activated), total_present),
+        "precision_among_activated_false_stops": _percent(len(corrected), len(activated)),
+    }
+
+
+def _summarize_baseline_correct_heg_damage(
+    run_rows: list[dict[str, Any]],
+    baseline_rows: list[dict[str, Any]],
+    variant: str,
+) -> dict[str, Any]:
+    pairs = _matched_pairs(run_rows, baseline_rows, variant)
+    baseline_correct_pairs = [
+        (run_row, base_row)
+        for run_row, base_row in pairs
+        if _correct(base_row) is True and _correct(run_row) is not None
+    ]
+    newly_triggered = [
+        (run_row, base_row)
+        for run_row, base_row in baseline_correct_pairs
+        if _heg_activated(run_row) and _memory_frames(run_row) > _memory_frames(base_row)
+    ]
+    pure_heg_triggered = [
+        (run_row, base_row)
+        for run_row, base_row in baseline_correct_pairs
+        if _pure_heg_activated(run_row) and _memory_frames(run_row) > _memory_frames(base_row)
+    ]
+    stayed_correct = sum(_correct(run_row) is True for run_row, _base_row in newly_triggered)
+    became_wrong = sum(_correct(run_row) is False for run_row, _base_row in newly_triggered)
+    return {
+        "baseline_correct_samples": len(baseline_correct_pairs),
+        "newly_triggered_by_heg": len(newly_triggered),
+        "pure_historical_evidence_gain_triggers": len(pure_heg_triggered),
+        "stayed_correct": stayed_correct,
+        "became_wrong": became_wrong,
+        "damage_rate": _percent(became_wrong, len(newly_triggered)),
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--baseline", type=Path, required=True, help="Current PRISM result dir on the same subset.")
     parser.add_argument("--run", action="append", default=[], help="NAME=RESULT_DIR. Repeat for sweep thresholds.")
     parser.add_argument("--oracle-run", type=Path, help="Optional oracle_rows.jsonl/CSV source for known false-stop tracking.")
     parser.add_argument("--subset", type=Path, help="Optional fixed OVO subset annotation JSON for oracle overlap diagnostics.")
+    parser.add_argument(
+        "--oracle-match-key",
+        default=None,
+        choices=[
+            "explicit_key",
+            "sample_key",
+            "id_qidx_task_question",
+            "id_task_question",
+            "video_task_question",
+            "task_question",
+            "question",
+            "metric_key",
+        ],
+        help="Force a key variant for oracle false-stop matching.",
+    )
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
 
@@ -460,8 +555,12 @@ def main() -> None:
             "metric_key",
         ]
         baseline_variant, baseline_overlap = _best_matching_variant(oracle_rows, baseline_rows, variants)
+        if args.oracle_match_key:
+            baseline_variant = args.oracle_match_key
         subset_rows = _flatten(_load_json_rows(args.subset)) if args.subset else []
         subset_variant, subset_overlap = _best_matching_variant(oracle_rows, subset_rows, variants) if subset_rows else (None, {})
+        if args.oracle_match_key:
+            subset_variant = args.oracle_match_key
         oracle_in_subset = _matched_rows(oracle_rows, subset_rows, subset_variant) if subset_rows else []
         matched_baseline_oracle_rows = []
         if baseline_variant:
@@ -477,6 +576,7 @@ def main() -> None:
             "oracle_rows_after_filter": len(oracle_rows),
             "result_match_key_variant": baseline_variant,
             "subset_match_key_variant": subset_variant,
+            "forced_match_key_variant": args.oracle_match_key,
             "match_policy": (
                 "Prefer key formats with nonzero overlap and no duplicate rows on either side. "
                 "Loose question-only overlaps are reported for diagnostics but not used when an unambiguous key overlaps."
@@ -494,18 +594,56 @@ def main() -> None:
             "present_in_subset": len(oracle_in_subset),
         }
         by_run: dict[str, Any] = {}
+        compact_table: list[dict[str, Any]] = []
+        baseline_correct_damage: dict[str, Any] = {}
+        total_present = len(matched_baseline_oracle_rows) or len(oracle_in_subset)
         for name, rows in run_rows.items():
             variant, overlap = _best_matching_variant(oracle_rows, rows, variants)
+            if args.oracle_match_key:
+                variant = args.oracle_match_key
             matched = _matched_rows(oracle_rows, rows, variant)
+            false_stop_stats = _summarize_oracle_false_stop_run(matched, total_present)
+            damage_stats = _summarize_baseline_correct_heg_damage(rows, baseline_rows, "id_task_question")
             by_run[name] = {
                 "match_key_variant": variant,
                 "key_overlap_diagnostics": overlap,
                 "matched": len(matched),
-                "activated": sum(_memory_activated(row) for row in matched),
+                "activated": sum(_heg_activated(row) for row in matched),
                 "correct": sum(_correct(row) is True for row in matched),
                 "remain_wrong": sum(_correct(row) is False for row in matched),
+                "false_stop_analysis": false_stop_stats,
+                "baseline_correct_heg_damage": damage_stats,
             }
+            baseline_correct_damage[name] = damage_stats
+            compact_table.append(
+                {
+                    "threshold": name,
+                    "false_stops_activated": false_stop_stats["activated_by_heg_trigger"],
+                    "false_stops_corrected": false_stop_stats["activated_became_correct"],
+                    "activation_recall": false_stop_stats["activation_recall"],
+                    "precision": false_stop_stats["precision_among_activated_false_stops"],
+                    "new_correct_sample_triggers": damage_stats["newly_triggered_by_heg"],
+                    "damaged_correct_samples": damage_stats["became_wrong"],
+                    "net_effect": false_stop_stats["activated_became_correct"] - damage_stats["became_wrong"],
+                }
+            )
         summary["oracle_false_stops"]["by_run"] = by_run
+        summary["oracle_false_stops"]["baseline_correct_heg_damage_by_run"] = baseline_correct_damage
+        summary["oracle_false_stops"]["threshold_table"] = compact_table
+        best_net = max((row["net_effect"] for row in compact_table), default=None)
+        summary["oracle_false_stops"]["net_rescue_vs_baseline_prism"] = {
+            "best_net_effect": best_net,
+            "improving_thresholds": [
+                row["threshold"]
+                for row in compact_table
+                if isinstance(row.get("net_effect"), int) and row["net_effect"] > 0
+            ],
+            "conclusion": (
+                "At least one HEG threshold improves net rescue relative to baseline PRISM."
+                if isinstance(best_net, int) and best_net > 0
+                else "No HEG threshold improves net rescue relative to baseline PRISM."
+            ),
+        }
 
     ranked = sorted(
         summary["runs"],

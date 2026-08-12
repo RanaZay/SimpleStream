@@ -84,13 +84,52 @@ def _maybe_load_summary(path: Path) -> dict[str, Any]:
     return {}
 
 
-def _check_official_sanity(summary: dict[str, Any], *, require: bool) -> dict[str, Any]:
+def _check_official_sanity(
+    summary: dict[str, Any],
+    *,
+    require: bool,
+    expected_recent6: float | None,
+    expected_prism: float | None,
+) -> dict[str, Any]:
     reconciliation = summary.get("official_protocol_reconciliation")
     checks = reconciliation.get("sanity_checks") if isinstance(reconciliation, dict) else None
     if not isinstance(checks, dict) or not checks:
+        official = reconciliation.get("official_ovo") if isinstance(reconciliation, dict) else None
+        checks = {}
+        if isinstance(official, dict) and expected_recent6 is not None:
+            actual = ((official.get("recent6_k0") or {}).get("total_avg"))
+            checks["recent6_k0_matches_expected"] = {
+                "expected": expected_recent6,
+                "actual": actual,
+                "absolute_error": abs(float(actual) - expected_recent6) if isinstance(actual, (int, float)) else None,
+                "passes_rounding_check": isinstance(actual, (int, float)) and round(float(actual), 2) == round(expected_recent6, 2),
+                "source": "computed by analyzer from official_ovo.recent6_k0.total_avg",
+            }
+        if isinstance(official, dict) and expected_prism is not None:
+            actual = ((official.get("prism") or {}).get("total_avg"))
+            checks["prism_matches_expected"] = {
+                "expected": expected_prism,
+                "actual": actual,
+                "absolute_error": abs(float(actual) - expected_prism) if isinstance(actual, (int, float)) else None,
+                "passes_rounding_check": isinstance(actual, (int, float)) and round(float(actual), 2) == round(expected_prism, 2),
+                "source": "computed by analyzer from official_ovo.prism.total_avg",
+            }
+        if checks:
+            failed = {key: value for key, value in checks.items() if not value.get("passes_rounding_check")}
+            result = {
+                "status": "passed" if not failed else "failed",
+                "checks": checks,
+            }
+            if failed and require:
+                raise SystemExit(f"Official sanity checks failed: {failed}")
+            return result
         result = {
             "status": "missing",
-            "message": "No official K=0 sanity checks found in summary.",
+            "message": (
+                "No official K=0 sanity checks found in summary. "
+                "Pass --expected-official-recent6 53.57 and --expected-official-prism 54.25, "
+                "or rerun the oracle rescore with those expected values."
+            ),
         }
         if require:
             raise SystemExit(result["message"])
@@ -571,11 +610,18 @@ def main() -> None:
     parser.add_argument("--fps", type=float, default=1.0)
     parser.add_argument("--max-samples", type=int, default=0)
     parser.add_argument("--require-official-sanity", action="store_true")
+    parser.add_argument("--expected-official-recent6", type=float, default=None)
+    parser.add_argument("--expected-official-prism", type=float, default=None)
     args = parser.parse_args()
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
     summary = _maybe_load_summary(args.oracle_run)
-    sanity = _check_official_sanity(summary, require=args.require_official_sanity)
+    sanity = _check_official_sanity(
+        summary,
+        require=args.require_official_sanity,
+        expected_recent6=args.expected_official_recent6,
+        expected_prism=args.expected_official_prism,
+    )
     rows, rows_source = _load_oracle_rows(args.oracle_run)
     annotations = _annotations_by_id(args.anno_path)
     mcq_rows = [row for row in rows if str(row.get("task") or "") in MCQ_TASKS]

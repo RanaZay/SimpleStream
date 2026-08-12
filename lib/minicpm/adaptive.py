@@ -293,6 +293,9 @@ class AdaptiveWindowConfig:
       progressive_sufficiency_memory: isolated PRISM-style mode using Recent-6,
         a diverse CLIP-ranked history queue, iterative option-logit/visual-support
         sufficiency, and at most three historical frames.
+      progressive_sufficiency_memory_heg: same PRISM ranking and budget, with
+        option-specific historical evidence gain allowed to trigger retrieval
+        even when the current context passes the sufficiency threshold.
     """
 
     mode: str = "adaptive"
@@ -351,6 +354,7 @@ class AdaptiveWindowConfig:
             "progressive_evidence_memory",
             "full_progressive_evidence_memory",
             "progressive_sufficiency_memory",
+            "progressive_sufficiency_memory_heg",
         }
         if self.mode not in valid_modes:
             raise ValueError(f"Unknown adaptive mode {self.mode!r}; expected one of {sorted(valid_modes)}")
@@ -399,6 +403,7 @@ class AdaptiveWindowConfig:
             "progressive_evidence_memory",
             "full_progressive_evidence_memory",
             "progressive_sufficiency_memory",
+            "progressive_sufficiency_memory_heg",
         }
 
     @property
@@ -456,6 +461,14 @@ class AdaptiveWindowConfig:
     @property
     def progressive_sufficiency_memory(self) -> bool:
         return self.mode == "progressive_sufficiency_memory"
+
+    @property
+    def progressive_sufficiency_memory_heg(self) -> bool:
+        return self.mode == "progressive_sufficiency_memory_heg"
+
+    @property
+    def progressive_sufficiency_like(self) -> bool:
+        return self.mode in {"progressive_sufficiency_memory", "progressive_sufficiency_memory_heg"}
 
     @property
     def fixed_memory_budget(self) -> bool:
@@ -758,11 +771,13 @@ def _memory_trigger_decision(
             if config.full_progressive_evidence_memory
             else "progressive_evidence_pending_until_recent_context",
         }
-    if config.progressive_sufficiency_memory:
+    if config.progressive_sufficiency_like:
         return True, {
             "enabled": True,
             "activated": True,
-            "reason": "progressive_sufficiency_pending",
+            "reason": "progressive_sufficiency_heg_pending"
+            if config.progressive_sufficiency_memory_heg
+            else "progressive_sufficiency_pending",
         }
     activated = reason == "history_or_temporal"
     return activated, {
@@ -2997,6 +3012,8 @@ def _memory_selector_label(config: AdaptiveWindowConfig) -> str:
         return "full_progressive_evidence_acquisition"
     if config.progressive_sufficiency_memory:
         return "progressive_sufficiency_memory"
+    if config.progressive_sufficiency_memory_heg:
+        return "progressive_sufficiency_memory_heg"
     if config.gated_semantic_episodic_memory:
         return "gated_bound_semantic_episodic_memory"
     if config.bound_semantic_episodic_memory:
@@ -3207,7 +3224,7 @@ def query_adaptive_window(
 
     selection_t0 = time.perf_counter()
     answer_prompt = prompt
-    if config.progressive_sufficiency_memory:
+    if config.progressive_sufficiency_like:
         from lib.minicpm.progressive_sufficiency import select_progressive_sufficiency_memory
 
         recent_window = max(1, int(config.max_window))
@@ -3243,6 +3260,7 @@ def query_adaptive_window(
                 "video_end": baseline_recent.video_end,
                 "cdas": baseline_recent.cdas_metadata,
             },
+            enable_heg=config.progressive_sufficiency_memory_heg,
         )
         selection = AdaptiveSelection(
             frames=progressive_selection.frames,
@@ -3278,7 +3296,7 @@ def query_adaptive_window(
         after_memory=after_memory,
         qa=qa,
     )
-    if config.progressive_sufficiency_memory:
+    if config.progressive_sufficiency_like:
         selection.metadata["final_generation_ms"] = float(generate_time * 1000.0)
         selection.metadata["ttft_seconds"] = float(ttft_seconds)
         selection.metadata["end_to_end_time_seconds"] = float(decode_time + selection_time + generate_time)

@@ -106,6 +106,100 @@ def _normalize_clip_support(raw_score: float) -> float:
     return float(np.clip((float(raw_score) - 0.15) / 0.30, 0.0, 1.0))
 
 
+def _top_margin(values: dict[str, float]) -> float | None:
+    ordered = sorted(values.values(), reverse=True)
+    if len(ordered) < 2:
+        return None
+    return float(ordered[0] - ordered[1])
+
+
+def _argmax(values: dict[str, float]) -> str | None:
+    if not values:
+        return None
+    return max(values, key=lambda key: (float(values[key]), -ord(str(key)[0])))
+
+
+class _OptionEvidenceGainScorer:
+    def __init__(
+        self,
+        scorer: AnswerGroundedFrameScorer,
+        prompt: str,
+        options: list[dict[str, str]],
+    ) -> None:
+        self.scorer = scorer
+        self.question = _question_text(prompt)
+        self.option_queries = {
+            option["letter"]: f"{self.question} {option['text']}".strip()
+            for option in options
+        }
+        self._score_cache: dict[tuple[str, int], float] = {}
+
+    def _chunk_score(self, letter: str, chunk: Any) -> float:
+        chunk_id = int(chunk.chunk_index)
+        key = (letter, chunk_id)
+        if key not in self._score_cache:
+            scores = self.scorer.score(self.option_queries[letter], list(chunk.frames))
+            self._score_cache[key] = float(max(scores) if scores else -1.0)
+        return self._score_cache[key]
+
+    def compute(
+        self,
+        *,
+        context_chunks: list[Any],
+        unused_candidates: list[dict[str, Any]],
+        predicted_option: str,
+        recent_ids: set[int],
+        selected_memory_ids: set[int],
+        heg_threshold: float,
+    ) -> dict[str, Any]:
+        unused_chunks = [candidate["chunk"] for candidate in unused_candidates]
+        unused_ids = [int(chunk.chunk_index) for chunk in unused_chunks]
+        assert len(unused_ids) == len(set(unused_ids))
+        assert not (set(unused_ids) & recent_ids)
+        assert not (set(unused_ids) & selected_memory_ids)
+
+        current_support: dict[str, float] = {}
+        best_historical_support: dict[str, float] = {}
+        best_historical_chunk_id: dict[str, int | None] = {}
+        for letter in self.option_queries:
+            current_scores = [self._chunk_score(letter, chunk) for chunk in context_chunks]
+            historical_scores = [(int(chunk.chunk_index), self._chunk_score(letter, chunk)) for chunk in unused_chunks]
+            current_support[letter] = float(max(current_scores) if current_scores else -1.0)
+            if historical_scores:
+                best_chunk_id, best_score = max(historical_scores, key=lambda item: (item[1], -item[0]))
+                best_historical_chunk_id[letter] = int(best_chunk_id)
+                best_historical_support[letter] = float(best_score)
+            else:
+                best_historical_chunk_id[letter] = None
+                best_historical_support[letter] = -1.0
+
+        evidence_gain = {
+            letter: float(best_historical_support[letter] - current_support[letter])
+            for letter in current_support
+        }
+        alternatives = {letter: value for letter, value in evidence_gain.items() if letter != predicted_option}
+        best_alternative = _argmax(alternatives)
+        historical_option = _argmax(best_historical_support)
+        current_option = _argmax(current_support)
+        heg_alternative = alternatives[best_alternative] if best_alternative else None
+        heg_current = evidence_gain.get(predicted_option)
+        return {
+            "heg_threshold": float(heg_threshold),
+            "current_support_by_option": current_support,
+            "best_historical_support_by_option": best_historical_support,
+            "best_historical_chunk_id_by_option": best_historical_chunk_id,
+            "evidence_gain_by_option": evidence_gain,
+            "heg_current": heg_current,
+            "heg_alternative": heg_alternative,
+            "best_alternative_option": best_alternative,
+            "current_option_from_clip": current_option,
+            "historical_option_from_clip": historical_option,
+            "historical_option_margin": _top_margin(best_historical_support),
+            "evidence_conflict": bool(historical_option and current_option and historical_option != current_option),
+            "unused_historical_candidate_ids": unused_ids,
+        }
+
+
 def _rank_candidates(
     qa: RecentWindowQAModel,
     older_chunks: list[Any],
@@ -436,6 +530,7 @@ def select_progressive_sufficiency_memory(
     recent_chunk_ids: list[int] | None = None,
     recent_downsample_mode: str | None = None,
     baseline_recent_metadata: dict[str, Any] | None = None,
+    enable_heg: bool = False,
 ) -> ProgressiveSufficiencySelection:
     recent_window = 6
     history_search_chunks = _env_int("MINICPM_PSM_HISTORY_SEARCH_CHUNKS", 64)
@@ -443,6 +538,9 @@ def select_progressive_sufficiency_memory(
     max_memory_frames = min(3, _env_int("MINICPM_PSM_MAX_MEMORY_FRAMES", 3))
     min_temporal_gap = _env_int("MINICPM_PSM_MIN_TEMPORAL_GAP", 2)
     sufficiency_threshold = _env_float("MINICPM_PSM_SUFFICIENCY_THRESHOLD", 0.62)
+    heg_threshold = _env_float("ADAPTIVE_HEG_THRESHOLD", 0.10)
+    if "ADAPTIVE_HEG_THRESHOLD" not in os.environ:
+        heg_threshold = _env_float("MINICPM_PSM_HEG_THRESHOLD", 0.10)
     min_evidence_gain = _env_float("MINICPM_PSM_MIN_EVIDENCE_GAIN", 0.035)
     negative_gain_tolerance = _env_float("MINICPM_PSM_NEGATIVE_GAIN_TOLERANCE", 0.02)
     margin_weight = _env_float("MINICPM_PSM_MARGIN_WEIGHT", 0.50)
@@ -473,7 +571,7 @@ def select_progressive_sufficiency_memory(
     if not options:
         final_ids = list(recent_ids)
         metadata = {
-            "mode": "progressive_sufficiency_memory",
+            "mode": "progressive_sufficiency_memory_heg" if enable_heg else "progressive_sufficiency_memory",
             "recent_chunk_ids": recent_ids,
             "baseline_recent_equivalence": {
                 "enabled": recent_chunk_ids is not None,
@@ -519,6 +617,7 @@ def select_progressive_sufficiency_memory(
         min_temporal_gap=max(1, min_temporal_gap),
     )
     scorer = _get_clip_scorer(qa)
+    heg_scorer = _OptionEvidenceGainScorer(scorer, prompt, options) if enable_heg else None
     selected_memory: list[Any] = []
     best_memory: list[Any] = []
     iterations: list[dict[str, Any]] = []
@@ -555,25 +654,60 @@ def select_progressive_sufficiency_memory(
         if current_sufficiency > best_sufficiency:
             best_sufficiency = current_sufficiency
             best_memory = list(chronological_memory)
-        iterations.append(
-            {
-                "iteration": iteration_index,
-                "context_chunk_ids": [int(chunk.chunk_index) for chunk in context_chunks],
-                "added_chunk_id": added_chunk_id,
-                "predicted_option": score["predicted_option"],
-                "option_probabilities": score["option_probabilities"],
-                "option_scoring_mechanism": score["option_scoring_mechanism"],
-                "answer_margin": score["answer_margin"],
-                "normalized_entropy": score["normalized_entropy"],
-                "entropy_confidence": score["entropy_confidence"],
-                "visual_support_raw": score["visual_support_raw"],
-                "visual_support_norm": score["visual_support_norm"],
-                "sufficiency": current_sufficiency,
-                "gain_vs_previous": gain,
-                "sufficiency_ms": score["sufficiency_ms"],
-                "option_forward_ms": score["option_forward_ms"],
-            }
+        selected_memory_ids = {int(chunk.chunk_index) for chunk in chronological_memory}
+        unused_candidates = [
+            candidate
+            for candidate in candidate_queue
+            if int(candidate["chunk_id"]) not in selected_memory_ids and int(candidate["chunk_id"]) not in recent_id_set
+        ]
+        heg_metadata: dict[str, Any] = {}
+        if heg_scorer is not None:
+            heg_metadata = heg_scorer.compute(
+                context_chunks=context_chunks,
+                unused_candidates=unused_candidates,
+                predicted_option=str(score["predicted_option"]),
+                recent_ids=recent_id_set,
+                selected_memory_ids=selected_memory_ids,
+                heg_threshold=heg_threshold,
+            )
+        low_sufficiency_trigger = current_sufficiency < sufficiency_threshold
+        heg_alternative = heg_metadata.get("heg_alternative")
+        historical_gain_trigger = (
+            enable_heg
+            and isinstance(heg_alternative, (int, float))
+            and float(heg_alternative) > heg_threshold
+            and bool(unused_candidates)
         )
+        if low_sufficiency_trigger and historical_gain_trigger:
+            trigger_reason = "low_sufficiency_and_historical_gain"
+        elif low_sufficiency_trigger:
+            trigger_reason = "low_sufficiency"
+        elif historical_gain_trigger:
+            trigger_reason = "historical_evidence_gain"
+        else:
+            trigger_reason = "none"
+
+        iteration_record = {
+            "iteration": iteration_index,
+            "context_chunk_ids": [int(chunk.chunk_index) for chunk in context_chunks],
+            "added_chunk_id": added_chunk_id,
+            "predicted_option": score["predicted_option"],
+            "option_probabilities": score["option_probabilities"],
+            "option_scoring_mechanism": score["option_scoring_mechanism"],
+            "answer_margin": score["answer_margin"],
+            "normalized_entropy": score["normalized_entropy"],
+            "entropy_confidence": score["entropy_confidence"],
+            "visual_support_raw": score["visual_support_raw"],
+            "visual_support_norm": score["visual_support_norm"],
+            "sufficiency": current_sufficiency,
+            "gain_vs_previous": gain,
+            "sufficiency_ms": score["sufficiency_ms"],
+            "option_forward_ms": score["option_forward_ms"],
+        }
+        if enable_heg:
+            iteration_record["retrieval_trigger_reason"] = trigger_reason
+            iteration_record.update(heg_metadata)
+        iterations.append(iteration_record)
 
         if iteration_index > 0 and gain is not None:
             if gain < -negative_gain_tolerance:
@@ -582,7 +716,17 @@ def select_progressive_sufficiency_memory(
             if 0.0 <= gain < min_evidence_gain:
                 stop_reason = "low_marginal_gain"
                 break
-        if current_sufficiency >= sufficiency_threshold:
+        if enable_heg:
+            if not low_sufficiency_trigger and not historical_gain_trigger:
+                stop_reason = "sufficient_no_historical_advantage"
+                break
+            if iteration_index >= max_memory_frames:
+                stop_reason = "max_memory_frames_reached"
+                break
+            if not unused_candidates:
+                stop_reason = "candidate_queue_exhausted"
+                break
+        elif current_sufficiency >= sufficiency_threshold:
             stop_reason = "sufficient_evidence"
             break
         if iteration_index >= max_memory_frames:
@@ -595,7 +739,7 @@ def select_progressive_sufficiency_memory(
     final_chunks = [*best_memory, *recent_chunks]
     final_ids = [int(chunk.chunk_index) for chunk in final_chunks]
     metadata = {
-        "mode": "progressive_sufficiency_memory",
+        "mode": "progressive_sufficiency_memory_heg" if enable_heg else "progressive_sufficiency_memory",
         "config": {
             "recent_window": recent_window,
             "history_search_chunks": history_search_chunks,
@@ -603,6 +747,8 @@ def select_progressive_sufficiency_memory(
             "max_memory_frames": max_memory_frames,
             "min_temporal_gap": min_temporal_gap,
             "sufficiency_threshold": sufficiency_threshold,
+            "heg_enabled": bool(enable_heg),
+            "heg_threshold": float(heg_threshold) if enable_heg else None,
             "min_evidence_gain": min_evidence_gain,
             "negative_gain_tolerance": negative_gain_tolerance,
             "margin_weight": margin_weight,
@@ -656,6 +802,17 @@ def _validate_metadata(metadata: dict[str, Any]) -> None:
     final_ids = [int(value) for value in metadata["final_selected_chunk_ids"]]
     assert bool(metadata["memory_triggered"]) == bool(memory_ids)
     assert len(memory_ids) <= 3
+    assert len(memory_ids) == len(set(memory_ids))
     assert not (set(recent_ids) & set(memory_ids))
     assert final_ids == [*sorted(memory_ids), *recent_ids]
     assert len(final_ids) == len(set(final_ids))
+    if metadata.get("mode") == "progressive_sufficiency_memory_heg":
+        for item in metadata.get("iterations", []):
+            unused = {int(value) for value in item.get("unused_historical_candidate_ids", [])}
+            context = {int(value) for value in item.get("context_chunk_ids", [])}
+            assert not (unused & set(recent_ids))
+            assert not (unused & context)
+            gains = item.get("evidence_gain_by_option", {})
+            current = item.get("current_support_by_option", {})
+            historical = item.get("best_historical_support_by_option", {})
+            assert set(gains) == set(current) == set(historical)

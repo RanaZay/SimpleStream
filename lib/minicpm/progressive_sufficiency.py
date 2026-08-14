@@ -500,6 +500,76 @@ def _candidate_metadata(candidate: dict[str, Any]) -> dict[str, Any]:
     return metadata
 
 
+def _mode_name(enable_heg: bool, enable_conservative_gate: bool) -> str:
+    if enable_conservative_gate:
+        return "progressive_sufficiency_memory_conservative_gate"
+    if enable_heg:
+        return "progressive_sufficiency_memory_heg"
+    return "progressive_sufficiency_memory"
+
+
+def _candidate_distance_from_recent(candidate: dict[str, Any] | None, recent_ids: list[int]) -> float | None:
+    if candidate is None or not recent_ids:
+        return None
+    candidate_id = int(candidate["chunk_id"])
+    return float(min(abs(int(recent_id) - candidate_id) for recent_id in recent_ids))
+
+
+def _conservative_gate_decision(
+    *,
+    current_sufficiency: float,
+    unused_candidates: list[dict[str, Any]],
+    recent_ids: list[int],
+    tau_low: float,
+    tau_high: float,
+    candidate_threshold: float,
+    temporal_distance_threshold: float,
+) -> dict[str, Any]:
+    best_candidate = unused_candidates[0] if unused_candidates else None
+    best_candidate_score = (
+        float(best_candidate["total_score"])
+        if best_candidate is not None and isinstance(best_candidate.get("total_score"), (int, float))
+        else None
+    )
+    best_candidate_distance = _candidate_distance_from_recent(best_candidate, recent_ids)
+    if current_sufficiency < tau_low:
+        return {
+            "retrieve": bool(unused_candidates),
+            "reason": "low_sufficiency" if unused_candidates else "low_sufficiency_no_candidates",
+            "best_candidate_score": best_candidate_score,
+            "best_candidate_temporal_distance_chunks": best_candidate_distance,
+            "best_candidate_chunk_id": int(best_candidate["chunk_id"]) if best_candidate is not None else None,
+        }
+    if current_sufficiency >= tau_high:
+        return {
+            "retrieve": False,
+            "reason": "high_sufficiency",
+            "best_candidate_score": best_candidate_score,
+            "best_candidate_temporal_distance_chunks": best_candidate_distance,
+            "best_candidate_chunk_id": int(best_candidate["chunk_id"]) if best_candidate is not None else None,
+        }
+    candidate_ok = best_candidate_score is not None and best_candidate_score > candidate_threshold
+    temporal_ok = best_candidate_distance is not None and best_candidate_distance > temporal_distance_threshold
+    retrieve = bool(unused_candidates) and candidate_ok and temporal_ok
+    if retrieve:
+        reason = "ambiguous_strong_temporal_candidate"
+    elif not unused_candidates:
+        reason = "ambiguous_no_candidates"
+    elif not candidate_ok and not temporal_ok:
+        reason = "ambiguous_weak_near_candidate"
+    elif not candidate_ok:
+        reason = "ambiguous_weak_candidate"
+    else:
+        reason = "ambiguous_near_candidate"
+    return {
+        "retrieve": retrieve,
+        "reason": reason,
+        "best_candidate_score": best_candidate_score,
+        "best_candidate_temporal_distance_chunks": best_candidate_distance,
+        "best_candidate_chunk_id": int(best_candidate["chunk_id"]) if best_candidate is not None else None,
+    }
+
+
 def _print_trace(metadata: dict[str, Any]) -> None:
     if os.environ.get("MINICPM_PSM_PRINT_TRACE", "1").strip().lower() in {"0", "false", "no", "off"}:
         return
@@ -531,6 +601,7 @@ def select_progressive_sufficiency_memory(
     recent_downsample_mode: str | None = None,
     baseline_recent_metadata: dict[str, Any] | None = None,
     enable_heg: bool = False,
+    enable_conservative_gate: bool = False,
 ) -> ProgressiveSufficiencySelection:
     recent_window = 6
     history_search_chunks = _env_int("MINICPM_PSM_HISTORY_SEARCH_CHUNKS", 64)
@@ -538,6 +609,10 @@ def select_progressive_sufficiency_memory(
     max_memory_frames = min(3, _env_int("MINICPM_PSM_MAX_MEMORY_FRAMES", 3))
     min_temporal_gap = _env_int("MINICPM_PSM_MIN_TEMPORAL_GAP", 2)
     sufficiency_threshold = _env_float("MINICPM_PSM_SUFFICIENCY_THRESHOLD", 0.62)
+    conservative_tau_low = _env_float("MINICPM_PSM_GATE_TAU_LOW", sufficiency_threshold)
+    conservative_tau_high = _env_float("MINICPM_PSM_GATE_TAU_HIGH", 0.74)
+    conservative_candidate_threshold = _env_float("MINICPM_PSM_GATE_CANDIDATE_THRESHOLD", 0.535)
+    conservative_temporal_distance_threshold = _env_float("MINICPM_PSM_GATE_TEMPORAL_DISTANCE_THRESHOLD", 10.0)
     heg_threshold = _env_float("ADAPTIVE_HEG_THRESHOLD", 0.10)
     if "ADAPTIVE_HEG_THRESHOLD" not in os.environ:
         heg_threshold = _env_float("MINICPM_PSM_HEG_THRESHOLD", 0.10)
@@ -567,11 +642,12 @@ def select_progressive_sufficiency_memory(
         all_older_chunks = [chunk for chunk in chunks if int(chunk.chunk_index) not in recent_id_set]
     older_chunks = all_older_chunks[-history_search_chunks:] if history_search_chunks > 0 else all_older_chunks
     options = _extract_mcq_options(prompt)
+    mode_name = _mode_name(enable_heg=enable_heg, enable_conservative_gate=enable_conservative_gate)
 
     if not options:
         final_ids = list(recent_ids)
         metadata = {
-            "mode": "progressive_sufficiency_memory_heg" if enable_heg else "progressive_sufficiency_memory",
+            "mode": mode_name,
             "recent_chunk_ids": recent_ids,
             "baseline_recent_equivalence": {
                 "enabled": recent_chunk_ids is not None,
@@ -671,6 +747,17 @@ def select_progressive_sufficiency_memory(
                 heg_threshold=heg_threshold,
             )
         low_sufficiency_trigger = current_sufficiency < sufficiency_threshold
+        conservative_gate: dict[str, Any] = {}
+        if enable_conservative_gate:
+            conservative_gate = _conservative_gate_decision(
+                current_sufficiency=current_sufficiency,
+                unused_candidates=unused_candidates,
+                recent_ids=recent_ids,
+                tau_low=conservative_tau_low,
+                tau_high=conservative_tau_high,
+                candidate_threshold=conservative_candidate_threshold,
+                temporal_distance_threshold=conservative_temporal_distance_threshold,
+            )
         heg_alternative = heg_metadata.get("heg_alternative")
         historical_gain_trigger = (
             enable_heg
@@ -707,6 +794,21 @@ def select_progressive_sufficiency_memory(
         if enable_heg:
             iteration_record["retrieval_trigger_reason"] = trigger_reason
             iteration_record.update(heg_metadata)
+        if enable_conservative_gate:
+            iteration_record["retrieval_trigger_reason"] = str(conservative_gate.get("reason", "none"))
+            iteration_record["conservative_gate"] = {
+                "retrieve": bool(conservative_gate.get("retrieve")),
+                "reason": str(conservative_gate.get("reason", "none")),
+                "tau_low": float(conservative_tau_low),
+                "tau_high": float(conservative_tau_high),
+                "candidate_threshold": float(conservative_candidate_threshold),
+                "temporal_distance_threshold": float(conservative_temporal_distance_threshold),
+                "best_unused_candidate_chunk_id": conservative_gate.get("best_candidate_chunk_id"),
+                "best_unused_candidate_total_score": conservative_gate.get("best_candidate_score"),
+                "best_unused_candidate_temporal_distance_chunks": conservative_gate.get(
+                    "best_candidate_temporal_distance_chunks"
+                ),
+            }
         iterations.append(iteration_record)
 
         if iteration_index > 0 and gain is not None:
@@ -716,7 +818,17 @@ def select_progressive_sufficiency_memory(
             if 0.0 <= gain < min_evidence_gain:
                 stop_reason = "low_marginal_gain"
                 break
-        if enable_heg:
+        if enable_conservative_gate:
+            if not bool(conservative_gate.get("retrieve")):
+                stop_reason = str(conservative_gate.get("reason", "conservative_gate_stop"))
+                break
+            if iteration_index >= max_memory_frames:
+                stop_reason = "max_memory_frames_reached"
+                break
+            if not unused_candidates:
+                stop_reason = "candidate_queue_exhausted"
+                break
+        elif enable_heg:
             if not low_sufficiency_trigger and not historical_gain_trigger:
                 stop_reason = "sufficient_no_historical_advantage"
                 break
@@ -739,7 +851,7 @@ def select_progressive_sufficiency_memory(
     final_chunks = [*best_memory, *recent_chunks]
     final_ids = [int(chunk.chunk_index) for chunk in final_chunks]
     metadata = {
-        "mode": "progressive_sufficiency_memory_heg" if enable_heg else "progressive_sufficiency_memory",
+        "mode": mode_name,
         "config": {
             "recent_window": recent_window,
             "history_search_chunks": history_search_chunks,
@@ -749,6 +861,15 @@ def select_progressive_sufficiency_memory(
             "sufficiency_threshold": sufficiency_threshold,
             "heg_enabled": bool(enable_heg),
             "heg_threshold": float(heg_threshold) if enable_heg else None,
+            "conservative_gate_enabled": bool(enable_conservative_gate),
+            "conservative_tau_low": float(conservative_tau_low) if enable_conservative_gate else None,
+            "conservative_tau_high": float(conservative_tau_high) if enable_conservative_gate else None,
+            "conservative_candidate_threshold": (
+                float(conservative_candidate_threshold) if enable_conservative_gate else None
+            ),
+            "conservative_temporal_distance_threshold": (
+                float(conservative_temporal_distance_threshold) if enable_conservative_gate else None
+            ),
             "min_evidence_gain": min_evidence_gain,
             "negative_gain_tolerance": negative_gain_tolerance,
             "margin_weight": margin_weight,

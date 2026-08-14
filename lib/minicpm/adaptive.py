@@ -296,6 +296,10 @@ class AdaptiveWindowConfig:
       progressive_sufficiency_memory_heg: same PRISM ranking and budget, with
         option-specific historical evidence gain allowed to trigger retrieval
         even when the current context passes the sufficiency threshold.
+      progressive_sufficiency_memory_conservative_gate: isolated PRISM-style
+        mode that keeps low-sufficiency retrieval, stops high-sufficiency
+        cases, and retrieves in the ambiguous band only when the best unused
+        historical candidate is strong and temporally separated.
     """
 
     mode: str = "adaptive"
@@ -355,6 +359,7 @@ class AdaptiveWindowConfig:
             "full_progressive_evidence_memory",
             "progressive_sufficiency_memory",
             "progressive_sufficiency_memory_heg",
+            "progressive_sufficiency_memory_conservative_gate",
         }
         if self.mode not in valid_modes:
             raise ValueError(f"Unknown adaptive mode {self.mode!r}; expected one of {sorted(valid_modes)}")
@@ -404,6 +409,7 @@ class AdaptiveWindowConfig:
             "full_progressive_evidence_memory",
             "progressive_sufficiency_memory",
             "progressive_sufficiency_memory_heg",
+            "progressive_sufficiency_memory_conservative_gate",
         }
 
     @property
@@ -467,8 +473,16 @@ class AdaptiveWindowConfig:
         return self.mode == "progressive_sufficiency_memory_heg"
 
     @property
+    def progressive_sufficiency_memory_conservative_gate(self) -> bool:
+        return self.mode == "progressive_sufficiency_memory_conservative_gate"
+
+    @property
     def progressive_sufficiency_like(self) -> bool:
-        return self.mode in {"progressive_sufficiency_memory", "progressive_sufficiency_memory_heg"}
+        return self.mode in {
+            "progressive_sufficiency_memory",
+            "progressive_sufficiency_memory_heg",
+            "progressive_sufficiency_memory_conservative_gate",
+        }
 
     @property
     def fixed_memory_budget(self) -> bool:
@@ -3014,6 +3028,8 @@ def _memory_selector_label(config: AdaptiveWindowConfig) -> str:
         return "progressive_sufficiency_memory"
     if config.progressive_sufficiency_memory_heg:
         return "progressive_sufficiency_memory_heg"
+    if config.progressive_sufficiency_memory_conservative_gate:
+        return "progressive_sufficiency_memory_conservative_gate"
     if config.gated_semantic_episodic_memory:
         return "gated_bound_semantic_episodic_memory"
     if config.bound_semantic_episodic_memory:
@@ -3261,6 +3277,7 @@ def query_adaptive_window(
                 "cdas": baseline_recent.cdas_metadata,
             },
             enable_heg=config.progressive_sufficiency_memory_heg,
+            enable_conservative_gate=config.progressive_sufficiency_memory_conservative_gate,
         )
         selection = AdaptiveSelection(
             frames=progressive_selection.frames,

@@ -94,17 +94,41 @@ def load_results(path: Path) -> tuple[str, list[dict[str, Any]]]:
             return str(path), list(payload.get("results", []))
         return str(path), list(payload)
 
+    if not path.exists():
+        parent = path.parent if path.parent.exists() else Path(".")
+        nearby = find_result_candidates(parent, limit=20)
+        hint = "\n".join(f"  {item}" for item in nearby) if nearby else "  (none found nearby)"
+        raise FileNotFoundError(
+            f"No such result path: {path}\n"
+            f"Nearby StreamingBench result candidates under {parent}:\n{hint}"
+        )
+
     merged = sorted(
         path.glob("streaming_bench_minicpmv46_results_*.json"),
         key=lambda item: item.stat().st_mtime,
         reverse=True,
     )
+    if not merged:
+        merged = sorted(
+            path.glob("**/streaming_bench_minicpmv46_results_*.json"),
+            key=lambda item: item.stat().st_mtime,
+            reverse=True,
+        )
     if merged:
         return load_results(merged[0])
 
     rank_files = sorted(path.glob("rank_*/results_incremental.jsonl"))
     if not rank_files:
-        raise FileNotFoundError(f"No StreamingBench results found under {path}")
+        rank_files = sorted(path.glob("**/rank_*/results_incremental.jsonl"))
+    if not rank_files:
+        nearby = find_result_candidates(path, limit=20)
+        hint = "\n".join(f"  {item}" for item in nearby) if nearby else "  (none found)"
+        raise FileNotFoundError(
+            f"No StreamingBench results found under {path}\n"
+            "Expected either streaming_bench_minicpmv46_results_*.json or "
+            "rank_*/results_incremental.jsonl.\n"
+            f"Candidate result paths:\n{hint}"
+        )
     rows: list[dict[str, Any]] = []
     for rank_file in rank_files:
         part, _done = load_jsonl_results(str(rank_file))
@@ -115,6 +139,22 @@ def load_results(path: Path) -> tuple[str, list[dict[str, Any]]]:
     return "\n  ".join(str(item) for item in rank_files), sorted(
         dedup.values(), key=lambda item: int(item.get("_index", 0))
     )
+
+
+def find_result_candidates(root: Path, limit: int = 20) -> list[Path]:
+    if not root.exists():
+        return []
+    candidates: dict[Path, float] = {}
+    for pattern in ("**/streaming_bench_minicpmv46_results_*.json", "**/rank_*/results_incremental.jsonl"):
+        for item in root.glob(pattern):
+            result_root = item.parent.parent if item.name == "results_incremental.jsonl" else item.parent
+            try:
+                mtime = item.stat().st_mtime
+            except OSError:
+                mtime = 0.0
+            candidates[result_root] = max(candidates.get(result_root, 0.0), mtime)
+    ranked = sorted(candidates.items(), key=lambda pair: pair[1], reverse=True)
+    return [path for path, _mtime in ranked[:limit]]
 
 
 def load_annotations(path: Path, video_dir: str) -> dict[int, dict[str, Any]]:

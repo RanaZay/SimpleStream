@@ -181,6 +181,9 @@ def decoded_chunks(row: dict[str, Any]) -> int | None:
 
 
 def available_history(ad: dict[str, Any]) -> int:
+    candidate_ends = ad.get("history_candidate_end_time_seconds")
+    if isinstance(candidate_ends, list):
+        return len(candidate_ends)
     start = ad.get("history_search_start")
     end = ad.get("history_search_end")
     if isinstance(start, (int, float)) and isinstance(end, (int, float)):
@@ -261,7 +264,7 @@ def history_decode_audit(rows: list[dict[str, Any]]) -> dict[str, Any]:
     zero_history = 0
     lt64 = 0
     ge64 = 0
-    timestamp_violations: list[dict[str, Any]] = []
+    temporal_violations: list[dict[str, Any]] = []
     decoded_less_than_recent_plus_history: list[dict[str, Any]] = []
 
     for row in rows:
@@ -279,18 +282,40 @@ def history_decode_audit(rows: list[dict[str, Any]]) -> dict[str, Any]:
         if dc is not None and recent_ids and dc < len(recent_ids) + history_count:
             decoded_less_than_recent_plus_history.append({"key": stable_key(row), "decoded_chunks": dc, "recent": recent_ids, "history_count": history_count})
 
+        recent_start = as_float(ad.get("recent_start_time_seconds"))
         earliest_recent = min(recent_ids) if recent_ids else None
         for candidate in ad.get("candidate_queue") or []:
             if not isinstance(candidate, dict):
                 continue
             cid = candidate.get("chunk_id")
-            if earliest_recent is not None and isinstance(cid, (int, float)) and int(cid) >= earliest_recent:
-                timestamp_violations.append(
+            candidate_end = as_float(candidate.get("end_time_seconds"))
+            if (
+                recent_start is not None
+                and candidate_end is not None
+                and candidate_end >= recent_start
+            ):
+                temporal_violations.append(
+                    {
+                        "key": stable_key(row),
+                        "category": category(row),
+                        "candidate_chunk_id": int(cid),
+                        "candidate_end_time_seconds": candidate_end,
+                        "recent_start_time_seconds": recent_start,
+                    }
+                )
+            elif (
+                recent_start is None
+                and earliest_recent is not None
+                and isinstance(cid, (int, float))
+                and int(cid) >= earliest_recent
+            ):
+                temporal_violations.append(
                     {
                         "key": stable_key(row),
                         "category": category(row),
                         "candidate_chunk_id": int(cid),
                         "earliest_recent_chunk_id": earliest_recent,
+                        "note": "legacy_chunk_id_proxy_no_saved_recent_start_time",
                     }
                 )
     return {
@@ -300,8 +325,8 @@ def history_decode_audit(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "samples_with_0_historical_chunks": zero_history,
         "samples_with_lt64_historical_chunks": lt64,
         "samples_with_ge64_historical_chunks": ge64,
-        "candidate_not_older_than_recent_violations": timestamp_violations[:50],
-        "candidate_not_older_than_recent_violation_count": len(timestamp_violations),
+        "historical_temporal_violations": temporal_violations[:50],
+        "historical_temporal_violation_count": len(temporal_violations),
         "decoded_less_than_recent_plus_history_count": len(decoded_less_than_recent_plus_history),
         "decoded_less_than_recent_plus_history_examples": decoded_less_than_recent_plus_history[:20],
     }
@@ -316,15 +341,23 @@ def temporal_distance_audit(rows: list[dict[str, Any]]) -> dict[str, Any]:
         if not recent_ids:
             continue
         earliest_recent = min(recent_ids)
+        recent_start = as_float(ad.get("recent_start_time_seconds"))
         for candidate in ad.get("candidate_queue") or []:
             if not isinstance(candidate, dict):
                 continue
             cid = candidate.get("chunk_id")
-            ts = as_float(candidate.get("timestamp"))
+            candidate_end = as_float(candidate.get("end_time_seconds"))
+            distance_seconds = as_float(candidate.get("candidate_temporal_distance_seconds"))
+            ts = candidate_end if candidate_end is not None else as_float(candidate.get("timestamp"))
             if not isinstance(cid, (int, float)) or ts is None:
                 continue
             chunk_dist = float(earliest_recent - int(cid))
-            timestamp_dist = float(earliest_recent - ts)
+            if distance_seconds is not None:
+                timestamp_dist = distance_seconds
+            elif recent_start is not None:
+                timestamp_dist = float(recent_start - ts)
+            else:
+                timestamp_dist = float(earliest_recent - ts)
             pairs.append((chunk_dist, timestamp_dist))
             if abs(chunk_dist - timestamp_dist) > max(2.0, 0.25 * max(abs(chunk_dist), 1.0)):
                 material.append(
@@ -434,14 +467,22 @@ def candidate1_gate_audit(rows: list[dict[str, Any]], baseline_rows: list[dict[s
             checked += 1
             first = unused[0]
             threshold = as_float(gate.get("candidate_threshold")) or 0.0
-            td_threshold = as_float(gate.get("temporal_distance_threshold")) or 0.0
+            td_threshold = (
+                as_float(gate.get("temporal_distance_threshold_seconds"))
+                or as_float(gate.get("temporal_distance_threshold"))
+                or 0.0
+            )
             first_score = as_float(first.get("total_score")) or -float("inf")
-            first_distance = min(abs(int(first["chunk_id"]) - rid) for rid in recent_ids) if recent_ids else None
+            first_distance = as_float(first.get("candidate_temporal_distance_seconds"))
+            if first_distance is None and recent_ids:
+                first_distance = min(abs(int(first["chunk_id"]) - rid) for rid in recent_ids)
             first_pass = first_score >= threshold and first_distance is not None and first_distance > td_threshold
             later_passing = []
             for cand in unused[1:]:
                 score = as_float(cand.get("total_score")) or -float("inf")
-                distance = min(abs(int(cand["chunk_id"]) - rid) for rid in recent_ids) if recent_ids else None
+                distance = as_float(cand.get("candidate_temporal_distance_seconds"))
+                if distance is None and recent_ids:
+                    distance = min(abs(int(cand["chunk_id"]) - rid) for rid in recent_ids)
                 if distance is not None and score >= threshold and distance > td_threshold:
                     later_passing.append((cand, score, distance))
             if (not first_pass) and later_passing:
@@ -560,7 +601,7 @@ def print_human(report: dict[str, Any]) -> None:
     print(f"  samples with 0 history: {hist['samples_with_0_historical_chunks']}")
     print(f"  samples with <64 history: {hist['samples_with_lt64_historical_chunks']}")
     print(f"  samples with >=64 history: {hist['samples_with_ge64_historical_chunks']}")
-    print(f"  candidate older-than-recent violations: {hist['candidate_not_older_than_recent_violation_count']}")
+    print(f"  historical temporal violations: {hist['historical_temporal_violation_count']}")
 
     temp = report["C_temporal_distance_audit"]
     print("\nC. Temporal distance audit")

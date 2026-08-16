@@ -487,6 +487,10 @@ def _candidate_metadata(candidate: dict[str, Any]) -> dict[str, Any]:
         for key in (
             "chunk_id",
             "timestamp",
+            "start_time_seconds",
+            "end_time_seconds",
+            "candidate_temporal_distance_seconds",
+            "history_temporal_violation",
             "semantic_score",
             "event_score",
             "detail_score",
@@ -508,22 +512,59 @@ def _mode_name(enable_heg: bool, enable_conservative_gate: bool) -> str:
     return "progressive_sufficiency_memory"
 
 
-def _candidate_distance_from_recent(candidate: dict[str, Any] | None, recent_ids: list[int]) -> float | None:
-    if candidate is None or not recent_ids:
+def _chunk_temporal_bounds(chunk: Any) -> tuple[float, float]:
+    timestamps = getattr(chunk, "frame_timestamps", None) or []
+    numeric_timestamps = [
+        float(value)
+        for value in timestamps
+        if isinstance(value, (int, float)) and math.isfinite(float(value))
+    ]
+    if numeric_timestamps:
+        return min(numeric_timestamps), max(numeric_timestamps)
+    start = getattr(chunk, "start_time", None)
+    end = getattr(chunk, "end_time", None)
+    if isinstance(start, (int, float)) and math.isfinite(float(start)):
+        start_time = float(start)
+    else:
+        start_time = float(getattr(chunk, "chunk_index", 0))
+    if isinstance(end, (int, float)) and math.isfinite(float(end)):
+        end_time = float(end)
+    else:
+        end_time = start_time
+    if end_time < start_time:
+        return end_time, start_time
+    return start_time, end_time
+
+
+def _context_temporal_bounds(chunks: list[Any]) -> tuple[float | None, float | None]:
+    if not chunks:
+        return None, None
+    bounds = [_chunk_temporal_bounds(chunk) for chunk in chunks]
+    return min(start for start, _end in bounds), max(end for _start, end in bounds)
+
+
+def _chunk_sort_key(chunk: Any) -> tuple[float, float, int]:
+    start, end = _chunk_temporal_bounds(chunk)
+    return start, end, int(getattr(chunk, "chunk_index", 0))
+
+
+def _candidate_distance_from_recent_seconds(candidate: dict[str, Any] | None) -> float | None:
+    if candidate is None:
         return None
-    candidate_id = int(candidate["chunk_id"])
-    return float(min(abs(int(recent_id) - candidate_id) for recent_id in recent_ids))
+    distance = candidate.get("candidate_temporal_distance_seconds")
+    if isinstance(distance, (int, float)) and math.isfinite(float(distance)):
+        return float(distance)
+    return None
 
 
 def _conservative_gate_decision(
     *,
     current_sufficiency: float,
     unused_candidates: list[dict[str, Any]],
-    recent_ids: list[int],
     tau_low: float,
     tau_high: float,
     candidate_threshold: float,
-    temporal_distance_threshold: float,
+    temporal_distance_threshold_seconds: float,
 ) -> dict[str, Any]:
     best_candidate = unused_candidates[0] if unused_candidates else None
     best_candidate_score = (
@@ -531,13 +572,13 @@ def _conservative_gate_decision(
         if best_candidate is not None and isinstance(best_candidate.get("total_score"), (int, float))
         else None
     )
-    best_candidate_distance = _candidate_distance_from_recent(best_candidate, recent_ids)
+    best_candidate_distance = _candidate_distance_from_recent_seconds(best_candidate)
     if current_sufficiency < tau_low:
         return {
             "retrieve": bool(unused_candidates),
             "reason": "low_sufficiency" if unused_candidates else "low_sufficiency_no_candidates",
             "best_candidate_score": best_candidate_score,
-            "best_candidate_temporal_distance_chunks": best_candidate_distance,
+            "best_candidate_temporal_distance_seconds": best_candidate_distance,
             "best_candidate_chunk_id": int(best_candidate["chunk_id"]) if best_candidate is not None else None,
         }
     if current_sufficiency >= tau_high:
@@ -545,11 +586,14 @@ def _conservative_gate_decision(
             "retrieve": False,
             "reason": "high_sufficiency",
             "best_candidate_score": best_candidate_score,
-            "best_candidate_temporal_distance_chunks": best_candidate_distance,
+            "best_candidate_temporal_distance_seconds": best_candidate_distance,
             "best_candidate_chunk_id": int(best_candidate["chunk_id"]) if best_candidate is not None else None,
         }
     candidate_ok = best_candidate_score is not None and best_candidate_score > candidate_threshold
-    temporal_ok = best_candidate_distance is not None and best_candidate_distance > temporal_distance_threshold
+    temporal_ok = (
+        best_candidate_distance is not None
+        and best_candidate_distance > temporal_distance_threshold_seconds
+    )
     retrieve = bool(unused_candidates) and candidate_ok and temporal_ok
     if retrieve:
         reason = "ambiguous_strong_temporal_candidate"
@@ -565,7 +609,7 @@ def _conservative_gate_decision(
         "retrieve": retrieve,
         "reason": reason,
         "best_candidate_score": best_candidate_score,
-        "best_candidate_temporal_distance_chunks": best_candidate_distance,
+        "best_candidate_temporal_distance_seconds": best_candidate_distance,
         "best_candidate_chunk_id": int(best_candidate["chunk_id"]) if best_candidate is not None else None,
     }
 
@@ -612,7 +656,18 @@ def select_progressive_sufficiency_memory(
     conservative_tau_low = _env_float("MINICPM_PSM_GATE_TAU_LOW", sufficiency_threshold)
     conservative_tau_high = _env_float("MINICPM_PSM_GATE_TAU_HIGH", 0.74)
     conservative_candidate_threshold = _env_float("MINICPM_PSM_GATE_CANDIDATE_THRESHOLD", 0.535)
-    conservative_temporal_distance_threshold = _env_float("MINICPM_PSM_GATE_TEMPORAL_DISTANCE_THRESHOLD", 10.0)
+    if "MINICPM_PSM_GATE_TEMPORAL_DISTANCE_SECONDS" in os.environ:
+        conservative_temporal_distance_seconds = _env_float(
+            "MINICPM_PSM_GATE_TEMPORAL_DISTANCE_SECONDS",
+            10.0,
+        )
+        conservative_temporal_distance_source = "MINICPM_PSM_GATE_TEMPORAL_DISTANCE_SECONDS"
+    else:
+        conservative_temporal_distance_seconds = _env_float(
+            "MINICPM_PSM_GATE_TEMPORAL_DISTANCE_THRESHOLD",
+            10.0,
+        )
+        conservative_temporal_distance_source = "MINICPM_PSM_GATE_TEMPORAL_DISTANCE_THRESHOLD_compat_seconds"
     heg_threshold = _env_float("ADAPTIVE_HEG_THRESHOLD", 0.10)
     if "ADAPTIVE_HEG_THRESHOLD" not in os.environ:
         heg_threshold = _env_float("MINICPM_PSM_HEG_THRESHOLD", 0.10)
@@ -636,11 +691,21 @@ def select_progressive_sufficiency_memory(
         recent_ids = [int(value) for value in recent_chunk_ids]
 
     recent_id_set = set(recent_ids)
-    if recent_chunk_ids is None:
-        all_older_chunks = list(chunks[: max(0, len(chunks) - recent_window)])
+    recent_start_time, recent_end_time = _context_temporal_bounds(recent_chunks)
+    temporal_epsilon = _env_float("MINICPM_PSM_TEMPORAL_EPSILON_SECONDS", 1e-6)
+    if recent_start_time is None:
+        all_older_chunks = []
     else:
-        all_older_chunks = [chunk for chunk in chunks if int(chunk.chunk_index) not in recent_id_set]
+        all_older_chunks = [
+            chunk
+            for chunk in chunks
+            if _chunk_temporal_bounds(chunk)[1] < float(recent_start_time) - temporal_epsilon
+        ]
     older_chunks = all_older_chunks[-history_search_chunks:] if history_search_chunks > 0 else all_older_chunks
+    older_chunk_bounds = {
+        int(chunk.chunk_index): _chunk_temporal_bounds(chunk)
+        for chunk in older_chunks
+    }
     options = _extract_mcq_options(prompt)
     mode_name = _mode_name(enable_heg=enable_heg, enable_conservative_gate=enable_conservative_gate)
 
@@ -659,6 +724,11 @@ def select_progressive_sufficiency_memory(
             },
             "history_search_start": int(older_chunks[0].chunk_index) if older_chunks else None,
             "history_search_end": int(older_chunks[-1].chunk_index) if older_chunks else None,
+            "recent_start_time_seconds": recent_start_time,
+            "recent_end_time_seconds": recent_end_time,
+            "history_candidate_start_time_seconds": [],
+            "history_candidate_end_time_seconds": [],
+            "history_temporal_violation_count": 0,
             "candidate_queue": [],
             "iterations": [],
             "memory_triggered": False,
@@ -692,6 +762,36 @@ def select_progressive_sufficiency_memory(
         candidate_pool=max(0, candidate_pool),
         min_temporal_gap=max(1, min_temporal_gap),
     )
+    for candidate in candidate_queue:
+        chunk_id = int(candidate["chunk_id"])
+        start_time, end_time = older_chunk_bounds.get(chunk_id, _chunk_temporal_bounds(candidate["chunk"]))
+        candidate["start_time_seconds"] = float(start_time)
+        candidate["end_time_seconds"] = float(end_time)
+        candidate["candidate_temporal_distance_seconds"] = (
+            float(recent_start_time - end_time)
+            if recent_start_time is not None
+            else None
+        )
+        candidate["history_temporal_violation"] = bool(
+            recent_start_time is not None and end_time >= float(recent_start_time)
+        )
+    temporal_violations = [
+        candidate
+        for candidate in candidate_queue
+        if bool(candidate.get("history_temporal_violation"))
+    ]
+    assert_temporal_alignment = os.environ.get(
+        "MINICPM_PSM_ASSERT_TEMPORAL_ALIGNMENT",
+        "1",
+    ).strip().lower() not in {"0", "false", "no", "off"}
+    if temporal_violations and assert_temporal_alignment:
+        first = temporal_violations[0]
+        raise AssertionError(
+            "PRISM history temporal alignment violation: "
+            f"candidate chunk_id={first.get('chunk_id')} end={first.get('end_time_seconds')} "
+            f"is not strictly before recent_start={recent_start_time}. "
+            "History candidates must be selected by absolute video time, not cross-decode chunk IDs."
+        )
     scorer = _get_clip_scorer(qa)
     heg_scorer = _OptionEvidenceGainScorer(scorer, prompt, options) if enable_heg else None
     selected_memory: list[Any] = []
@@ -712,7 +812,7 @@ def select_progressive_sufficiency_memory(
             selected_memory.append(candidate["chunk"])
             added_chunk_id = int(candidate["chunk_id"])
 
-        chronological_memory = sorted(selected_memory, key=lambda chunk: int(chunk.chunk_index))
+        chronological_memory = sorted(selected_memory, key=_chunk_sort_key)
         context_chunks = [*chronological_memory, *recent_chunks]
         score, elapsed_ms = _evaluate_sufficiency(
             qa,
@@ -752,11 +852,10 @@ def select_progressive_sufficiency_memory(
             conservative_gate = _conservative_gate_decision(
                 current_sufficiency=current_sufficiency,
                 unused_candidates=unused_candidates,
-                recent_ids=recent_ids,
                 tau_low=conservative_tau_low,
                 tau_high=conservative_tau_high,
                 candidate_threshold=conservative_candidate_threshold,
-                temporal_distance_threshold=conservative_temporal_distance_threshold,
+                temporal_distance_threshold_seconds=conservative_temporal_distance_seconds,
             )
         heg_alternative = heg_metadata.get("heg_alternative")
         historical_gain_trigger = (
@@ -802,11 +901,12 @@ def select_progressive_sufficiency_memory(
                 "tau_low": float(conservative_tau_low),
                 "tau_high": float(conservative_tau_high),
                 "candidate_threshold": float(conservative_candidate_threshold),
-                "temporal_distance_threshold": float(conservative_temporal_distance_threshold),
+                "temporal_distance_threshold_seconds": float(conservative_temporal_distance_seconds),
+                "temporal_distance_threshold_source": conservative_temporal_distance_source,
                 "best_unused_candidate_chunk_id": conservative_gate.get("best_candidate_chunk_id"),
                 "best_unused_candidate_total_score": conservative_gate.get("best_candidate_score"),
-                "best_unused_candidate_temporal_distance_chunks": conservative_gate.get(
-                    "best_candidate_temporal_distance_chunks"
+                "best_unused_candidate_temporal_distance_seconds": conservative_gate.get(
+                    "best_candidate_temporal_distance_seconds"
                 ),
             }
         iterations.append(iteration_record)
@@ -846,7 +946,7 @@ def select_progressive_sufficiency_memory(
             break
         previous_sufficiency = current_sufficiency
 
-    best_memory = sorted(best_memory, key=lambda chunk: int(chunk.chunk_index))
+    best_memory = sorted(best_memory, key=_chunk_sort_key)
     memory_ids = [int(chunk.chunk_index) for chunk in best_memory]
     final_chunks = [*best_memory, *recent_chunks]
     final_ids = [int(chunk.chunk_index) for chunk in final_chunks]
@@ -867,8 +967,11 @@ def select_progressive_sufficiency_memory(
             "conservative_candidate_threshold": (
                 float(conservative_candidate_threshold) if enable_conservative_gate else None
             ),
-            "conservative_temporal_distance_threshold": (
-                float(conservative_temporal_distance_threshold) if enable_conservative_gate else None
+            "conservative_temporal_distance_seconds": (
+                float(conservative_temporal_distance_seconds) if enable_conservative_gate else None
+            ),
+            "conservative_temporal_distance_source": (
+                conservative_temporal_distance_source if enable_conservative_gate else None
             ),
             "min_evidence_gain": min_evidence_gain,
             "negative_gain_tolerance": negative_gain_tolerance,
@@ -879,6 +982,8 @@ def select_progressive_sufficiency_memory(
             "visual_support_raw_span": 0.30,
         },
         "recent_chunk_ids": recent_ids,
+        "recent_start_time_seconds": recent_start_time,
+        "recent_end_time_seconds": recent_end_time,
         "baseline_recent_equivalence": {
             "enabled": recent_chunk_ids is not None,
             "source": "select_recent_window_frames",
@@ -889,6 +994,13 @@ def select_progressive_sufficiency_memory(
         },
         "history_search_start": int(older_chunks[0].chunk_index) if older_chunks else None,
         "history_search_end": int(older_chunks[-1].chunk_index) if older_chunks else None,
+        "history_candidate_start_time_seconds": [
+            float(_chunk_temporal_bounds(chunk)[0]) for chunk in older_chunks
+        ],
+        "history_candidate_end_time_seconds": [
+            float(_chunk_temporal_bounds(chunk)[1]) for chunk in older_chunks
+        ],
+        "history_temporal_violation_count": len(temporal_violations),
         "candidate_queue": [_candidate_metadata(candidate) for candidate in candidate_queue],
         "iterations": iterations,
         "memory_triggered": bool(memory_ids),
@@ -925,8 +1037,20 @@ def _validate_metadata(metadata: dict[str, Any]) -> None:
     assert len(memory_ids) <= 3
     assert len(memory_ids) == len(set(memory_ids))
     assert not (set(recent_ids) & set(memory_ids))
-    assert final_ids == [*sorted(memory_ids), *recent_ids]
+    assert final_ids == [*memory_ids, *recent_ids]
     assert len(final_ids) == len(set(final_ids))
+    recent_start = metadata.get("recent_start_time_seconds")
+    for candidate in metadata.get("candidate_queue", []):
+        if (
+            isinstance(candidate, dict)
+            and isinstance(candidate.get("end_time_seconds"), (int, float))
+            and isinstance(recent_start, (int, float))
+        ):
+            assert float(candidate["end_time_seconds"]) < float(recent_start), (
+                "PRISM candidate is not strictly historical: "
+                f"chunk_id={candidate.get('chunk_id')} end={candidate.get('end_time_seconds')} "
+                f"recent_start={recent_start}"
+            )
     if metadata.get("mode") == "progressive_sufficiency_memory_heg":
         for item in metadata.get("iterations", []):
             unused = {int(value) for value in item.get("unused_historical_candidate_ids", [])}

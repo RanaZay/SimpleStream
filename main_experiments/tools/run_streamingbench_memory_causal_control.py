@@ -61,6 +61,15 @@ TEMPORAL_LABELS = (
 )
 
 
+def default_qa_device() -> str:
+    try:
+        import torch
+
+        return "cuda:0" if torch.cuda.is_available() else "cpu"
+    except Exception:
+        return "cpu"
+
+
 @dataclass
 class ConditionResult:
     name: str
@@ -515,7 +524,7 @@ def main() -> None:
     parser.add_argument("--video-dir", required=True, help="StreamingBench video root.")
     parser.add_argument("--out-dir", required=True)
     parser.add_argument("--qa-model", default="openbmb/MiniCPM-V-4.6")
-    parser.add_argument("--qa-device", default=None)
+    parser.add_argument("--qa-device", default=None, help="Model device, default: cuda:0 when available, else cpu.")
     parser.add_argument("--chunk-duration", type=float, default=1.0)
     parser.add_argument("--fps", type=float, default=1.0)
     parser.add_argument("--recent-window", type=int, default=6)
@@ -549,9 +558,11 @@ def main() -> None:
     print(f"Memory-added rows selected: {len(memory_rows)}")
     print(f"Output directory: {out_dir}")
 
+    qa_device = args.qa_device or default_qa_device()
+    print(f"QA device: {qa_device}")
     qa = RecentWindowQAModel(
         model_name=args.qa_model,
-        device=args.qa_device,
+        device=qa_device,
         max_new_tokens=args.max_qa_tokens,
         attn_implementation=args.attn_implementation,
     )

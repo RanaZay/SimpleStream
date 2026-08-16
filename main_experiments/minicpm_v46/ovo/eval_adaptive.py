@@ -47,6 +47,7 @@ def _consume_adaptive_args() -> argparse.Namespace:
             "progressive_sufficiency_memory",
             "progressive_sufficiency_memory_heg",
             "progressive_sufficiency_memory_conservative_gate",
+            "progressive_sufficiency_memory_microclip",
         ],
         default=os.environ.get("MINICPM_ADAPTIVE_MODE", "adaptive"),
     )

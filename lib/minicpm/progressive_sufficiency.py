@@ -22,6 +22,10 @@ _PSM_OPTION_RE = re.compile(
 _PSM_HISTORY_INSTRUCTION = (
     "When historical frames are present, they appear before the six recent frames.\n\n"
 )
+_PSM_MICROCLIP_INSTRUCTION = (
+    "A short historical event clip appears before the six recent frames.\n"
+    "The historical clip frames are ordered from earlier to later.\n\n"
+)
 
 
 @dataclass
@@ -39,6 +43,17 @@ def _env_int(name: str, default: int) -> int:
 
 def _env_float(name: str, default: float) -> float:
     return float(os.environ.get(name, str(default)))
+
+
+def _env_offsets(name: str, default: str) -> list[float]:
+    raw = os.environ.get(name, default)
+    offsets: list[float] = []
+    for item in raw.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        offsets.append(float(item))
+    return offsets or [0.0]
 
 
 def _extract_mcq_options(prompt: str) -> list[dict[str, str]]:
@@ -504,6 +519,97 @@ def _candidate_metadata(candidate: dict[str, Any]) -> dict[str, Any]:
     return metadata
 
 
+def _chunk_anchor_time(chunk: Any) -> float:
+    start, end = _chunk_temporal_bounds(chunk)
+    timestamps = getattr(chunk, "frame_timestamps", None) or []
+    numeric_timestamps = [
+        float(value)
+        for value in timestamps
+        if isinstance(value, (int, float)) and math.isfinite(float(value))
+    ]
+    if numeric_timestamps:
+        return float(numeric_timestamps[len(numeric_timestamps) // 2])
+    return float(0.5 * (start + end))
+
+
+def _build_temporal_microclip(
+    *,
+    anchor_chunk: Any,
+    historical_chunks: list[Any],
+    recent_start_time: float | None,
+    offsets: list[float],
+    temporal_epsilon: float,
+    max_frames: int = 3,
+) -> tuple[list[Any], list[float], list[float]]:
+    if recent_start_time is None:
+        return [anchor_chunk], list(offsets), [_chunk_anchor_time(anchor_chunk)]
+    valid_chunks = [
+        chunk
+        for chunk in historical_chunks
+        if _chunk_temporal_bounds(chunk)[1] < float(recent_start_time) - temporal_epsilon
+    ]
+    if not valid_chunks:
+        return [], list(offsets), []
+
+    anchor_time = _chunk_anchor_time(anchor_chunk)
+    selected_by_id: dict[int, Any] = {}
+    for offset in offsets:
+        target_time = anchor_time + float(offset)
+        eligible = [
+            chunk
+            for chunk in valid_chunks
+            if int(chunk.chunk_index) not in selected_by_id
+            and _chunk_temporal_bounds(chunk)[1] < float(recent_start_time) - temporal_epsilon
+        ]
+        if not eligible:
+            break
+        closest = min(
+            eligible,
+            key=lambda chunk: (
+                abs(_chunk_anchor_time(chunk) - target_time),
+                abs(int(chunk.chunk_index) - int(anchor_chunk.chunk_index)),
+                int(chunk.chunk_index),
+            ),
+        )
+        selected_by_id[int(closest.chunk_index)] = closest
+        if len(selected_by_id) >= max_frames:
+            break
+
+    selected = sorted(selected_by_id.values(), key=_chunk_sort_key)
+    selected_timestamps = [_chunk_anchor_time(chunk) for chunk in selected]
+    return selected, list(offsets), selected_timestamps
+
+
+def _state_record(
+    *,
+    state: str,
+    state_index: int,
+    context_chunks: list[Any],
+    memory_chunks: list[Any],
+    score: dict[str, Any],
+    previous_sufficiency: float | None,
+) -> dict[str, Any]:
+    sufficiency = float(score["sufficiency"])
+    return {
+        "iteration": state_index,
+        "state": state,
+        "context_chunk_ids": [int(chunk.chunk_index) for chunk in context_chunks],
+        "memory_chunk_ids": [int(chunk.chunk_index) for chunk in memory_chunks],
+        "predicted_option": score["predicted_option"],
+        "option_probabilities": score["option_probabilities"],
+        "option_scoring_mechanism": score["option_scoring_mechanism"],
+        "answer_margin": score["answer_margin"],
+        "normalized_entropy": score["normalized_entropy"],
+        "entropy_confidence": score["entropy_confidence"],
+        "visual_support_raw": score["visual_support_raw"],
+        "visual_support_norm": score["visual_support_norm"],
+        "sufficiency": sufficiency,
+        "gain_vs_previous": None if previous_sufficiency is None else sufficiency - previous_sufficiency,
+        "sufficiency_ms": score["sufficiency_ms"],
+        "option_forward_ms": score["option_forward_ms"],
+    }
+
+
 def _mode_name(enable_heg: bool, enable_conservative_gate: bool) -> str:
     if enable_conservative_gate:
         return "progressive_sufficiency_memory_conservative_gate"
@@ -632,6 +738,364 @@ def _print_trace(metadata: dict[str, Any]) -> None:
             f"gain={item.get('gain_vs_previous')}",
             flush=True,
         )
+
+
+def select_progressive_sufficiency_memory_microclip(
+    qa: RecentWindowQAModel,
+    chunks: list[Any],
+    prompt: str,
+    config: Any,
+    recent_chunks: list[Any] | None = None,
+    recent_frames: list[Image.Image] | None = None,
+    recent_chunk_ids: list[int] | None = None,
+    recent_downsample_mode: str | None = None,
+    baseline_recent_metadata: dict[str, Any] | None = None,
+) -> ProgressiveSufficiencySelection:
+    """PRISM micro-clip mode: one semantic anchor, then local temporal expansion.
+
+    This is intentionally isolated from select_progressive_sufficiency_memory so
+    the existing PRISM/HEG/conservative-gate modes keep their behavior.
+    """
+
+    recent_window = 6
+    history_search_chunks = _env_int("MINICPM_PSM_HISTORY_SEARCH_CHUNKS", 64)
+    candidate_pool = _env_int("MINICPM_PSM_HISTORY_CANDIDATE_POOL", 12)
+    min_temporal_gap = _env_int("MINICPM_PSM_MIN_TEMPORAL_GAP", 2)
+    sufficiency_threshold = _env_float("MINICPM_PSM_SUFFICIENCY_THRESHOLD", 0.62)
+    margin_weight = _env_float("MINICPM_PSM_MARGIN_WEIGHT", 0.50)
+    entropy_weight = _env_float("MINICPM_PSM_ENTROPY_WEIGHT", 0.20)
+    visual_support_weight = _env_float("MINICPM_PSM_VISUAL_SUPPORT_WEIGHT", 0.30)
+    temporal_epsilon = _env_float("MINICPM_PSM_TEMPORAL_EPSILON_SECONDS", 1e-6)
+    microclip_offsets = _env_offsets("MINICPM_PSM_MICROCLIP_OFFSETS", "-1,0,1")
+    variant = os.environ.get("MINICPM_PSM_MICROCLIP_VARIANT", "temporal_microclip").strip()
+    valid_variants = {"anchor_only", "temporal_microclip", "sparse_history_3"}
+    if variant not in valid_variants:
+        raise ValueError(
+            f"Unknown MINICPM_PSM_MICROCLIP_VARIANT={variant!r}; expected one of {sorted(valid_variants)}"
+        )
+
+    if recent_chunks is None:
+        recent_chunks = list(chunks[-recent_window:])
+    else:
+        recent_chunks = list(recent_chunks)
+    if recent_frames is None:
+        recent_frames = [frame for chunk in recent_chunks for frame in chunk.frames]
+    else:
+        recent_frames = list(recent_frames)
+    if recent_chunk_ids is None:
+        recent_ids = [int(chunk.chunk_index) for chunk in recent_chunks]
+    else:
+        recent_ids = [int(value) for value in recent_chunk_ids]
+
+    recent_start_time, recent_end_time = _context_temporal_bounds(recent_chunks)
+    if recent_start_time is None:
+        all_older_chunks: list[Any] = []
+    else:
+        all_older_chunks = [
+            chunk
+            for chunk in chunks
+            if _chunk_temporal_bounds(chunk)[1] < float(recent_start_time) - temporal_epsilon
+        ]
+    older_chunks = all_older_chunks[-history_search_chunks:] if history_search_chunks > 0 else all_older_chunks
+    older_chunk_bounds = {
+        int(chunk.chunk_index): _chunk_temporal_bounds(chunk)
+        for chunk in older_chunks
+    }
+    options = _extract_mcq_options(prompt)
+    mode_name = "progressive_sufficiency_memory_microclip"
+
+    if not options:
+        final_ids = list(recent_ids)
+        metadata = {
+            "mode": mode_name,
+            "microclip_variant": variant,
+            "recent_chunk_ids": recent_ids,
+            "baseline_recent_equivalence": {
+                "enabled": recent_chunk_ids is not None,
+                "source": "select_recent_window_frames",
+                "prompt_equal_to_final": True,
+                "final_equals_recent": True,
+                "downsample_mode": recent_downsample_mode,
+                "baseline_recent": baseline_recent_metadata or {},
+            },
+            "history_search_start": int(older_chunks[0].chunk_index) if older_chunks else None,
+            "history_search_end": int(older_chunks[-1].chunk_index) if older_chunks else None,
+            "recent_start_time_seconds": recent_start_time,
+            "recent_end_time_seconds": recent_end_time,
+            "history_candidate_start_time_seconds": [],
+            "history_candidate_end_time_seconds": [],
+            "history_temporal_violation_count": 0,
+            "candidate_queue": [],
+            "iterations": [],
+            "microclip_requested_offsets": microclip_offsets,
+            "microclip_selected_chunk_ids": [],
+            "microclip_selected_timestamps": [],
+            "microclip_num_frames": 0,
+            "memory_triggered": False,
+            "memory_chunk_ids": [],
+            "num_memory_frames": 0,
+            "final_selected_chunk_ids": final_ids,
+            "final_sufficiency": None,
+            "final_state": "recent_only",
+            "prompt_variant": "recent_only",
+            "stop_reason": "unsupported_non_mcq_recent_only",
+            "history_candidate_ranking_ms": 0.0,
+            "sufficiency_iterations_ms": [],
+            "total_sufficiency_ms": 0.0,
+            "final_generation_ms": None,
+            "num_sufficiency_iterations": 0,
+            "num_extra_frames": 0,
+            "all_history_strictly_before_recent": True,
+        }
+        _validate_metadata(metadata)
+        _print_trace(metadata)
+        return ProgressiveSufficiencySelection(
+            frames=recent_frames,
+            final_chunk_ids=final_ids,
+            metadata=metadata,
+            answer_prompt=prompt,
+            downsample_mode=recent_downsample_mode,
+        )
+
+    candidate_queue, ranking_ms = _rank_candidates(
+        qa,
+        older_chunks,
+        prompt,
+        config,
+        candidate_pool=max(0, candidate_pool),
+        min_temporal_gap=max(1, min_temporal_gap),
+    )
+    for candidate in candidate_queue:
+        candidate_chunk_id = int(candidate["chunk_id"])
+        start_time, end_time = older_chunk_bounds.get(candidate_chunk_id, _chunk_temporal_bounds(candidate["chunk"]))
+        candidate["start_time_seconds"] = float(start_time)
+        candidate["end_time_seconds"] = float(end_time)
+        candidate["candidate_temporal_distance_seconds"] = (
+            float(recent_start_time - end_time)
+            if recent_start_time is not None
+            else None
+        )
+        candidate["history_temporal_violation"] = bool(
+            recent_start_time is not None and end_time >= float(recent_start_time)
+        )
+    temporal_violations = [
+        candidate
+        for candidate in candidate_queue
+        if bool(candidate.get("history_temporal_violation"))
+    ]
+    assert_temporal_alignment = os.environ.get(
+        "MINICPM_PSM_ASSERT_TEMPORAL_ALIGNMENT",
+        "1",
+    ).strip().lower() not in {"0", "false", "no", "off"}
+    if temporal_violations and assert_temporal_alignment:
+        first = temporal_violations[0]
+        raise AssertionError(
+            "PRISM microclip history temporal alignment violation: "
+            f"candidate chunk_id={first.get('chunk_id')} end={first.get('end_time_seconds')} "
+            f"is not strictly before recent_start={recent_start_time}."
+        )
+
+    scorer = _get_clip_scorer(qa)
+    iterations: list[dict[str, Any]] = []
+    iteration_times: list[float] = []
+    best_state = "recent_only"
+    best_memory: list[Any] = []
+    best_sufficiency = -float("inf")
+    stop_reason = "candidate_queue_exhausted"
+
+    def evaluate_state(state: str, memory_chunks: list[Any]) -> dict[str, Any]:
+        nonlocal best_memory, best_state, best_sufficiency
+        chronological_memory = sorted(memory_chunks, key=_chunk_sort_key)
+        context_chunks = [*chronological_memory, *recent_chunks]
+        previous = iterations[-1]["sufficiency"] if iterations else None
+        score, elapsed_ms = _evaluate_sufficiency(
+            qa,
+            context_chunks,
+            prompt,
+            options,
+            scorer,
+            margin_weight,
+            entropy_weight,
+            visual_support_weight,
+        )
+        iteration_times.append(float(elapsed_ms))
+        record = _state_record(
+            state=state,
+            state_index=len(iterations),
+            context_chunks=context_chunks,
+            memory_chunks=chronological_memory,
+            score=score,
+            previous_sufficiency=previous,
+        )
+        iterations.append(record)
+        if float(record["sufficiency"]) > best_sufficiency:
+            best_sufficiency = float(record["sufficiency"])
+            best_memory = list(chronological_memory)
+            best_state = state
+        return record
+
+    state0 = evaluate_state("recent_only", [])
+    anchor_candidate = candidate_queue[0] if candidate_queue else None
+    anchor_chunk = anchor_candidate["chunk"] if anchor_candidate is not None else None
+    state1: dict[str, Any] | None = None
+    state2: dict[str, Any] | None = None
+    microclip_chunks: list[Any] = []
+    microclip_selected_timestamps: list[float] = []
+
+    if float(state0["sufficiency"]) >= sufficiency_threshold:
+        stop_reason = "sufficient_recent_only"
+    elif anchor_chunk is None:
+        stop_reason = "low_sufficiency_no_candidates"
+    else:
+        state1 = evaluate_state("anchor", [anchor_chunk])
+        if variant == "anchor_only":
+            stop_reason = (
+                "sufficient_anchor"
+                if float(state1["sufficiency"]) >= sufficiency_threshold
+                else "anchor_only_variant_stop"
+            )
+        elif float(state1["sufficiency"]) >= sufficiency_threshold:
+            stop_reason = "sufficient_anchor"
+        else:
+            if variant == "sparse_history_3":
+                sparse_chunks = [candidate["chunk"] for candidate in candidate_queue[:3]]
+                state2 = evaluate_state("sparse_history_3", sparse_chunks)
+                stop_reason = (
+                    "sufficient_sparse_history_3"
+                    if float(state2["sufficiency"]) >= sufficiency_threshold
+                    else "sparse_history_3_variant_stop"
+                )
+            else:
+                microclip_chunks, _requested_offsets, microclip_selected_timestamps = _build_temporal_microclip(
+                    anchor_chunk=anchor_chunk,
+                    historical_chunks=older_chunks,
+                    recent_start_time=recent_start_time,
+                    offsets=microclip_offsets,
+                    temporal_epsilon=temporal_epsilon,
+                    max_frames=3,
+                )
+                state2 = evaluate_state("microclip", microclip_chunks)
+                stop_reason = (
+                    "sufficient_microclip"
+                    if float(state2["sufficiency"]) >= sufficiency_threshold
+                    else "microclip_variant_stop"
+                )
+
+    best_memory = sorted(best_memory, key=_chunk_sort_key)
+    memory_ids = [int(chunk.chunk_index) for chunk in best_memory]
+    final_chunks = [*best_memory, *recent_chunks]
+    final_ids = [int(chunk.chunk_index) for chunk in final_chunks]
+    final_historical_frames = sum(len(chunk.frames) for chunk in best_memory)
+    if best_memory:
+        memory_start, memory_end = _context_temporal_bounds(best_memory)
+        temporal_span = float(memory_end - memory_start) if memory_start is not None and memory_end is not None else 0.0
+        all_history_before_recent = bool(
+            recent_start_time is not None
+            and all(_chunk_temporal_bounds(chunk)[1] < float(recent_start_time) - temporal_epsilon for chunk in best_memory)
+        )
+    else:
+        temporal_span = 0.0
+        all_history_before_recent = True
+
+    if best_state == "microclip":
+        prompt_variant = "temporal_microclip"
+        answer_prompt = f"{_PSM_MICROCLIP_INSTRUCTION}{prompt}"
+    elif memory_ids:
+        prompt_variant = "historical_anchor"
+        answer_prompt = f"{_PSM_HISTORY_INSTRUCTION}{prompt}"
+    else:
+        prompt_variant = "recent_only"
+        answer_prompt = prompt
+
+    anchor_metadata = _candidate_metadata(anchor_candidate) if anchor_candidate is not None else {}
+    metadata = {
+        "mode": mode_name,
+        "microclip_variant": variant,
+        "config": {
+            "recent_window": recent_window,
+            "history_search_chunks": history_search_chunks,
+            "history_candidate_pool": candidate_pool,
+            "min_temporal_gap": min_temporal_gap,
+            "sufficiency_threshold": sufficiency_threshold,
+            "microclip_offsets": microclip_offsets,
+            "microclip_variant": variant,
+            "margin_weight": margin_weight,
+            "entropy_weight": entropy_weight,
+            "visual_support_weight": visual_support_weight,
+            "visual_support_raw_low": 0.15,
+            "visual_support_raw_span": 0.30,
+        },
+        "recent_chunk_ids": recent_ids,
+        "recent_start_time_seconds": recent_start_time,
+        "recent_end_time_seconds": recent_end_time,
+        "baseline_recent_equivalence": {
+            "enabled": recent_chunk_ids is not None,
+            "source": "select_recent_window_frames",
+            "prompt_equal_to_final": not bool(memory_ids),
+            "final_equals_recent": final_ids == recent_ids,
+            "downsample_mode": recent_downsample_mode,
+            "baseline_recent": baseline_recent_metadata or {},
+        },
+        "history_search_start": int(older_chunks[0].chunk_index) if older_chunks else None,
+        "history_search_end": int(older_chunks[-1].chunk_index) if older_chunks else None,
+        "history_candidate_start_time_seconds": [
+            float(_chunk_temporal_bounds(chunk)[0]) for chunk in older_chunks
+        ],
+        "history_candidate_end_time_seconds": [
+            float(_chunk_temporal_bounds(chunk)[1]) for chunk in older_chunks
+        ],
+        "history_temporal_violation_count": len(temporal_violations),
+        "candidate_queue": [_candidate_metadata(candidate) for candidate in candidate_queue],
+        "iterations": iterations,
+        "candidate_anchor_id": anchor_metadata.get("chunk_id"),
+        "candidate_anchor_timestamp": anchor_metadata.get("timestamp"),
+        "candidate_total_score": anchor_metadata.get("total_score"),
+        "candidate_semantic_score": anchor_metadata.get("semantic_score"),
+        "microclip_requested_offsets": microclip_offsets,
+        "microclip_selected_chunk_ids": [int(chunk.chunk_index) for chunk in microclip_chunks],
+        "microclip_selected_timestamps": microclip_selected_timestamps,
+        "microclip_num_frames": sum(len(chunk.frames) for chunk in microclip_chunks),
+        "state_0_sufficiency": state0.get("sufficiency"),
+        "state_1_sufficiency": state1.get("sufficiency") if state1 else None,
+        "state_2_sufficiency": state2.get("sufficiency") if state2 else None,
+        "state_0_prediction": state0.get("predicted_option"),
+        "state_1_prediction": state1.get("predicted_option") if state1 else None,
+        "state_2_prediction": state2.get("predicted_option") if state2 else None,
+        "state_1_gain": state1.get("gain_vs_previous") if state1 else None,
+        "state_2_gain": state2.get("gain_vs_previous") if state2 else None,
+        "final_state": best_state,
+        "final_historical_frames": final_historical_frames,
+        "temporal_span_seconds": temporal_span,
+        "all_history_strictly_before_recent": all_history_before_recent,
+        "prompt_variant": prompt_variant,
+        "memory_triggered": bool(memory_ids),
+        "memory_chunk_ids": memory_ids,
+        "num_memory_frames": len(memory_ids),
+        "final_selected_chunk_ids": final_ids,
+        "final_sufficiency": float(best_sufficiency),
+        "stop_reason": stop_reason,
+        "history_candidate_ranking_ms": float(ranking_ms),
+        "sufficiency_iterations_ms": iteration_times,
+        "total_sufficiency_ms": float(sum(iteration_times)),
+        "final_generation_ms": None,
+        "num_sufficiency_iterations": len(iterations),
+        "num_extra_frames": len(memory_ids),
+    }
+    _validate_metadata(metadata)
+    if not all_history_before_recent:
+        raise AssertionError(
+            "PRISM microclip selected non-historical frames: "
+            f"memory_ids={memory_ids} recent_start={recent_start_time}"
+        )
+    _print_trace(metadata)
+    memory_frames = [frame for chunk in best_memory for frame in chunk.frames]
+    return ProgressiveSufficiencySelection(
+        frames=[*memory_frames, *recent_frames],
+        final_chunk_ids=final_ids,
+        metadata=metadata,
+        answer_prompt=answer_prompt,
+        downsample_mode=recent_downsample_mode,
+    )
 
 
 def select_progressive_sufficiency_memory(

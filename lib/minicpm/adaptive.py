@@ -300,6 +300,9 @@ class AdaptiveWindowConfig:
         mode that keeps low-sufficiency retrieval, stops high-sufficiency
         cases, and retrieves in the ambiguous band only when the best unused
         historical candidate is strong and temporally separated.
+      progressive_sufficiency_memory_microclip: isolated PRISM experimental
+        mode that tries Recent-6, then one semantic historical anchor, then a
+        local temporal micro-clip around that same anchor.
     """
 
     mode: str = "adaptive"
@@ -360,6 +363,7 @@ class AdaptiveWindowConfig:
             "progressive_sufficiency_memory",
             "progressive_sufficiency_memory_heg",
             "progressive_sufficiency_memory_conservative_gate",
+            "progressive_sufficiency_memory_microclip",
         }
         if self.mode not in valid_modes:
             raise ValueError(f"Unknown adaptive mode {self.mode!r}; expected one of {sorted(valid_modes)}")
@@ -410,6 +414,7 @@ class AdaptiveWindowConfig:
             "progressive_sufficiency_memory",
             "progressive_sufficiency_memory_heg",
             "progressive_sufficiency_memory_conservative_gate",
+            "progressive_sufficiency_memory_microclip",
         }
 
     @property
@@ -477,11 +482,16 @@ class AdaptiveWindowConfig:
         return self.mode == "progressive_sufficiency_memory_conservative_gate"
 
     @property
+    def progressive_sufficiency_memory_microclip(self) -> bool:
+        return self.mode == "progressive_sufficiency_memory_microclip"
+
+    @property
     def progressive_sufficiency_like(self) -> bool:
         return self.mode in {
             "progressive_sufficiency_memory",
             "progressive_sufficiency_memory_heg",
             "progressive_sufficiency_memory_conservative_gate",
+            "progressive_sufficiency_memory_microclip",
         }
 
     @property
@@ -789,9 +799,13 @@ def _memory_trigger_decision(
         return True, {
             "enabled": True,
             "activated": True,
-            "reason": "progressive_sufficiency_heg_pending"
-            if config.progressive_sufficiency_memory_heg
-            else "progressive_sufficiency_pending",
+            "reason": (
+                "progressive_sufficiency_heg_pending"
+                if config.progressive_sufficiency_memory_heg
+                else "progressive_sufficiency_microclip_pending"
+                if config.progressive_sufficiency_memory_microclip
+                else "progressive_sufficiency_pending"
+            ),
         }
     activated = reason == "history_or_temporal"
     return activated, {
@@ -3030,6 +3044,8 @@ def _memory_selector_label(config: AdaptiveWindowConfig) -> str:
         return "progressive_sufficiency_memory_heg"
     if config.progressive_sufficiency_memory_conservative_gate:
         return "progressive_sufficiency_memory_conservative_gate"
+    if config.progressive_sufficiency_memory_microclip:
+        return "progressive_sufficiency_memory_microclip"
     if config.gated_semantic_episodic_memory:
         return "gated_bound_semantic_episodic_memory"
     if config.bound_semantic_episodic_memory:
@@ -3241,7 +3257,10 @@ def query_adaptive_window(
     selection_t0 = time.perf_counter()
     answer_prompt = prompt
     if config.progressive_sufficiency_like:
-        from lib.minicpm.progressive_sufficiency import select_progressive_sufficiency_memory
+        from lib.minicpm.progressive_sufficiency import (
+            select_progressive_sufficiency_memory,
+            select_progressive_sufficiency_memory_microclip,
+        )
 
         recent_window = max(1, int(config.max_window))
         recent_video_start = video_start
@@ -3257,16 +3276,14 @@ def query_adaptive_window(
             video_end=video_end,
             cdas_config=cdas_config,
         )
-        progressive_selection = select_progressive_sufficiency_memory(
-            qa,
-            chunks,
-            prompt=prompt,
-            config=config,
-            recent_chunks=baseline_recent.selected_chunks,
-            recent_frames=baseline_recent.frames,
-            recent_chunk_ids=baseline_recent.final_chunk_ids,
-            recent_downsample_mode=baseline_recent.downsample_mode,
-            baseline_recent_metadata={
+        progressive_kwargs = {
+            "prompt": prompt,
+            "config": config,
+            "recent_chunks": baseline_recent.selected_chunks,
+            "recent_frames": baseline_recent.frames,
+            "recent_chunk_ids": baseline_recent.final_chunk_ids,
+            "recent_downsample_mode": baseline_recent.downsample_mode,
+            "baseline_recent_metadata": {
                 "decode_backend": baseline_recent.decode_backend,
                 "decode_time": baseline_recent.decode_time,
                 "selection_time": baseline_recent.selection_time,
@@ -3276,9 +3293,21 @@ def query_adaptive_window(
                 "video_end": baseline_recent.video_end,
                 "cdas": baseline_recent.cdas_metadata,
             },
-            enable_heg=config.progressive_sufficiency_memory_heg,
-            enable_conservative_gate=config.progressive_sufficiency_memory_conservative_gate,
-        )
+        }
+        if config.progressive_sufficiency_memory_microclip:
+            progressive_selection = select_progressive_sufficiency_memory_microclip(
+                qa,
+                chunks,
+                **progressive_kwargs,
+            )
+        else:
+            progressive_selection = select_progressive_sufficiency_memory(
+                qa,
+                chunks,
+                **progressive_kwargs,
+                enable_heg=config.progressive_sufficiency_memory_heg,
+                enable_conservative_gate=config.progressive_sufficiency_memory_conservative_gate,
+            )
         selection = AdaptiveSelection(
             frames=progressive_selection.frames,
             final_chunk_ids=progressive_selection.final_chunk_ids,
@@ -3316,6 +3345,8 @@ def query_adaptive_window(
     if config.progressive_sufficiency_like:
         selection.metadata["final_generation_ms"] = float(generate_time * 1000.0)
         selection.metadata["ttft_seconds"] = float(ttft_seconds)
+        selection.metadata["num_vision_tokens"] = int(num_vision_tokens)
+        selection.metadata["num_vision_frames"] = int(num_frames)
         selection.metadata["end_to_end_time_seconds"] = float(decode_time + selection_time + generate_time)
         selection.metadata["peak_allocated_gpu_mb"] = float(profile_metadata.get("gpu_peak_allocated_mb", 0.0))
         selection.metadata["peak_reserved_gpu_mb"] = float(profile_metadata.get("gpu_peak_reserved_mb", 0.0))

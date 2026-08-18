@@ -42,6 +42,11 @@ QA_DEVICE=${QA_DEVICE:-cuda:0}
 CURRENT_FPS=${CURRENT_FPS:-1.0}
 CANDIDATE_FPS=${CANDIDATE_FPS:-4.0}
 
+ts=$(date +%Y%m%d_%H%M%S)
+if [[ "${RESUME:-0}" != "1" ]]; then
+    mv "$OUT_DIR" "${OUT_DIR}.old_$ts" 2>/dev/null || true
+fi
+
 echo "=== ENV CHECK ==="
 which python
 python -V

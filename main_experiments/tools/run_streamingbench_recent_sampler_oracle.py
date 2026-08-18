@@ -275,6 +275,38 @@ def change_aware(records: list[FrameRecord], query_time: float, count: int = 6, 
     return unique_chronological(list(selected.values()), count)
 
 
+def select_exact_current_recent(
+    *,
+    qa: Any,
+    video_path: str,
+    chunk_duration: float,
+    fps: float,
+    recent_frames_only: int,
+    video_start: float,
+    video_end: float,
+) -> Any:
+    """Reconstruct the normal SimpleStream K0 path with exact recent decoding."""
+
+    saved_exact_recent = os.environ.get("QWEN_EXACT_RECENT_DECODE")
+    os.environ["QWEN_EXACT_RECENT_DECODE"] = "1"
+    try:
+        return select_recent_window_frames(
+            qa=qa,
+            video_path=video_path,
+            chunk_duration=chunk_duration,
+            fps=fps,
+            recent_frames_only=recent_frames_only,
+            video_start=video_start,
+            video_end=video_end,
+            cdas_config=None,
+        )
+    finally:
+        if saved_exact_recent is None:
+            os.environ.pop("QWEN_EXACT_RECENT_DECODE", None)
+        else:
+            os.environ["QWEN_EXACT_RECENT_DECODE"] = saved_exact_recent
+
+
 def distribution(values: list[float]) -> dict[str, Any]:
     if not values:
         return {"n": 0}
@@ -562,7 +594,7 @@ def main() -> None:
             recent_start = max(0.0, video_end - float(args.recent_window) * float(args.chunk_duration))
 
             print(f"[{ordinal}/{len(saved_rows)}] qid={qid}", flush=True)
-            current_selection = select_recent_window_frames(
+            current_selection = select_exact_current_recent(
                 qa=qa,
                 video_path=task["video_path"],
                 chunk_duration=args.chunk_duration,

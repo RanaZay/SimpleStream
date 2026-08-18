@@ -34,8 +34,11 @@ from main_experiments.minicpm_v46.streamingbench.eval_recent_sampler_dist import
 )
 
 
-def _one_frame_chunk(record: Any, chunk_duration: float) -> Any:
-    chunk_index = int(math.floor(float(record.timestamp) / max(float(chunk_duration), 1e-6)))
+def _one_frame_chunk(record: Any, sequence_index: int) -> Any:
+    # Keep wrapper-local recent IDs unique and outside the absolute video chunk
+    # namespace. PRISM history eligibility is timestamp-based; these IDs are
+    # only metadata/control-set keys inside the isolated validation wrapper.
+    chunk_index = -1_000_000 + int(sequence_index)
     return SimpleNamespace(
         chunk_index=chunk_index,
         frames=[record.image],
@@ -99,7 +102,7 @@ def select_exact_current_recent_frames(
 
     frames = [record.image for record in selected]
     timestamps = [float(record.timestamp) for record in selected]
-    selected_chunks = [_one_frame_chunk(record, chunk_duration) for record in selected]
+    selected_chunks = [_one_frame_chunk(record, index) for index, record in enumerate(selected)]
     final_chunk_ids = [int(chunk.chunk_index) for chunk in selected_chunks]
     span, gap = _temporal_stats(timestamps)
     selection_time = time.perf_counter() - selection_t0

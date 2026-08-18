@@ -594,17 +594,6 @@ def main() -> None:
             recent_start = max(0.0, video_end - float(args.recent_window) * float(args.chunk_duration))
 
             print(f"[{ordinal}/{len(saved_rows)}] qid={qid}", flush=True)
-            current_selection = select_exact_current_recent(
-                qa=qa,
-                video_path=task["video_path"],
-                chunk_duration=args.chunk_duration,
-                fps=args.current_fps,
-                recent_frames_only=args.recent_window,
-                video_start=recent_start,
-                video_end=video_end,
-            )
-            current_records = frame_records_from_chunks(list(current_selection.selected_chunks))
-
             candidate_chunks, candidate_backend = decode_video_to_chunks_qwen(
                 video_path=task["video_path"],
                 chunk_duration=args.chunk_duration,
@@ -615,8 +604,9 @@ def main() -> None:
             )
             candidate_records = frame_records_from_chunks(candidate_chunks)
             if not candidate_records:
-                candidate_records = current_records
+                raise ValueError(f"No candidate recent frames decoded for qid={qid}")
 
+            current_targets = [ts_sec - offset for offset in (5.0, 4.0, 3.0, 2.0, 1.0, 0.0)]
             dense_targets = [ts_sec - offset for offset in (3.0, 2.0, 1.0, 0.5, 0.25, 0.0)]
             hybrid_targets = [ts_sec - offset for offset in (5.0, 3.0, 1.5, 0.75, 0.25, 0.0)]
             uniform_dense_targets = [
@@ -625,7 +615,7 @@ def main() -> None:
             ]
 
             selections = {
-                "current_recent6": current_records,
+                "current_recent6": nearest_to_targets(candidate_records, current_targets, args.recent_window),
                 "dense_recent6": nearest_to_targets(candidate_records, dense_targets, args.recent_window),
                 "hybrid_recent6": nearest_to_targets(candidate_records, hybrid_targets, args.recent_window),
                 "change_aware6": change_aware(candidate_records, ts_sec, args.recent_window),
@@ -653,7 +643,7 @@ def main() -> None:
                 "ground_truth": gt,
                 "decode": {
                     "source_path": source_path,
-                    "current_decode_backend": current_selection.decode_backend,
+                    "current_decode_backend": "exact_six_from_candidate_pool",
                     "candidate_decode_backend": candidate_backend,
                     "recent_start": recent_start,
                     "video_end": video_end,

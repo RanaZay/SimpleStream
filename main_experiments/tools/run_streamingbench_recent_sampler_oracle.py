@@ -602,7 +602,6 @@ def main() -> None:
                 recent_frames_only=args.recent_window,
                 video_start=recent_start,
                 video_end=video_end,
-                cdas_config=None,
             )
             current_records = frame_records_from_chunks(list(current_selection.selected_chunks))
 

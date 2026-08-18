@@ -60,12 +60,14 @@ def select_exact_current_recent_frames(
 
     del qa, cdas_config
     count = max(1, int(recent_frames_only))
-    if video_end is None:
-        raise ValueError("PRISM exact-recent validation requires video_end")
 
     candidate_fps = float(os.environ.get("MINICPM_EXACT_RECENT_CANDIDATE_FPS", os.environ.get("RECENT_SAMPLER_FPS", "4.0")))
-    query_time = float(video_end) - 1e-4
-    start = 0.0 if video_start is None else float(video_start)
+    start = None if video_start is None else float(video_start)
+    end = None if video_end is None else float(video_end)
+    window_seconds = float(count) * float(chunk_duration)
+    decode_hint = max(count, int(math.ceil(window_seconds * max(candidate_fps, 1.0))))
+    if start is not None and end is not None:
+        decode_hint = max(count, int(math.ceil((end - start) * max(candidate_fps, 1.0))))
 
     decode_t0 = time.perf_counter()
     saved_exact_recent = os.environ.pop("QWEN_EXACT_RECENT_DECODE", None)
@@ -74,9 +76,9 @@ def select_exact_current_recent_frames(
             video_path=video_path,
             chunk_duration=chunk_duration,
             fps=candidate_fps,
-            recent_frames_only=max(count, int(math.ceil((float(video_end) - start) * max(candidate_fps, 1.0)))),
+            recent_frames_only=decode_hint,
             video_start=start,
-            video_end=video_end,
+            video_end=end,
         )
     finally:
         if saved_exact_recent is not None:
@@ -85,6 +87,7 @@ def select_exact_current_recent_frames(
     records = _frame_records_from_chunks(chunks)
     if not records:
         raise ValueError(f"No frames decoded from video: {video_path}")
+    query_time = (float(end) - 1e-4) if end is not None else max(record.timestamp for record in records)
 
     selection_t0 = time.perf_counter()
     targets = _make_targets("current_recent6", query_time, count)
@@ -128,7 +131,7 @@ def select_exact_current_recent_frames(
         decoded_chunks=len(chunks),
         decoded_frames=len(records),
         video_start=start,
-        video_end=float(video_end),
+        video_end=end,
     )
 
 

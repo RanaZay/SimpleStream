@@ -101,6 +101,8 @@ def _text_embeddings(qa: RecentWindowQAModel, texts: list[str]) -> torch.Tensor:
 
 
 def _image_embeddings(qa: RecentWindowQAModel, frames: list[Image.Image]) -> torch.Tensor:
+    if not frames:
+        return torch.empty((0, 0), device=_clip_device(qa))
     cache = _get_embedding_cache(qa)
     processor = cache["processor"]
     model = cache["model"]
@@ -212,6 +214,16 @@ def rank_candidates(
 
     bank = adaptive_mod._build_online_memory_bank(older_chunks, config)
     chunks = [entry["chunk"] for entry in bank]
+    if not chunks:
+        _synchronize_gpu_devices()
+        elapsed_ms = (time.perf_counter() - ranking_t0) * 1000.0
+        return [], elapsed_ms, {
+            "retrieval_variant": variant,
+            "candidate_count": 0,
+            "queue_count": 0,
+            "mmr_lambda": float(mmr_lambda) if variant == "clip_mmr" else None,
+            "temporal_gap_fallback_count": 0,
+        }
     frames = [representative_frame(chunk) for chunk in chunks]
     image_embeds = _image_embeddings(qa, frames)
     question = psm._question_text(prompt)

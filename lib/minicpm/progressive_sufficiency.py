@@ -622,7 +622,10 @@ def _mode_name(
     enable_heg: bool,
     enable_conservative_gate: bool,
     retrieval_variant: str = "current",
+    enable_evidence_override: bool = False,
 ) -> str:
+    if retrieval_variant == "clip_mmr" and enable_evidence_override:
+        return "progressive_sufficiency_memory_clip_mmr_evidence_override"
     if retrieval_variant == "clip_question_options":
         return "progressive_sufficiency_memory_clip_question_options"
     if retrieval_variant == "clip_mmr":
@@ -1127,6 +1130,7 @@ def select_progressive_sufficiency_memory(
     enable_heg: bool = False,
     enable_conservative_gate: bool = False,
     retrieval_variant: str = "current",
+    enable_evidence_override: bool = False,
 ) -> ProgressiveSufficiencySelection:
     recent_window = 6
     history_search_chunks = _env_int("MINICPM_PSM_HISTORY_SEARCH_CHUNKS", 64)
@@ -1157,6 +1161,8 @@ def select_progressive_sufficiency_memory(
     margin_weight = _env_float("MINICPM_PSM_MARGIN_WEIGHT", 0.50)
     entropy_weight = _env_float("MINICPM_PSM_ENTROPY_WEIGHT", 0.20)
     visual_support_weight = _env_float("MINICPM_PSM_VISUAL_SUPPORT_WEIGHT", 0.30)
+    evidence_override_gamma = _env_float("MINICPM_PSM_EVIDENCE_OVERRIDE_GAMMA", 0.30)
+    evidence_override_min_margin = _env_float("MINICPM_PSM_EVIDENCE_OVERRIDE_MIN_MARGIN", 0.10)
 
     if recent_chunks is None:
         recent_chunks = list(chunks[-recent_window:])
@@ -1193,6 +1199,7 @@ def select_progressive_sufficiency_memory(
         enable_heg=enable_heg,
         enable_conservative_gate=enable_conservative_gate,
         retrieval_variant=retrieval_variant,
+        enable_evidence_override=enable_evidence_override,
     )
 
     if not options:
@@ -1306,6 +1313,10 @@ def select_progressive_sufficiency_memory(
     best_sufficiency = -float("inf")
     previous_sufficiency: float | None = None
     stop_reason = "candidate_queue_exhausted"
+    override_triggered = False
+    override_k0_prediction: str | None = None
+    override_k0_sufficiency: float | None = None
+    override_protected_memory: list[Any] | None = None
 
     for iteration_index in range(max_memory_frames + 1):
         added_chunk_id = None
@@ -1352,6 +1363,21 @@ def select_progressive_sufficiency_memory(
                 heg_threshold=heg_threshold,
             )
         low_sufficiency_trigger = current_sufficiency < sufficiency_threshold
+        top1_candidate = unused_candidates[0] if unused_candidates else None
+        top1_relevance = (
+            float(top1_candidate.get("retrieval_relevance", top1_candidate.get("semantic_score")))
+            if top1_candidate is not None
+            and isinstance(top1_candidate.get("retrieval_relevance", top1_candidate.get("semantic_score")), (int, float))
+            else None
+        )
+        strong_candidate_override = bool(
+            enable_evidence_override
+            and iteration_index == 0
+            and not low_sufficiency_trigger
+            and top1_relevance is not None
+            and top1_relevance >= evidence_override_gamma
+            and bool(unused_candidates)
+        )
         conservative_gate: dict[str, Any] = {}
         if enable_conservative_gate:
             conservative_gate = _conservative_gate_decision(
@@ -1375,6 +1401,8 @@ def select_progressive_sufficiency_memory(
             trigger_reason = "low_sufficiency"
         elif historical_gain_trigger:
             trigger_reason = "historical_evidence_gain"
+        elif strong_candidate_override:
+            trigger_reason = "strong_candidate_override"
         else:
             trigger_reason = "none"
 
@@ -1394,6 +1422,12 @@ def select_progressive_sufficiency_memory(
             "gain_vs_previous": gain,
             "sufficiency_ms": score["sufficiency_ms"],
             "option_forward_ms": score["option_forward_ms"],
+            "retrieval_trigger_reason": trigger_reason,
+            "top1_unused_candidate_chunk_id": top1_candidate.get("chunk_id") if top1_candidate else None,
+            "top1_unused_candidate_relevance": top1_relevance,
+            "evidence_override_enabled": bool(enable_evidence_override),
+            "evidence_override_gamma": float(evidence_override_gamma) if enable_evidence_override else None,
+            "strong_candidate_override": bool(strong_candidate_override),
         }
         if enable_heg:
             iteration_record["retrieval_trigger_reason"] = trigger_reason
@@ -1415,6 +1449,23 @@ def select_progressive_sufficiency_memory(
                 ),
             }
         iterations.append(iteration_record)
+
+        if override_triggered and iteration_index == 1:
+            k1_prediction = str(score["predicted_option"])
+            answer_changed = bool(override_k0_prediction is not None and k1_prediction != override_k0_prediction)
+            confidence_collapsed = bool(float(score["answer_margin"]) < evidence_override_min_margin)
+            iteration_record["answer_changed_after_strong_candidate"] = answer_changed
+            iteration_record["evidence_override_confidence_collapsed"] = confidence_collapsed
+            iteration_record["evidence_override_min_margin"] = float(evidence_override_min_margin)
+            if answer_changed and not confidence_collapsed:
+                override_protected_memory = list(chronological_memory)
+                stop_reason = "strong_candidate_override_answer_changed_keep_k1"
+                break
+            if confidence_collapsed:
+                stop_reason = "strong_candidate_override_confidence_collapsed"
+                break
+            stop_reason = "strong_candidate_override_no_answer_change"
+            break
 
         if iteration_index > 0 and gain is not None:
             if gain < -negative_gain_tolerance:
@@ -1443,6 +1494,14 @@ def select_progressive_sufficiency_memory(
             if not unused_candidates:
                 stop_reason = "candidate_queue_exhausted"
                 break
+        elif enable_evidence_override and iteration_index == 0:
+            if strong_candidate_override:
+                override_triggered = True
+                override_k0_prediction = str(score["predicted_option"])
+                override_k0_sufficiency = current_sufficiency
+            elif current_sufficiency >= sufficiency_threshold:
+                stop_reason = "sufficient_evidence"
+                break
         elif current_sufficiency >= sufficiency_threshold:
             stop_reason = "sufficient_evidence"
             break
@@ -1451,6 +1510,9 @@ def select_progressive_sufficiency_memory(
             break
         previous_sufficiency = current_sufficiency
 
+    if override_protected_memory is not None:
+        best_memory = list(override_protected_memory)
+        best_sufficiency = float(iterations[-1].get("sufficiency", best_sufficiency))
     best_memory = sorted(best_memory, key=_chunk_sort_key)
     memory_ids = [int(chunk.chunk_index) for chunk in best_memory]
     final_chunks = [*best_memory, *recent_chunks]
@@ -1489,6 +1551,11 @@ def select_progressive_sufficiency_memory(
             "mmr_lambda": _env_float("MINICPM_PSM_MMR_LAMBDA", 0.80)
             if retrieval_variant == "clip_mmr"
             else None,
+            "evidence_override_enabled": bool(enable_evidence_override),
+            "evidence_override_gamma": float(evidence_override_gamma) if enable_evidence_override else None,
+            "evidence_override_min_margin": (
+                float(evidence_override_min_margin) if enable_evidence_override else None
+            ),
         },
         "recent_chunk_ids": recent_ids,
         "recent_start_time_seconds": recent_start_time,
@@ -1524,6 +1591,10 @@ def select_progressive_sufficiency_memory(
         "final_generation_ms": None,
         "num_sufficiency_iterations": len(iterations),
         "num_extra_frames": len(memory_ids),
+        "evidence_override_triggered": bool(override_triggered),
+        "evidence_override_k0_prediction": override_k0_prediction,
+        "evidence_override_k0_sufficiency": override_k0_sufficiency,
+        "answer_changed_after_strong_candidate": bool(override_protected_memory is not None),
     }
     _validate_metadata(metadata)
     _print_trace(metadata)

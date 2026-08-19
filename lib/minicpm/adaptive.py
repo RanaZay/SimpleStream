@@ -308,6 +308,9 @@ class AdaptiveWindowConfig:
         candidates with option-conditioned CLIP relevance plus visual MMR.
       progressive_sufficiency_memory_clip_question_options: isolated PRISM
         experimental mode using option-conditioned CLIP ranking without MMR.
+      progressive_sufficiency_memory_clip_mmr_evidence_override: isolated
+        CLIP-MMR mode that probes K1 when the top candidate is strong even if
+        K0 sufficiency would otherwise stop.
     """
 
     mode: str = "adaptive"
@@ -371,6 +374,7 @@ class AdaptiveWindowConfig:
             "progressive_sufficiency_memory_microclip",
             "progressive_sufficiency_memory_clip_question_options",
             "progressive_sufficiency_memory_clip_mmr",
+            "progressive_sufficiency_memory_clip_mmr_evidence_override",
         }
         if self.mode not in valid_modes:
             raise ValueError(f"Unknown adaptive mode {self.mode!r}; expected one of {sorted(valid_modes)}")
@@ -424,6 +428,7 @@ class AdaptiveWindowConfig:
             "progressive_sufficiency_memory_microclip",
             "progressive_sufficiency_memory_clip_question_options",
             "progressive_sufficiency_memory_clip_mmr",
+            "progressive_sufficiency_memory_clip_mmr_evidence_override",
         }
 
     @property
@@ -503,6 +508,10 @@ class AdaptiveWindowConfig:
         return self.mode == "progressive_sufficiency_memory_clip_question_options"
 
     @property
+    def progressive_sufficiency_memory_clip_mmr_evidence_override(self) -> bool:
+        return self.mode == "progressive_sufficiency_memory_clip_mmr_evidence_override"
+
+    @property
     def progressive_sufficiency_like(self) -> bool:
         return self.mode in {
             "progressive_sufficiency_memory",
@@ -511,6 +520,7 @@ class AdaptiveWindowConfig:
             "progressive_sufficiency_memory_microclip",
             "progressive_sufficiency_memory_clip_question_options",
             "progressive_sufficiency_memory_clip_mmr",
+            "progressive_sufficiency_memory_clip_mmr_evidence_override",
         }
 
     @property
@@ -823,6 +833,8 @@ def _memory_trigger_decision(
                 if config.progressive_sufficiency_memory_heg
                 else "progressive_sufficiency_clip_question_options_pending"
                 if config.progressive_sufficiency_memory_clip_question_options
+                else "progressive_sufficiency_clip_mmr_evidence_override_pending"
+                if config.progressive_sufficiency_memory_clip_mmr_evidence_override
                 else "progressive_sufficiency_clip_mmr_pending"
                 if config.progressive_sufficiency_memory_clip_mmr
                 else "progressive_sufficiency_microclip_pending"
@@ -3073,6 +3085,8 @@ def _memory_selector_label(config: AdaptiveWindowConfig) -> str:
         return "progressive_sufficiency_memory_clip_question_options"
     if config.progressive_sufficiency_memory_clip_mmr:
         return "progressive_sufficiency_memory_clip_mmr"
+    if config.progressive_sufficiency_memory_clip_mmr_evidence_override:
+        return "progressive_sufficiency_memory_clip_mmr_evidence_override"
     if config.gated_semantic_episodic_memory:
         return "gated_bound_semantic_episodic_memory"
     if config.bound_semantic_episodic_memory:
@@ -3336,11 +3350,15 @@ def query_adaptive_window(
                 enable_conservative_gate=config.progressive_sufficiency_memory_conservative_gate,
                 retrieval_variant=(
                     "clip_mmr"
-                    if config.progressive_sufficiency_memory_clip_mmr
+                    if (
+                        config.progressive_sufficiency_memory_clip_mmr
+                        or config.progressive_sufficiency_memory_clip_mmr_evidence_override
+                    )
                     else "clip_question_options"
                     if config.progressive_sufficiency_memory_clip_question_options
                     else "current"
                 ),
+                enable_evidence_override=config.progressive_sufficiency_memory_clip_mmr_evidence_override,
             )
         selection = AdaptiveSelection(
             frames=progressive_selection.frames,

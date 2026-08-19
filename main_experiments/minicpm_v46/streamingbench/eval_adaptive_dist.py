@@ -42,6 +42,7 @@ def _consume_adaptive_args() -> argparse.Namespace:
             "progressive_sufficiency_memory_microclip",
             "progressive_sufficiency_memory_clip_question_options",
             "progressive_sufficiency_memory_clip_mmr",
+            "progressive_sufficiency_memory_clip_mmr_evidence_override",
         ],
         default=os.environ.get("MINICPM_ADAPTIVE_MODE", "adaptive"),
     )

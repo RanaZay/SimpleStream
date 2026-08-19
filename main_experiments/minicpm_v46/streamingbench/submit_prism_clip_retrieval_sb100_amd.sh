@@ -48,6 +48,12 @@ case "$PRISM_CLIP_MODE" in
         export ADAPTIVE_MODE=progressive_sufficiency_memory_clip_mmr
         MODE_TAG=clip_mmr
         ;;
+    evidence_override|clip_mmr_evidence_override)
+        export ADAPTIVE_MODE=progressive_sufficiency_memory_clip_mmr_evidence_override
+        GAMMA_TAG="${MINICPM_PSM_EVIDENCE_OVERRIDE_GAMMA:-0.30}"
+        GAMMA_TAG="${GAMMA_TAG/./p}"
+        MODE_TAG="clip_mmr_evidence_override_g${GAMMA_TAG}"
+        ;;
     clip_question_options)
         export ADAPTIVE_MODE=progressive_sufficiency_memory_clip_question_options
         MODE_TAG=clip_question_options
@@ -81,6 +87,8 @@ export MINICPM_PSM_MARGIN_WEIGHT=0.50
 export MINICPM_PSM_ENTROPY_WEIGHT=0.20
 export MINICPM_PSM_VISUAL_SUPPORT_WEIGHT=0.30
 export MINICPM_PSM_MMR_LAMBDA=${MINICPM_PSM_MMR_LAMBDA:-0.80}
+export MINICPM_PSM_EVIDENCE_OVERRIDE_GAMMA=${MINICPM_PSM_EVIDENCE_OVERRIDE_GAMMA:-0.30}
+export MINICPM_PSM_EVIDENCE_OVERRIDE_MIN_MARGIN=${MINICPM_PSM_EVIDENCE_OVERRIDE_MIN_MARGIN:-0.10}
 export MINICPM_PSM_ASSERT_TEMPORAL_ALIGNMENT=1
 export MINICPM_PSM_PRINT_TRACE=1
 
@@ -97,6 +105,7 @@ python -V
 python -c "import torch; print('torch=', torch.__version__); print('hip=', torch.version.hip); print('cuda_available=', torch.cuda.is_available()); print('device_count=', torch.cuda.device_count())"
 echo "ADAPTIVE_MODE=$ADAPTIVE_MODE"
 echo "PRISM_CLIP_MODE=$PRISM_CLIP_MODE"
+echo "MINICPM_PSM_EVIDENCE_OVERRIDE_GAMMA=$MINICPM_PSM_EVIDENCE_OVERRIDE_GAMMA"
 echo "SB_RESULT_DIR=$SB_RESULT_DIR"
 echo "=== END ENV CHECK ==="
 

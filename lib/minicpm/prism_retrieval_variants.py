@@ -133,6 +133,17 @@ def _temporal_separated(candidate: dict[str, Any], selected: list[dict[str, Any]
     return True
 
 
+def _temporal_non_overlapping(candidate: dict[str, Any], selected: list[dict[str, Any]]) -> bool:
+    if not selected:
+        return True
+    c_start, c_end = candidate["start_time_seconds"], candidate["end_time_seconds"]
+    for item in selected:
+        s_start, s_end = item["start_time_seconds"], item["end_time_seconds"]
+        if max(c_start, s_start) <= min(c_end, s_end):
+            return False
+    return True
+
+
 def _quality_stats(queue: list[dict[str, Any]]) -> dict[str, Any]:
     if not queue:
         return {}
@@ -233,10 +244,12 @@ def rank_candidates(
 
     selected: list[dict[str, Any]] = []
     remaining = list(candidates)
+    temporal_gap_fallback_count = 0
     if variant in {"clip_question", "clip_question_options"}:
         while remaining and len(selected) < candidate_pool:
             eligible = [item for item in remaining if _temporal_separated(item, selected, float(min_temporal_gap))]
             if not eligible:
+                temporal_gap_fallback_count += 1
                 eligible = remaining
             best = max(eligible, key=lambda item: (float(item["retrieval_relevance"]), -int(item["chunk_id"])))
             best["diversity_score"] = 1.0
@@ -246,7 +259,10 @@ def rank_candidates(
     else:
         while remaining and len(selected) < candidate_pool:
             best = None
-            for item in remaining:
+            eligible = [item for item in remaining if _temporal_non_overlapping(item, selected)]
+            if not eligible:
+                break
+            for item in eligible:
                 if selected:
                     selected_indices = [int(chosen["bank_index"]) for chosen in selected]
                     sims = image_embeds[int(item["bank_index"])] @ image_embeds[selected_indices].T
@@ -272,6 +288,7 @@ def rank_candidates(
         "candidate_count": len(candidates),
         "queue_count": len(selected),
         "mmr_lambda": float(mmr_lambda) if variant == "clip_mmr" else None,
+        "temporal_gap_fallback_count": temporal_gap_fallback_count,
         **_quality_stats(selected),
     }
     if variant == "clip_question_options":

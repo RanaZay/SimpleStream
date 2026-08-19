@@ -237,8 +237,12 @@ def aggregate_quality(rows: list[dict[str, Any]]) -> dict[str, Any]:
     top3 = []
     distances = []
     redundancy = []
+    gap_fallbacks = []
     option_counts: Counter[str] = Counter()
     for row in rows:
+        fallback = as_float((row.get("retrieval_quality") or {}).get("temporal_gap_fallback_count"))
+        if fallback is not None:
+            gap_fallbacks.append(fallback)
         queue = row.get("candidate_queue") or []
         if queue:
             top1.append(float(queue[0].get("retrieval_relevance", queue[0].get("semantic_score", 0.0))))
@@ -258,6 +262,8 @@ def aggregate_quality(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "mean_top3_relevance": safe_mean(top3),
         "mean_temporal_distance_seconds": safe_mean(distances),
         "mean_visual_embedding_redundancy": safe_mean(redundancy),
+        "temporal_gap_fallback_count_total": int(sum(gap_fallbacks)) if gap_fallbacks else 0,
+        "temporal_gap_fallback_count_mean": safe_mean(gap_fallbacks),
         "best_supported_option_distribution": dict(option_counts),
     }
 
@@ -288,6 +294,49 @@ def newly_rescuable(rows_by_variant: dict[str, list[dict[str, Any]]]) -> dict[st
                     }
                 )
         out[variant] = cases
+    return out
+
+
+def queue_ids(row: dict[str, Any], k: int) -> set[int]:
+    ids: set[int] = set()
+    for item in (row.get("candidate_queue") or [])[:k]:
+        value = item.get("chunk_id")
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            ids.add(int(value))
+    return ids
+
+
+def queue_overlap_stats(rows_by_variant: dict[str, list[dict[str, Any]]]) -> dict[str, dict[str, Any]]:
+    pairs = [
+        ("current", "clip_question"),
+        ("current", "clip_question_options"),
+        ("current", "clip_mmr"),
+        ("clip_question_options", "clip_mmr"),
+    ]
+    by_variant_id = {
+        variant: {int(row["question_id"]): row for row in rows}
+        for variant, rows in rows_by_variant.items()
+    }
+    out: dict[str, dict[str, Any]] = {}
+    for left, right in pairs:
+        left_rows = by_variant_id.get(left, {})
+        right_rows = by_variant_id.get(right, {})
+        common = sorted(set(left_rows) & set(right_rows))
+        overlap1 = []
+        overlap3 = []
+        for qid in common:
+            left1 = queue_ids(left_rows[qid], 1)
+            right1 = queue_ids(right_rows[qid], 1)
+            left3 = queue_ids(left_rows[qid], 3)
+            right3 = queue_ids(right_rows[qid], 3)
+            overlap1.append(1.0 if left1 and left1 == right1 else 0.0)
+            denom = min(len(left3), len(right3), 3)
+            overlap3.append((len(left3 & right3) / denom) if denom else 0.0)
+        out[f"{left}_vs_{right}"] = {
+            "samples": len(common),
+            "overlap@1": safe_mean(overlap1),
+            "overlap@3": safe_mean(overlap3),
+        }
     return out
 
 
@@ -521,6 +570,7 @@ def main() -> None:
             variant: summarize_variant(sorted(rows_by_variant.get(variant, []), key=lambda item: int(item["question_id"])))
             for variant in args.variants
         },
+        "queue_overlap_statistics": queue_overlap_stats(rows_by_variant),
         "newly_rescuable_vs_current": newly_rescuable(rows_by_variant),
     }
     (out_dir / "retrieval_variant_oracle_summary.json").write_text(
@@ -546,6 +596,9 @@ def main() -> None:
             f"Oracle={100 * row['Oracle_K_accuracy']:.2f}% "
             f"rescues={row['K0_wrong_rescue_breakdown']}"
         )
+    print("Queue overlap:")
+    for name, row in summary["queue_overlap_statistics"].items():
+        print(f"  {name}: overlap@1={row['overlap@1']} overlap@3={row['overlap@3']}")
     print(f"Saved: {out_dir}")
 
 

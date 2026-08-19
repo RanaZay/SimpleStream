@@ -91,7 +91,7 @@ def _text_embeddings(qa: RecentWindowQAModel, texts: list[str]) -> torch.Tensor:
                 truncation=True,
             )
             inputs = {key: value.to(device) for key, value in inputs.items()}
-            output = model.get_text_features(**inputs).float()
+            output = _as_feature_tensor(model.get_text_features(**inputs)).float()
             output = torch_mod.nn.functional.normalize(output, dim=-1)
             for text, vector in zip(missing, output.detach().cpu()):
                 cache["text"][text] = vector
@@ -108,9 +108,21 @@ def _image_embeddings(qa: RecentWindowQAModel, frames: list[Image.Image]) -> tor
     with torch.inference_mode():
         inputs = processor(images=frames, return_tensors="pt")
         inputs = {key: value.to(device) for key, value in inputs.items()}
-        output = model.get_image_features(**inputs).float()
+        output = _as_feature_tensor(model.get_image_features(**inputs)).float()
         output = torch.nn.functional.normalize(output, dim=-1)
     return output
+
+
+def _as_feature_tensor(output: Any) -> torch.Tensor:
+    if isinstance(output, torch.Tensor):
+        return output
+    for attr in ("image_embeds", "text_embeds", "pooler_output"):
+        value = getattr(output, attr, None)
+        if isinstance(value, torch.Tensor):
+            return value
+    if isinstance(output, (tuple, list)) and output and isinstance(output[0], torch.Tensor):
+        return output[0]
+    raise TypeError(f"Could not extract CLIP feature tensor from {type(output).__name__}")
 
 
 def _option_queries(prompt: str) -> list[tuple[str, str]]:

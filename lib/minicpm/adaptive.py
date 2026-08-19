@@ -303,6 +303,11 @@ class AdaptiveWindowConfig:
       progressive_sufficiency_memory_microclip: isolated PRISM experimental
         mode that tries Recent-6, then one semantic historical anchor, then a
         local temporal micro-clip around that same anchor.
+      progressive_sufficiency_memory_clip_mmr: isolated PRISM experimental
+        mode that keeps the base progressive controller but ranks historical
+        candidates with option-conditioned CLIP relevance plus visual MMR.
+      progressive_sufficiency_memory_clip_question_options: isolated PRISM
+        experimental mode using option-conditioned CLIP ranking without MMR.
     """
 
     mode: str = "adaptive"
@@ -364,6 +369,8 @@ class AdaptiveWindowConfig:
             "progressive_sufficiency_memory_heg",
             "progressive_sufficiency_memory_conservative_gate",
             "progressive_sufficiency_memory_microclip",
+            "progressive_sufficiency_memory_clip_question_options",
+            "progressive_sufficiency_memory_clip_mmr",
         }
         if self.mode not in valid_modes:
             raise ValueError(f"Unknown adaptive mode {self.mode!r}; expected one of {sorted(valid_modes)}")
@@ -415,6 +422,8 @@ class AdaptiveWindowConfig:
             "progressive_sufficiency_memory_heg",
             "progressive_sufficiency_memory_conservative_gate",
             "progressive_sufficiency_memory_microclip",
+            "progressive_sufficiency_memory_clip_question_options",
+            "progressive_sufficiency_memory_clip_mmr",
         }
 
     @property
@@ -486,12 +495,22 @@ class AdaptiveWindowConfig:
         return self.mode == "progressive_sufficiency_memory_microclip"
 
     @property
+    def progressive_sufficiency_memory_clip_mmr(self) -> bool:
+        return self.mode == "progressive_sufficiency_memory_clip_mmr"
+
+    @property
+    def progressive_sufficiency_memory_clip_question_options(self) -> bool:
+        return self.mode == "progressive_sufficiency_memory_clip_question_options"
+
+    @property
     def progressive_sufficiency_like(self) -> bool:
         return self.mode in {
             "progressive_sufficiency_memory",
             "progressive_sufficiency_memory_heg",
             "progressive_sufficiency_memory_conservative_gate",
             "progressive_sufficiency_memory_microclip",
+            "progressive_sufficiency_memory_clip_question_options",
+            "progressive_sufficiency_memory_clip_mmr",
         }
 
     @property
@@ -802,6 +821,10 @@ def _memory_trigger_decision(
             "reason": (
                 "progressive_sufficiency_heg_pending"
                 if config.progressive_sufficiency_memory_heg
+                else "progressive_sufficiency_clip_question_options_pending"
+                if config.progressive_sufficiency_memory_clip_question_options
+                else "progressive_sufficiency_clip_mmr_pending"
+                if config.progressive_sufficiency_memory_clip_mmr
                 else "progressive_sufficiency_microclip_pending"
                 if config.progressive_sufficiency_memory_microclip
                 else "progressive_sufficiency_pending"
@@ -3046,6 +3069,10 @@ def _memory_selector_label(config: AdaptiveWindowConfig) -> str:
         return "progressive_sufficiency_memory_conservative_gate"
     if config.progressive_sufficiency_memory_microclip:
         return "progressive_sufficiency_memory_microclip"
+    if config.progressive_sufficiency_memory_clip_question_options:
+        return "progressive_sufficiency_memory_clip_question_options"
+    if config.progressive_sufficiency_memory_clip_mmr:
+        return "progressive_sufficiency_memory_clip_mmr"
     if config.gated_semantic_episodic_memory:
         return "gated_bound_semantic_episodic_memory"
     if config.bound_semantic_episodic_memory:
@@ -3307,6 +3334,13 @@ def query_adaptive_window(
                 **progressive_kwargs,
                 enable_heg=config.progressive_sufficiency_memory_heg,
                 enable_conservative_gate=config.progressive_sufficiency_memory_conservative_gate,
+                retrieval_variant=(
+                    "clip_mmr"
+                    if config.progressive_sufficiency_memory_clip_mmr
+                    else "clip_question_options"
+                    if config.progressive_sufficiency_memory_clip_question_options
+                    else "current"
+                ),
             )
         selection = AdaptiveSelection(
             frames=progressive_selection.frames,

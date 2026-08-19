@@ -516,6 +516,14 @@ def _candidate_metadata(candidate: dict[str, Any]) -> dict[str, Any]:
     }
     if "semantic_score_raw" in candidate:
         metadata["semantic_score_raw"] = candidate["semantic_score_raw"]
+    for key in (
+        "retrieval_variant",
+        "retrieval_relevance",
+        "best_supported_option",
+        "visual_redundancy",
+    ):
+        if key in candidate:
+            metadata[key] = candidate[key]
     return metadata
 
 
@@ -610,7 +618,15 @@ def _state_record(
     }
 
 
-def _mode_name(enable_heg: bool, enable_conservative_gate: bool) -> str:
+def _mode_name(
+    enable_heg: bool,
+    enable_conservative_gate: bool,
+    retrieval_variant: str = "current",
+) -> str:
+    if retrieval_variant == "clip_question_options":
+        return "progressive_sufficiency_memory_clip_question_options"
+    if retrieval_variant == "clip_mmr":
+        return "progressive_sufficiency_memory_clip_mmr"
     if enable_conservative_gate:
         return "progressive_sufficiency_memory_conservative_gate"
     if enable_heg:
@@ -1110,6 +1126,7 @@ def select_progressive_sufficiency_memory(
     baseline_recent_metadata: dict[str, Any] | None = None,
     enable_heg: bool = False,
     enable_conservative_gate: bool = False,
+    retrieval_variant: str = "current",
 ) -> ProgressiveSufficiencySelection:
     recent_window = 6
     history_search_chunks = _env_int("MINICPM_PSM_HISTORY_SEARCH_CHUNKS", 64)
@@ -1171,7 +1188,12 @@ def select_progressive_sufficiency_memory(
         for chunk in older_chunks
     }
     options = _extract_mcq_options(prompt)
-    mode_name = _mode_name(enable_heg=enable_heg, enable_conservative_gate=enable_conservative_gate)
+    retrieval_variant = str(retrieval_variant or "current")
+    mode_name = _mode_name(
+        enable_heg=enable_heg,
+        enable_conservative_gate=enable_conservative_gate,
+        retrieval_variant=retrieval_variant,
+    )
 
     if not options:
         final_ids = list(recent_ids)
@@ -1218,14 +1240,33 @@ def select_progressive_sufficiency_memory(
             downsample_mode=recent_downsample_mode,
         )
 
-    candidate_queue, ranking_ms = _rank_candidates(
-        qa,
-        older_chunks,
-        prompt,
-        config,
-        candidate_pool=max(0, candidate_pool),
-        min_temporal_gap=max(1, min_temporal_gap),
-    )
+    if retrieval_variant == "current":
+        candidate_queue, ranking_ms = _rank_candidates(
+            qa,
+            older_chunks,
+            prompt,
+            config,
+            candidate_pool=max(0, candidate_pool),
+            min_temporal_gap=max(1, min_temporal_gap),
+        )
+    else:
+        from lib.minicpm.prism_retrieval_variants import rank_candidates
+
+        candidate_queue, ranking_ms, retrieval_stats = rank_candidates(
+            qa=qa,
+            older_chunks=older_chunks,
+            prompt=prompt,
+            config=config,
+            candidate_pool=max(0, candidate_pool),
+            min_temporal_gap=max(1, min_temporal_gap),
+            variant=retrieval_variant,
+            mmr_lambda=_env_float("MINICPM_PSM_MMR_LAMBDA", 0.80),
+            recent_start_time=recent_start_time,
+        )
+        baseline_recent_metadata = {
+            **(baseline_recent_metadata or {}),
+            "retrieval_variant_stats": retrieval_stats,
+        }
     for candidate in candidate_queue:
         chunk_id = int(candidate["chunk_id"])
         start_time, end_time = older_chunk_bounds.get(chunk_id, _chunk_temporal_bounds(candidate["chunk"]))
@@ -1444,6 +1485,10 @@ def select_progressive_sufficiency_memory(
             "visual_support_weight": visual_support_weight,
             "visual_support_raw_low": 0.15,
             "visual_support_raw_span": 0.30,
+            "retrieval_variant": retrieval_variant,
+            "mmr_lambda": _env_float("MINICPM_PSM_MMR_LAMBDA", 0.80)
+            if retrieval_variant == "clip_mmr"
+            else None,
         },
         "recent_chunk_ids": recent_ids,
         "recent_start_time_seconds": recent_start_time,

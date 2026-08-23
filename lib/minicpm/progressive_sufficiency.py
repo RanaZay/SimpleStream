@@ -625,7 +625,10 @@ def _mode_name(
     enable_evidence_override: bool = False,
     enable_candidate_override: bool = False,
     enable_candidate_override_protected_rollback: bool = False,
+    enable_p3_low_suff_disagree: bool = False,
 ) -> str:
+    if retrieval_variant == "clip_mmr" and enable_p3_low_suff_disagree:
+        return "progressive_sufficiency_memory_clip_mmr_p3_low_suff_disagree"
     if retrieval_variant == "clip_mmr" and enable_candidate_override_protected_rollback:
         return "progressive_sufficiency_memory_clip_mmr_candidate_override_protected_rollback"
     if retrieval_variant == "clip_mmr" and enable_candidate_override:
@@ -1139,6 +1142,7 @@ def select_progressive_sufficiency_memory(
     enable_evidence_override: bool = False,
     enable_candidate_override: bool = False,
     enable_candidate_override_protected_rollback: bool = False,
+    enable_p3_low_suff_disagree: bool = False,
 ) -> ProgressiveSufficiencySelection:
     recent_window = 6
     history_search_chunks = _env_int("MINICPM_PSM_HISTORY_SEARCH_CHUNKS", 64)
@@ -1211,8 +1215,13 @@ def select_progressive_sufficiency_memory(
         enable_evidence_override=enable_evidence_override,
         enable_candidate_override=enable_candidate_override,
         enable_candidate_override_protected_rollback=enable_candidate_override_protected_rollback,
+        enable_p3_low_suff_disagree=enable_p3_low_suff_disagree,
     )
-    candidate_override_like = bool(enable_candidate_override or enable_candidate_override_protected_rollback)
+    candidate_override_like = bool(
+        enable_candidate_override
+        or enable_candidate_override_protected_rollback
+        or enable_p3_low_suff_disagree
+    )
 
     if not options:
         final_ids = list(recent_ids)
@@ -1425,6 +1434,8 @@ def select_progressive_sufficiency_memory(
             trigger_reason = "low_sufficiency_and_historical_gain"
         elif low_sufficiency_trigger and strong_candidate_disagreement_override:
             trigger_reason = "low_sufficiency_and_strong_candidate_disagreement_override"
+        elif enable_p3_low_suff_disagree and low_sufficiency_trigger:
+            trigger_reason = "low_sufficiency_no_strong_candidate_disagreement"
         elif low_sufficiency_trigger:
             trigger_reason = "low_sufficiency"
         elif historical_gain_trigger:
@@ -1465,6 +1476,7 @@ def select_progressive_sufficiency_memory(
             "strong_candidate_override": bool(strong_candidate_override),
             "candidate_override_enabled": bool(candidate_override_like),
             "candidate_override_protected_rollback_enabled": bool(enable_candidate_override_protected_rollback),
+            "p3_low_suff_disagree_enabled": bool(enable_p3_low_suff_disagree),
             "clip_override_threshold": float(clip_override_threshold) if candidate_override_like else None,
             "retrieval_disagreement": bool(retrieval_disagreement),
             "strong_candidate_disagreement_override": bool(strong_candidate_disagreement_override),
@@ -1542,6 +1554,14 @@ def select_progressive_sufficiency_memory(
             elif current_sufficiency >= sufficiency_threshold:
                 stop_reason = "sufficient_evidence"
                 break
+        elif enable_p3_low_suff_disagree and iteration_index == 0:
+            if low_sufficiency_trigger and strong_candidate_disagreement_override:
+                override_triggered = True
+                override_k0_prediction = str(score["predicted_option"])
+                override_k0_sufficiency = current_sufficiency
+            else:
+                stop_reason = "p3_no_low_suff_strong_disagreement"
+                break
         elif candidate_override_like and iteration_index == 0:
             if enable_candidate_override_protected_rollback and strong_candidate_disagreement_override:
                 override_triggered = True
@@ -1603,11 +1623,16 @@ def select_progressive_sufficiency_memory(
             "evidence_override_gamma": float(evidence_override_gamma) if enable_evidence_override else None,
             "evidence_override_min_margin": (
                 float(evidence_override_min_margin)
-                if (enable_evidence_override or enable_candidate_override_protected_rollback)
+                if (
+                    enable_evidence_override
+                    or enable_candidate_override_protected_rollback
+                    or enable_p3_low_suff_disagree
+                )
                 else None
             ),
             "candidate_override_enabled": bool(candidate_override_like),
             "candidate_override_protected_rollback_enabled": bool(enable_candidate_override_protected_rollback),
+            "p3_low_suff_disagree_enabled": bool(enable_p3_low_suff_disagree),
             "clip_override_threshold": float(clip_override_threshold) if candidate_override_like else None,
         },
         "recent_chunk_ids": recent_ids,
@@ -1650,6 +1675,7 @@ def select_progressive_sufficiency_memory(
         "answer_changed_after_strong_candidate": bool(override_protected_memory is not None),
         "candidate_override_enabled": bool(candidate_override_like),
         "candidate_override_protected_rollback_enabled": bool(enable_candidate_override_protected_rollback),
+        "p3_low_suff_disagree_enabled": bool(enable_p3_low_suff_disagree),
     }
     _validate_metadata(metadata)
     _print_trace(metadata)

@@ -317,6 +317,9 @@ class AdaptiveWindowConfig:
       progressive_sufficiency_memory_clip_mmr_candidate_override_protected_rollback:
         isolated CLIP-MMR candidate-override mode that preserves K1 when the
         candidate changes the option without severe confidence collapse.
+      progressive_sufficiency_memory_clip_mmr_p3_low_suff_disagree: isolated
+        CLIP-MMR mode matching the offline P3 family: retrieve K1 only when
+        low sufficiency, top-candidate relevance, and option disagreement agree.
     """
 
     mode: str = "adaptive"
@@ -383,6 +386,7 @@ class AdaptiveWindowConfig:
             "progressive_sufficiency_memory_clip_mmr_evidence_override",
             "progressive_sufficiency_memory_clip_mmr_candidate_override",
             "progressive_sufficiency_memory_clip_mmr_candidate_override_protected_rollback",
+            "progressive_sufficiency_memory_clip_mmr_p3_low_suff_disagree",
         }
         if self.mode not in valid_modes:
             raise ValueError(f"Unknown adaptive mode {self.mode!r}; expected one of {sorted(valid_modes)}")
@@ -439,6 +443,7 @@ class AdaptiveWindowConfig:
             "progressive_sufficiency_memory_clip_mmr_evidence_override",
             "progressive_sufficiency_memory_clip_mmr_candidate_override",
             "progressive_sufficiency_memory_clip_mmr_candidate_override_protected_rollback",
+            "progressive_sufficiency_memory_clip_mmr_p3_low_suff_disagree",
         }
 
     @property
@@ -530,6 +535,10 @@ class AdaptiveWindowConfig:
         return self.mode == "progressive_sufficiency_memory_clip_mmr_candidate_override_protected_rollback"
 
     @property
+    def progressive_sufficiency_memory_clip_mmr_p3_low_suff_disagree(self) -> bool:
+        return self.mode == "progressive_sufficiency_memory_clip_mmr_p3_low_suff_disagree"
+
+    @property
     def progressive_sufficiency_like(self) -> bool:
         return self.mode in {
             "progressive_sufficiency_memory",
@@ -541,6 +550,7 @@ class AdaptiveWindowConfig:
             "progressive_sufficiency_memory_clip_mmr_evidence_override",
             "progressive_sufficiency_memory_clip_mmr_candidate_override",
             "progressive_sufficiency_memory_clip_mmr_candidate_override_protected_rollback",
+            "progressive_sufficiency_memory_clip_mmr_p3_low_suff_disagree",
         }
 
     @property
@@ -855,6 +865,8 @@ def _memory_trigger_decision(
                 if config.progressive_sufficiency_memory_clip_question_options
                 else "progressive_sufficiency_clip_mmr_candidate_override_protected_rollback_pending"
                 if config.progressive_sufficiency_memory_clip_mmr_candidate_override_protected_rollback
+                else "progressive_sufficiency_clip_mmr_p3_low_suff_disagree_pending"
+                if config.progressive_sufficiency_memory_clip_mmr_p3_low_suff_disagree
                 else "progressive_sufficiency_clip_mmr_candidate_override_pending"
                 if config.progressive_sufficiency_memory_clip_mmr_candidate_override
                 else "progressive_sufficiency_clip_mmr_evidence_override_pending"
@@ -3115,6 +3127,8 @@ def _memory_selector_label(config: AdaptiveWindowConfig) -> str:
         return "progressive_sufficiency_memory_clip_mmr_candidate_override"
     if config.progressive_sufficiency_memory_clip_mmr_candidate_override_protected_rollback:
         return "progressive_sufficiency_memory_clip_mmr_candidate_override_protected_rollback"
+    if config.progressive_sufficiency_memory_clip_mmr_p3_low_suff_disagree:
+        return "progressive_sufficiency_memory_clip_mmr_p3_low_suff_disagree"
     if config.gated_semantic_episodic_memory:
         return "gated_bound_semantic_episodic_memory"
     if config.bound_semantic_episodic_memory:
@@ -3383,6 +3397,7 @@ def query_adaptive_window(
                         or config.progressive_sufficiency_memory_clip_mmr_evidence_override
                         or config.progressive_sufficiency_memory_clip_mmr_candidate_override
                         or config.progressive_sufficiency_memory_clip_mmr_candidate_override_protected_rollback
+                        or config.progressive_sufficiency_memory_clip_mmr_p3_low_suff_disagree
                     )
                     else "clip_question_options"
                     if config.progressive_sufficiency_memory_clip_question_options
@@ -3393,6 +3408,7 @@ def query_adaptive_window(
                 enable_candidate_override_protected_rollback=(
                     config.progressive_sufficiency_memory_clip_mmr_candidate_override_protected_rollback
                 ),
+                enable_p3_low_suff_disagree=config.progressive_sufficiency_memory_clip_mmr_p3_low_suff_disagree,
             )
         selection = AdaptiveSelection(
             frames=progressive_selection.frames,

@@ -625,10 +625,13 @@ def _mode_name(
     enable_evidence_override: bool = False,
     enable_candidate_override: bool = False,
     enable_candidate_override_protected_rollback: bool = False,
+    enable_candidate_override_guarded_rollback: bool = False,
     enable_p3_low_suff_disagree: bool = False,
 ) -> str:
     if retrieval_variant == "clip_mmr" and enable_p3_low_suff_disagree:
         return "progressive_sufficiency_memory_clip_mmr_p3_low_suff_disagree"
+    if retrieval_variant == "clip_mmr" and enable_candidate_override_guarded_rollback:
+        return "progressive_sufficiency_memory_clip_mmr_candidate_override_guarded_rollback"
     if retrieval_variant == "clip_mmr" and enable_candidate_override_protected_rollback:
         return "progressive_sufficiency_memory_clip_mmr_candidate_override_protected_rollback"
     if retrieval_variant == "clip_mmr" and enable_candidate_override:
@@ -1142,6 +1145,7 @@ def select_progressive_sufficiency_memory(
     enable_evidence_override: bool = False,
     enable_candidate_override: bool = False,
     enable_candidate_override_protected_rollback: bool = False,
+    enable_candidate_override_guarded_rollback: bool = False,
     enable_p3_low_suff_disagree: bool = False,
 ) -> ProgressiveSufficiencySelection:
     recent_window = 6
@@ -1215,11 +1219,13 @@ def select_progressive_sufficiency_memory(
         enable_evidence_override=enable_evidence_override,
         enable_candidate_override=enable_candidate_override,
         enable_candidate_override_protected_rollback=enable_candidate_override_protected_rollback,
+        enable_candidate_override_guarded_rollback=enable_candidate_override_guarded_rollback,
         enable_p3_low_suff_disagree=enable_p3_low_suff_disagree,
     )
     candidate_override_like = bool(
         enable_candidate_override
         or enable_candidate_override_protected_rollback
+        or enable_candidate_override_guarded_rollback
         or enable_p3_low_suff_disagree
     )
 
@@ -1476,6 +1482,7 @@ def select_progressive_sufficiency_memory(
             "strong_candidate_override": bool(strong_candidate_override),
             "candidate_override_enabled": bool(candidate_override_like),
             "candidate_override_protected_rollback_enabled": bool(enable_candidate_override_protected_rollback),
+            "candidate_override_guarded_rollback_enabled": bool(enable_candidate_override_guarded_rollback),
             "p3_low_suff_disagree_enabled": bool(enable_p3_low_suff_disagree),
             "clip_override_threshold": float(clip_override_threshold) if candidate_override_like else None,
             "retrieval_disagreement": bool(retrieval_disagreement),
@@ -1506,12 +1513,24 @@ def select_progressive_sufficiency_memory(
             k1_prediction = str(score["predicted_option"])
             answer_changed = bool(override_k0_prediction is not None and k1_prediction != override_k0_prediction)
             confidence_collapsed = bool(float(score["answer_margin"]) < evidence_override_min_margin)
+            guarded_rollback_blocked = bool(
+                enable_candidate_override_guarded_rollback
+                and answer_changed
+                and not confidence_collapsed
+                and override_k0_sufficiency is not None
+                and override_k0_sufficiency >= sufficiency_threshold
+                and float(score["sufficiency"]) < float(override_k0_sufficiency)
+            )
             iteration_record["answer_changed_after_strong_candidate"] = answer_changed
             iteration_record["evidence_override_confidence_collapsed"] = confidence_collapsed
             iteration_record["evidence_override_min_margin"] = float(evidence_override_min_margin)
-            if answer_changed and not confidence_collapsed:
+            iteration_record["candidate_override_guarded_rollback_blocked"] = guarded_rollback_blocked
+            if answer_changed and not confidence_collapsed and not guarded_rollback_blocked:
                 override_protected_memory = list(chronological_memory)
                 stop_reason = "strong_candidate_override_answer_changed_keep_k1"
+                break
+            if guarded_rollback_blocked:
+                stop_reason = "candidate_override_guarded_rollback_blocked"
                 break
             if confidence_collapsed:
                 stop_reason = "strong_candidate_override_confidence_collapsed"
@@ -1563,7 +1582,10 @@ def select_progressive_sufficiency_memory(
                 stop_reason = "p3_no_low_suff_strong_disagreement"
                 break
         elif candidate_override_like and iteration_index == 0:
-            if enable_candidate_override_protected_rollback and strong_candidate_disagreement_override:
+            if (
+                (enable_candidate_override_protected_rollback or enable_candidate_override_guarded_rollback)
+                and strong_candidate_disagreement_override
+            ):
                 override_triggered = True
                 override_k0_prediction = str(score["predicted_option"])
                 override_k0_sufficiency = current_sufficiency
@@ -1626,12 +1648,14 @@ def select_progressive_sufficiency_memory(
                 if (
                     enable_evidence_override
                     or enable_candidate_override_protected_rollback
+                    or enable_candidate_override_guarded_rollback
                     or enable_p3_low_suff_disagree
                 )
                 else None
             ),
             "candidate_override_enabled": bool(candidate_override_like),
             "candidate_override_protected_rollback_enabled": bool(enable_candidate_override_protected_rollback),
+            "candidate_override_guarded_rollback_enabled": bool(enable_candidate_override_guarded_rollback),
             "p3_low_suff_disagree_enabled": bool(enable_p3_low_suff_disagree),
             "clip_override_threshold": float(clip_override_threshold) if candidate_override_like else None,
         },
@@ -1675,6 +1699,7 @@ def select_progressive_sufficiency_memory(
         "answer_changed_after_strong_candidate": bool(override_protected_memory is not None),
         "candidate_override_enabled": bool(candidate_override_like),
         "candidate_override_protected_rollback_enabled": bool(enable_candidate_override_protected_rollback),
+        "candidate_override_guarded_rollback_enabled": bool(enable_candidate_override_guarded_rollback),
         "p3_low_suff_disagree_enabled": bool(enable_p3_low_suff_disagree),
     }
     _validate_metadata(metadata)

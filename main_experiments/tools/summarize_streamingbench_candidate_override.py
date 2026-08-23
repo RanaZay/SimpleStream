@@ -32,14 +32,57 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def branch_rows_as_streamingbench(rows: list[dict[str, Any]], branch_name: str) -> list[dict[str, Any]]:
+    converted = []
+    for row in rows:
+        branches = row.get("branches")
+        if not isinstance(branches, dict) or branch_name not in branches:
+            continue
+        branch = branches[branch_name]
+        if not isinstance(branch, dict):
+            continue
+        converted.append(
+            {
+                "_index": int(row["question_id"]),
+                "_key": row.get("key"),
+                "video_id": row.get("video_id"),
+                "task_type": row.get("category"),
+                "question": row.get("question"),
+                "options": row.get("options"),
+                "answer_gt": row.get("ground_truth"),
+                "response": branch.get("response"),
+                "correct": bool(branch.get("correct")),
+                "num_frames": branch.get("frame_count"),
+                "num_vision_tokens": branch.get("num_vision_tokens"),
+                "ttft_seconds": branch.get("ttft_seconds"),
+                "end_to_end_time_seconds": branch.get("generate_seconds"),
+                "adaptive": {
+                    "selected_timestamps": branch.get("frame_timestamps"),
+                    "selected_chunk_ids": branch.get("frame_chunk_ids"),
+                    "mode": f"recent_sampler_oracle_branch:{branch_name}",
+                },
+            }
+        )
+    return converted
+
+
+def maybe_convert_recent_sampler_oracle(source: str, rows: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]]:
+    if rows and isinstance(rows[0].get("branches"), dict) and "current_recent6" in rows[0]["branches"]:
+        return f"{source}#current_recent6", branch_rows_as_streamingbench(rows, "current_recent6")
+    return source, rows
+
+
 def load_results(path: Path) -> tuple[str, list[dict[str, Any]]]:
     if path.is_file():
         if path.suffix == ".jsonl":
-            return str(path), read_jsonl(path)
+            return maybe_convert_recent_sampler_oracle(str(path), read_jsonl(path))
         payload = json.load(path.open(encoding="utf-8"))
         if isinstance(payload, dict):
-            return str(path), list(payload.get("results", payload.get("rows", [])))
-        return str(path), list(payload)
+            rows = list(payload.get("results", payload.get("rows", [])))
+            if not rows and isinstance(payload.get("branches"), dict):
+                rows = [payload]
+            return maybe_convert_recent_sampler_oracle(str(path), rows)
+        return maybe_convert_recent_sampler_oracle(str(path), list(payload))
 
     merged = sorted(
         path.glob("streaming_bench_minicpmv46_results_*.json"),
@@ -48,6 +91,12 @@ def load_results(path: Path) -> tuple[str, list[dict[str, Any]]]:
     )
     if merged:
         return load_results(merged[0])
+    recent_oracle_jsonl = path / "recent_sampler_oracle_results.jsonl"
+    recent_oracle_json = path / "recent_sampler_oracle_results.json"
+    if recent_oracle_jsonl.exists():
+        return load_results(recent_oracle_jsonl)
+    if recent_oracle_json.exists():
+        return load_results(recent_oracle_json)
 
     rank_files = sorted(path.glob("rank_*/results_incremental.jsonl"))
     if not rank_files:

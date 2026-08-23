@@ -623,7 +623,10 @@ def _mode_name(
     enable_conservative_gate: bool,
     retrieval_variant: str = "current",
     enable_evidence_override: bool = False,
+    enable_candidate_override: bool = False,
 ) -> str:
+    if retrieval_variant == "clip_mmr" and enable_candidate_override:
+        return "progressive_sufficiency_memory_clip_mmr_candidate_override"
     if retrieval_variant == "clip_mmr" and enable_evidence_override:
         return "progressive_sufficiency_memory_clip_mmr_evidence_override"
     if retrieval_variant == "clip_question_options":
@@ -1131,6 +1134,7 @@ def select_progressive_sufficiency_memory(
     enable_conservative_gate: bool = False,
     retrieval_variant: str = "current",
     enable_evidence_override: bool = False,
+    enable_candidate_override: bool = False,
 ) -> ProgressiveSufficiencySelection:
     recent_window = 6
     history_search_chunks = _env_int("MINICPM_PSM_HISTORY_SEARCH_CHUNKS", 64)
@@ -1163,6 +1167,7 @@ def select_progressive_sufficiency_memory(
     visual_support_weight = _env_float("MINICPM_PSM_VISUAL_SUPPORT_WEIGHT", 0.30)
     evidence_override_gamma = _env_float("MINICPM_PSM_EVIDENCE_OVERRIDE_GAMMA", 0.30)
     evidence_override_min_margin = _env_float("MINICPM_PSM_EVIDENCE_OVERRIDE_MIN_MARGIN", 0.10)
+    clip_override_threshold = _env_float("MINICPM_PSM_CLIP_OVERRIDE_THRESHOLD", 0.2995)
 
     if recent_chunks is None:
         recent_chunks = list(chunks[-recent_window:])
@@ -1200,6 +1205,7 @@ def select_progressive_sufficiency_memory(
         enable_conservative_gate=enable_conservative_gate,
         retrieval_variant=retrieval_variant,
         enable_evidence_override=enable_evidence_override,
+        enable_candidate_override=enable_candidate_override,
     )
 
     if not options:
@@ -1378,6 +1384,20 @@ def select_progressive_sufficiency_memory(
             and top1_relevance >= evidence_override_gamma
             and bool(unused_candidates)
         )
+        top1_best_supported_option = top1_candidate.get("best_supported_option") if top1_candidate else None
+        retrieval_disagreement = bool(
+            enable_candidate_override
+            and top1_best_supported_option is not None
+            and str(top1_best_supported_option) != str(score["predicted_option"])
+        )
+        strong_candidate_disagreement_override = bool(
+            enable_candidate_override
+            and iteration_index == 0
+            and top1_relevance is not None
+            and top1_relevance >= clip_override_threshold
+            and retrieval_disagreement
+            and bool(unused_candidates)
+        )
         conservative_gate: dict[str, Any] = {}
         if enable_conservative_gate:
             conservative_gate = _conservative_gate_decision(
@@ -1397,12 +1417,16 @@ def select_progressive_sufficiency_memory(
         )
         if low_sufficiency_trigger and historical_gain_trigger:
             trigger_reason = "low_sufficiency_and_historical_gain"
+        elif low_sufficiency_trigger and strong_candidate_disagreement_override:
+            trigger_reason = "low_sufficiency_and_strong_candidate_disagreement_override"
         elif low_sufficiency_trigger:
             trigger_reason = "low_sufficiency"
         elif historical_gain_trigger:
             trigger_reason = "historical_evidence_gain"
         elif strong_candidate_override:
             trigger_reason = "strong_candidate_override"
+        elif strong_candidate_disagreement_override:
+            trigger_reason = "strong_candidate_disagreement_override"
         else:
             trigger_reason = "none"
 
@@ -1425,9 +1449,18 @@ def select_progressive_sufficiency_memory(
             "retrieval_trigger_reason": trigger_reason,
             "top1_unused_candidate_chunk_id": top1_candidate.get("chunk_id") if top1_candidate else None,
             "top1_unused_candidate_relevance": top1_relevance,
+            "top1_unused_candidate_total_score": top1_candidate.get("total_score") if top1_candidate else None,
+            "top1_unused_candidate_best_supported_option": top1_best_supported_option,
+            "top1_unused_candidate_temporal_distance_seconds": (
+                top1_candidate.get("candidate_temporal_distance_seconds") if top1_candidate else None
+            ),
             "evidence_override_enabled": bool(enable_evidence_override),
             "evidence_override_gamma": float(evidence_override_gamma) if enable_evidence_override else None,
             "strong_candidate_override": bool(strong_candidate_override),
+            "candidate_override_enabled": bool(enable_candidate_override),
+            "clip_override_threshold": float(clip_override_threshold) if enable_candidate_override else None,
+            "retrieval_disagreement": bool(retrieval_disagreement),
+            "strong_candidate_disagreement_override": bool(strong_candidate_disagreement_override),
         }
         if enable_heg:
             iteration_record["retrieval_trigger_reason"] = trigger_reason
@@ -1502,6 +1535,10 @@ def select_progressive_sufficiency_memory(
             elif current_sufficiency >= sufficiency_threshold:
                 stop_reason = "sufficient_evidence"
                 break
+        elif enable_candidate_override and iteration_index == 0:
+            if not low_sufficiency_trigger and not strong_candidate_disagreement_override:
+                stop_reason = "sufficient_evidence"
+                break
         elif current_sufficiency >= sufficiency_threshold:
             stop_reason = "sufficient_evidence"
             break
@@ -1556,6 +1593,8 @@ def select_progressive_sufficiency_memory(
             "evidence_override_min_margin": (
                 float(evidence_override_min_margin) if enable_evidence_override else None
             ),
+            "candidate_override_enabled": bool(enable_candidate_override),
+            "clip_override_threshold": float(clip_override_threshold) if enable_candidate_override else None,
         },
         "recent_chunk_ids": recent_ids,
         "recent_start_time_seconds": recent_start_time,
@@ -1595,6 +1634,7 @@ def select_progressive_sufficiency_memory(
         "evidence_override_k0_prediction": override_k0_prediction,
         "evidence_override_k0_sufficiency": override_k0_sufficiency,
         "answer_changed_after_strong_candidate": bool(override_protected_memory is not None),
+        "candidate_override_enabled": bool(enable_candidate_override),
     }
     _validate_metadata(metadata)
     _print_trace(metadata)

@@ -54,6 +54,12 @@ case "$PRISM_CLIP_MODE" in
         GAMMA_TAG="${GAMMA_TAG/./p}"
         MODE_TAG="clip_mmr_evidence_override_g${GAMMA_TAG}"
         ;;
+    candidate_override|clip_mmr_candidate_override)
+        export ADAPTIVE_MODE=progressive_sufficiency_memory_clip_mmr_candidate_override
+        GAMMA_TAG="${MINICPM_PSM_CLIP_OVERRIDE_THRESHOLD:-0.2995}"
+        GAMMA_TAG="${GAMMA_TAG/./p}"
+        MODE_TAG="clip_mmr_candidate_override_g${GAMMA_TAG}"
+        ;;
     clip_question_options)
         export ADAPTIVE_MODE=progressive_sufficiency_memory_clip_question_options
         MODE_TAG=clip_question_options
@@ -89,6 +95,7 @@ export MINICPM_PSM_VISUAL_SUPPORT_WEIGHT=0.30
 export MINICPM_PSM_MMR_LAMBDA=${MINICPM_PSM_MMR_LAMBDA:-0.80}
 export MINICPM_PSM_EVIDENCE_OVERRIDE_GAMMA=${MINICPM_PSM_EVIDENCE_OVERRIDE_GAMMA:-0.30}
 export MINICPM_PSM_EVIDENCE_OVERRIDE_MIN_MARGIN=${MINICPM_PSM_EVIDENCE_OVERRIDE_MIN_MARGIN:-0.10}
+export MINICPM_PSM_CLIP_OVERRIDE_THRESHOLD=${MINICPM_PSM_CLIP_OVERRIDE_THRESHOLD:-0.2995}
 export MINICPM_PSM_ASSERT_TEMPORAL_ALIGNMENT=1
 export MINICPM_PSM_PRINT_TRACE=1
 
@@ -106,6 +113,7 @@ python -c "import torch; print('torch=', torch.__version__); print('hip=', torch
 echo "ADAPTIVE_MODE=$ADAPTIVE_MODE"
 echo "PRISM_CLIP_MODE=$PRISM_CLIP_MODE"
 echo "MINICPM_PSM_EVIDENCE_OVERRIDE_GAMMA=$MINICPM_PSM_EVIDENCE_OVERRIDE_GAMMA"
+echo "MINICPM_PSM_CLIP_OVERRIDE_THRESHOLD=$MINICPM_PSM_CLIP_OVERRIDE_THRESHOLD"
 echo "SB_RESULT_DIR=$SB_RESULT_DIR"
 echo "=== END ENV CHECK ==="
 

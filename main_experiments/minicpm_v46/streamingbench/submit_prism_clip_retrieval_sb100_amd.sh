@@ -60,6 +60,12 @@ case "$PRISM_CLIP_MODE" in
         GAMMA_TAG="${GAMMA_TAG/./p}"
         MODE_TAG="clip_mmr_candidate_override_g${GAMMA_TAG}"
         ;;
+    candidate_override_protected_rollback|clip_mmr_candidate_override_protected_rollback)
+        export ADAPTIVE_MODE=progressive_sufficiency_memory_clip_mmr_candidate_override_protected_rollback
+        GAMMA_TAG="${MINICPM_PSM_CLIP_OVERRIDE_THRESHOLD:-0.2995}"
+        GAMMA_TAG="${GAMMA_TAG/./p}"
+        MODE_TAG="clip_mmr_candidate_override_protected_rollback_g${GAMMA_TAG}"
+        ;;
     clip_question_options)
         export ADAPTIVE_MODE=progressive_sufficiency_memory_clip_question_options
         MODE_TAG=clip_question_options

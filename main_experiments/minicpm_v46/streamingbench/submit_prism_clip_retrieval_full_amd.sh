@@ -1,10 +1,10 @@
 #!/bin/bash
-#SBATCH --job-name=minicpmv46_sb100_prism_clip_retrieval
+#SBATCH --job-name=minicpmv46_sb_prism_clip_retrieval
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=16
 #SBATCH --gres=gpu:1
-#SBATCH --time=4:00:00
+#SBATCH --time=24:00:00
 #SBATCH --qos=skqos
 #SBATCH --partition=faculty
 #SBATCH --output=/vast/users/salman.khan/SimpleStream/logs/%x-%j.out
@@ -48,30 +48,6 @@ case "$PRISM_CLIP_MODE" in
         export ADAPTIVE_MODE=progressive_sufficiency_memory_clip_mmr
         MODE_TAG=clip_mmr
         ;;
-    evidence_override|clip_mmr_evidence_override)
-        export ADAPTIVE_MODE=progressive_sufficiency_memory_clip_mmr_evidence_override
-        GAMMA_TAG="${MINICPM_PSM_EVIDENCE_OVERRIDE_GAMMA:-0.30}"
-        GAMMA_TAG="${GAMMA_TAG/./p}"
-        MODE_TAG="clip_mmr_evidence_override_g${GAMMA_TAG}"
-        ;;
-    candidate_override|clip_mmr_candidate_override)
-        export ADAPTIVE_MODE=progressive_sufficiency_memory_clip_mmr_candidate_override
-        GAMMA_TAG="${MINICPM_PSM_CLIP_OVERRIDE_THRESHOLD:-0.2995}"
-        GAMMA_TAG="${GAMMA_TAG/./p}"
-        MODE_TAG="clip_mmr_candidate_override_g${GAMMA_TAG}"
-        ;;
-    candidate_override_protected_rollback|clip_mmr_candidate_override_protected_rollback)
-        export ADAPTIVE_MODE=progressive_sufficiency_memory_clip_mmr_candidate_override_protected_rollback
-        GAMMA_TAG="${MINICPM_PSM_CLIP_OVERRIDE_THRESHOLD:-0.2995}"
-        GAMMA_TAG="${GAMMA_TAG/./p}"
-        MODE_TAG="clip_mmr_candidate_override_protected_rollback_g${GAMMA_TAG}"
-        ;;
-    candidate_override_guarded_rollback|clip_mmr_candidate_override_guarded_rollback)
-        export ADAPTIVE_MODE=progressive_sufficiency_memory_clip_mmr_candidate_override_guarded_rollback
-        GAMMA_TAG="${MINICPM_PSM_CLIP_OVERRIDE_THRESHOLD:-0.2995}"
-        GAMMA_TAG="${GAMMA_TAG/./p}"
-        MODE_TAG="clip_mmr_candidate_override_guarded_rollback_g${GAMMA_TAG}"
-        ;;
     candidate_override_guarded_rollback_exact_recent|clip_mmr_candidate_override_guarded_rollback_exact_recent)
         export ADAPTIVE_MODE=progressive_sufficiency_memory_clip_mmr_candidate_override_guarded_rollback_exact_recent
         export MINICPM_PSM_EXACT_RECENT_PRESERVE_SOURCE_IDS=1
@@ -79,15 +55,11 @@ case "$PRISM_CLIP_MODE" in
         GAMMA_TAG="${GAMMA_TAG/./p}"
         MODE_TAG="clip_mmr_candidate_override_guarded_rollback_exact_recent_g${GAMMA_TAG}"
         ;;
-    p3_low_suff_disagree|clip_mmr_p3_low_suff_disagree)
-        export ADAPTIVE_MODE=progressive_sufficiency_memory_clip_mmr_p3_low_suff_disagree
+    candidate_override_guarded_rollback|clip_mmr_candidate_override_guarded_rollback)
+        export ADAPTIVE_MODE=progressive_sufficiency_memory_clip_mmr_candidate_override_guarded_rollback
         GAMMA_TAG="${MINICPM_PSM_CLIP_OVERRIDE_THRESHOLD:-0.2995}"
         GAMMA_TAG="${GAMMA_TAG/./p}"
-        MODE_TAG="clip_mmr_p3_low_suff_disagree_g${GAMMA_TAG}"
-        ;;
-    clip_question_options)
-        export ADAPTIVE_MODE=progressive_sufficiency_memory_clip_question_options
-        MODE_TAG=clip_question_options
+        MODE_TAG="clip_mmr_candidate_override_guarded_rollback_g${GAMMA_TAG}"
         ;;
     *)
         echo "[ERROR] Unknown PRISM_CLIP_MODE=$PRISM_CLIP_MODE" >&2
@@ -103,7 +75,7 @@ export ADAPTIVE_MEMORY_ANCHORS=3
 export ADAPTIVE_MEMORY_SEARCH_CHUNKS=64
 export RECENT_FRAMES_ONLY=6
 export RECENT_SAMPLER_FPS=4.0
-export MAX_SAMPLES=100
+export MAX_SAMPLES=${MAX_SAMPLES:-}
 export NUM_PROCESSES=${NUM_PROCESSES:-1}
 export MAIN_PROCESS_PORT=${MAIN_PROCESS_PORT:-29981}
 
@@ -118,13 +90,11 @@ export MINICPM_PSM_MARGIN_WEIGHT=0.50
 export MINICPM_PSM_ENTROPY_WEIGHT=0.20
 export MINICPM_PSM_VISUAL_SUPPORT_WEIGHT=0.30
 export MINICPM_PSM_MMR_LAMBDA=${MINICPM_PSM_MMR_LAMBDA:-0.80}
-export MINICPM_PSM_EVIDENCE_OVERRIDE_GAMMA=${MINICPM_PSM_EVIDENCE_OVERRIDE_GAMMA:-0.30}
-export MINICPM_PSM_EVIDENCE_OVERRIDE_MIN_MARGIN=${MINICPM_PSM_EVIDENCE_OVERRIDE_MIN_MARGIN:-0.10}
 export MINICPM_PSM_CLIP_OVERRIDE_THRESHOLD=${MINICPM_PSM_CLIP_OVERRIDE_THRESHOLD:-0.2995}
 export MINICPM_PSM_ASSERT_TEMPORAL_ALIGNMENT=1
-export MINICPM_PSM_PRINT_TRACE=1
+export MINICPM_PSM_PRINT_TRACE=${MINICPM_PSM_PRINT_TRACE:-0}
 
-RESULT_DIR="$REPO_ROOT/reports/prism_retrieval_variants/streamingbench_100_prism_${MODE_TAG}_controller"
+RESULT_DIR="$REPO_ROOT/reports/prism_retrieval_variants/streamingbench_full_prism_${MODE_TAG}_controller"
 ts=$(date +%Y%m%d_%H%M%S)
 if [[ "${RESUME:-0}" != "1" ]]; then
     mv "$RESULT_DIR" "${RESULT_DIR}.old_$ts" 2>/dev/null || true
@@ -137,8 +107,9 @@ python -V
 python -c "import torch; print('torch=', torch.__version__); print('hip=', torch.version.hip); print('cuda_available=', torch.cuda.is_available()); print('device_count=', torch.cuda.device_count())"
 echo "ADAPTIVE_MODE=$ADAPTIVE_MODE"
 echo "PRISM_CLIP_MODE=$PRISM_CLIP_MODE"
-echo "MINICPM_PSM_EVIDENCE_OVERRIDE_GAMMA=$MINICPM_PSM_EVIDENCE_OVERRIDE_GAMMA"
 echo "MINICPM_PSM_CLIP_OVERRIDE_THRESHOLD=$MINICPM_PSM_CLIP_OVERRIDE_THRESHOLD"
+echo "MINICPM_PSM_EXACT_RECENT_PRESERVE_SOURCE_IDS=${MINICPM_PSM_EXACT_RECENT_PRESERVE_SOURCE_IDS:-0}"
+echo "MAX_SAMPLES=${MAX_SAMPLES:-}"
 echo "SB_RESULT_DIR=$SB_RESULT_DIR"
 echo "=== END ENV CHECK ==="
 

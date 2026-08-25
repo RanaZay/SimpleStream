@@ -626,10 +626,13 @@ def _mode_name(
     enable_candidate_override: bool = False,
     enable_candidate_override_protected_rollback: bool = False,
     enable_candidate_override_guarded_rollback: bool = False,
+    enable_candidate_override_guarded_rollback_exact_recent: bool = False,
     enable_p3_low_suff_disagree: bool = False,
 ) -> str:
     if retrieval_variant == "clip_mmr" and enable_p3_low_suff_disagree:
         return "progressive_sufficiency_memory_clip_mmr_p3_low_suff_disagree"
+    if retrieval_variant == "clip_mmr" and enable_candidate_override_guarded_rollback_exact_recent:
+        return "progressive_sufficiency_memory_clip_mmr_candidate_override_guarded_rollback_exact_recent"
     if retrieval_variant == "clip_mmr" and enable_candidate_override_guarded_rollback:
         return "progressive_sufficiency_memory_clip_mmr_candidate_override_guarded_rollback"
     if retrieval_variant == "clip_mmr" and enable_candidate_override_protected_rollback:
@@ -1146,6 +1149,7 @@ def select_progressive_sufficiency_memory(
     enable_candidate_override: bool = False,
     enable_candidate_override_protected_rollback: bool = False,
     enable_candidate_override_guarded_rollback: bool = False,
+    enable_candidate_override_guarded_rollback_exact_recent: bool = False,
     enable_p3_low_suff_disagree: bool = False,
 ) -> ProgressiveSufficiencySelection:
     recent_window = 6
@@ -1220,6 +1224,7 @@ def select_progressive_sufficiency_memory(
         enable_candidate_override=enable_candidate_override,
         enable_candidate_override_protected_rollback=enable_candidate_override_protected_rollback,
         enable_candidate_override_guarded_rollback=enable_candidate_override_guarded_rollback,
+        enable_candidate_override_guarded_rollback_exact_recent=enable_candidate_override_guarded_rollback_exact_recent,
         enable_p3_low_suff_disagree=enable_p3_low_suff_disagree,
     )
     candidate_override_like = bool(

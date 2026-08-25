@@ -34,11 +34,12 @@ from main_experiments.minicpm_v46.streamingbench.eval_recent_sampler_dist import
 )
 
 
-def _one_frame_chunk(record: Any, sequence_index: int) -> Any:
-    # Keep wrapper-local recent IDs unique and outside the absolute video chunk
-    # namespace. PRISM history eligibility is timestamp-based; these IDs are
-    # only metadata/control-set keys inside the isolated validation wrapper.
-    chunk_index = -1_000_000 + int(sequence_index)
+def _one_frame_chunk(record: Any, sequence_index: int, preserve_source_id: bool = False) -> Any:
+    # Most isolated PRISM exact-recent runs use wrapper-local IDs so recent
+    # frame IDs cannot collide with broad-decode history IDs. For the stricter
+    # baseline-equivalence mode, preserve the exact current_recent6 source IDs
+    # saved by eval_recent_sampler_dist.py so no-memory cases are comparable.
+    chunk_index = int(record.chunk_id) if preserve_source_id else -1_000_000 + int(sequence_index)
     return SimpleNamespace(
         chunk_index=chunk_index,
         frames=[record.image],
@@ -102,7 +103,14 @@ def select_exact_current_recent_frames(
 
     frames = [record.image for record in selected]
     timestamps = [float(record.timestamp) for record in selected]
-    selected_chunks = [_one_frame_chunk(record, index) for index, record in enumerate(selected)]
+    preserve_source_ids = os.environ.get(
+        "MINICPM_PSM_EXACT_RECENT_PRESERVE_SOURCE_IDS",
+        "",
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    selected_chunks = [
+        _one_frame_chunk(record, index, preserve_source_id=preserve_source_ids)
+        for index, record in enumerate(selected)
+    ]
     final_chunk_ids = [int(chunk.chunk_index) for chunk in selected_chunks]
     span, gap = _temporal_stats(timestamps)
     selection_time = time.perf_counter() - selection_t0
@@ -121,6 +129,7 @@ def select_exact_current_recent_frames(
             "selected_frame_count": len(selected),
             "candidate_frame_count": len(records),
             "candidate_chunk_count": len(chunks),
+            "preserve_source_chunk_ids": preserve_source_ids,
             "temporal_span_seconds": span,
             "mean_adjacent_spacing_seconds": gap,
             "query_time_seconds": query_time,

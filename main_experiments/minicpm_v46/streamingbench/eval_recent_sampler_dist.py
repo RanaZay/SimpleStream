@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import math
 import os
 import statistics
@@ -127,6 +128,11 @@ def _temporal_stats(timestamps: list[float]) -> tuple[float | None, float | None
     return span, statistics.mean([b - a for a, b in zip(ordered, ordered[1:])])
 
 
+def _image_sha256(image: Image.Image) -> str:
+    rgb = image.convert("RGB")
+    return hashlib.sha256(rgb.tobytes()).hexdigest()
+
+
 def _make_targets(sampler: str, ts_sec: float, count: int) -> list[float]:
     if sampler == "current_recent6":
         return [ts_sec - offset for offset in (5.0, 4.0, 3.0, 2.0, 1.0, 0.0)]
@@ -184,6 +190,9 @@ def query_recent_sampler_window(
     frames = [record.image for record in selected]
     timestamps = [record.timestamp for record in selected]
     final_chunk_ids = [record.chunk_id for record in selected]
+    frame_indices = [record.frame_index for record in selected]
+    frame_hashes = [_image_sha256(frame) for frame in frames]
+    frame_sizes = [[int(frame.width), int(frame.height)] for frame in frames]
     span, gap = _temporal_stats(timestamps)
     selection_time = time.perf_counter() - selection_t0
 
@@ -223,7 +232,11 @@ def query_recent_sampler_window(
         "target_timestamps": targets,
         "selected_timestamps": timestamps,
         "selected_chunk_ids": final_chunk_ids,
-        "selected_frame_indices": [record.frame_index for record in selected],
+        "selected_frame_indices": frame_indices,
+        "recent_frame_hashes": frame_hashes,
+        "recent_frame_timestamps": timestamps,
+        "recent_frame_indices": frame_indices,
+        "recent_frame_sizes": frame_sizes,
         "selected_frame_count": len(selected),
         "candidate_frame_count": len(records),
         "candidate_chunk_count": len(chunks),

@@ -12,6 +12,7 @@ import math
 import os
 import sys
 import time
+import hashlib
 from types import SimpleNamespace
 from typing import Any
 
@@ -48,6 +49,11 @@ def _one_frame_chunk(record: Any, sequence_index: int, preserve_source_id: bool 
         end_time=float(record.timestamp),
         fps=None,
     )
+
+
+def _image_sha256(image: Image.Image) -> str:
+    rgb = image.convert("RGB")
+    return hashlib.sha256(rgb.tobytes()).hexdigest()
 
 
 def select_exact_current_recent_frames(
@@ -112,6 +118,9 @@ def select_exact_current_recent_frames(
         for index, record in enumerate(selected)
     ]
     final_chunk_ids = [int(chunk.chunk_index) for chunk in selected_chunks]
+    frame_indices = [int(record.frame_index) for record in selected]
+    frame_hashes = [_image_sha256(frame) for frame in frames]
+    frame_sizes = [[int(frame.width), int(frame.height)] for frame in frames]
     span, gap = _temporal_stats(timestamps)
     selection_time = time.perf_counter() - selection_t0
 
@@ -125,7 +134,12 @@ def select_exact_current_recent_frames(
             "target_timestamps": targets,
             "selected_timestamps": timestamps,
             "selected_chunk_ids": final_chunk_ids,
-            "selected_frame_indices": [int(record.frame_index) for record in selected],
+            "selected_frame_indices": frame_indices,
+            "source_chunk_ids": [int(record.chunk_id) for record in selected],
+            "recent_frame_hashes": frame_hashes,
+            "recent_frame_timestamps": timestamps,
+            "recent_frame_indices": frame_indices,
+            "recent_frame_sizes": frame_sizes,
             "selected_frame_count": len(selected),
             "candidate_frame_count": len(records),
             "candidate_chunk_count": len(chunks),

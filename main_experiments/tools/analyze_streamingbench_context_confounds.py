@@ -127,6 +127,51 @@ def as_int_list(value: Any) -> list[int]:
     return out
 
 
+def as_str_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value]
+
+
+def as_float_list(value: Any) -> list[float]:
+    if not isinstance(value, list):
+        return []
+    out: list[float] = []
+    for item in value:
+        if isinstance(item, (int, float)) and not isinstance(item, bool):
+            out.append(float(item))
+    return out
+
+
+def adaptive_metadata(row: dict[str, Any]) -> dict[str, Any]:
+    value = row.get("adaptive")
+    if isinstance(value, dict):
+        return value
+    profile = row.get("profile")
+    if isinstance(profile, dict) and isinstance(profile.get("adaptive"), dict):
+        return profile["adaptive"]
+    return {}
+
+
+def baseline_recent_cdas(row: dict[str, Any]) -> dict[str, Any]:
+    adaptive = adaptive_metadata(row)
+    if adaptive.get("mode") == "recent_sampler_exact_six":
+        return adaptive
+    baseline_recent = (adaptive.get("baseline_recent_equivalence") or {}).get("baseline_recent") or {}
+    cdas = baseline_recent.get("cdas") or {}
+    return cdas if isinstance(cdas, dict) else {}
+
+
+def suffix(values: list[Any], count: int) -> list[Any]:
+    if count <= 0:
+        return []
+    return list(values[-count:])
+
+
+def rounded(values: list[float], digits: int = 6) -> list[float]:
+    return [round(float(value), digits) for value in values]
+
+
 def row_correct(row: dict[str, Any]) -> bool:
     return bool(row.get("correct"))
 
@@ -147,17 +192,45 @@ def row_context_record(
     ours_config: dict[str, Any],
 ) -> dict[str, Any]:
     _entry, ann_question, base_prompt = ann if ann is not None else ({}, {}, str(base.get("question", "")))
-    adaptive = ours.get("adaptive") or {}
+    adaptive = adaptive_metadata(ours)
     memory_ids = as_int_list(adaptive.get("memory_chunk_ids"))
-    ours_recent_ids = as_int_list(adaptive.get("recent_chunk_ids"))
+    base_recent_meta = baseline_recent_cdas(base)
+    ours_recent_meta = baseline_recent_cdas(ours)
     base_final_ids = as_int_list(base.get("final_chunk_ids"))
+    ours_recent_ids = as_int_list(adaptive.get("recent_chunk_ids"))
     ours_final_ids = as_int_list(ours.get("final_chunk_ids"))
+    recent_count = int(base_recent_meta.get("selected_frame_count") or base.get("num_frames") or 0)
+    if memory_ids and len(ours_final_ids) >= recent_count > 0:
+        ours_final_recent_ids = suffix(ours_final_ids, recent_count)
+    else:
+        ours_final_recent_ids = list(ours_final_ids)
+
+    base_recent_hashes = as_str_list(base_recent_meta.get("recent_frame_hashes"))
+    ours_recent_hashes = as_str_list(ours_recent_meta.get("recent_frame_hashes"))
+    base_recent_timestamps = as_float_list(base_recent_meta.get("recent_frame_timestamps") or base_recent_meta.get("selected_timestamps"))
+    ours_recent_timestamps = as_float_list(ours_recent_meta.get("recent_frame_timestamps") or ours_recent_meta.get("selected_timestamps"))
+    base_recent_indices = as_int_list(base_recent_meta.get("recent_frame_indices") or base_recent_meta.get("selected_frame_indices"))
+    ours_recent_indices = as_int_list(ours_recent_meta.get("recent_frame_indices") or ours_recent_meta.get("selected_frame_indices"))
+
+    pixel_identity_available = bool(base_recent_hashes and ours_recent_hashes)
+    pixel_identical = pixel_identity_available and base_recent_hashes == ours_recent_hashes
+    timestamp_equivalent = bool(base_recent_timestamps and ours_recent_timestamps) and (
+        rounded(base_recent_timestamps) == rounded(ours_recent_timestamps)
+    )
+    frame_index_equivalent = bool(base_recent_indices and ours_recent_indices) and base_recent_indices == ours_recent_indices
 
     base_prompt_final = base_prompt
     ours_prompt_final = f"{PSM_HISTORY_INSTRUCTION}{base_prompt}" if memory_ids else base_prompt
     prompt_same = base_prompt_final == ours_prompt_final
-    visual_sequence_same = base_final_ids == ours_final_ids
+    visual_sequence_same = (
+        pixel_identical
+        if pixel_identity_available
+        else base_final_ids == ours_final_recent_ids
+    )
     frame_count_same = int(base.get("num_frames") or -1) == int(ours.get("num_frames") or -2)
+    recent_frame_count_same = int(base_recent_meta.get("selected_frame_count") or len(base_recent_hashes) or len(base_final_ids)) == int(
+        ours_recent_meta.get("selected_frame_count") or len(ours_recent_hashes) or len(ours_final_recent_ids)
+    )
 
     compare_keys = ("qa_model", "chunk_duration", "fps", "top_k", "recent_frames_only",
                     "context_time", "frame_selection", "attn_implementation",
@@ -171,6 +244,8 @@ def row_context_record(
     # RecentWindowQAModel.generate_from_frames(..., do_sample=False).
     exact_context_same = (
         visual_sequence_same
+        and recent_frame_count_same
+        and (not memory_ids)
         and frame_count_same
         and prompt_same
         and not generation_param_diffs.get("downsample_mode")
@@ -190,15 +265,30 @@ def row_context_record(
     else:
         group = "DIFFERENT_CONTEXT + DIFFERENT_PREDICTION"
 
-    memory_added = bool(memory_ids) and any(chunk_id not in set(base_final_ids) for chunk_id in memory_ids)
+    memory_added = bool(memory_ids)
     recent_context_changed = (
         not memory_added
         and (
-            ours_recent_ids != base_final_ids
-            or ours_final_ids != base_final_ids
-            or not frame_count_same
+            not visual_sequence_same
+            or not recent_frame_count_same
         )
     )
+    if pixel_identity_available:
+        recent_context_change_reason = (
+            "pixel_hash_mismatch"
+            if not pixel_identical
+            else "recent_frame_count_mismatch"
+            if not recent_frame_count_same
+            else None
+        )
+    else:
+        recent_context_change_reason = (
+            "chunk_id_mismatch_without_hashes"
+            if base_final_ids != ours_final_recent_ids
+            else "recent_frame_count_mismatch"
+            if not recent_frame_count_same
+            else None
+        )
     if memory_added:
         context_change_type = "memory_added"
     elif recent_context_changed:
@@ -236,11 +326,24 @@ def row_context_record(
         "exact_context_same": exact_context_same,
         "visual_sequence_same": visual_sequence_same,
         "frame_count_same": frame_count_same,
+        "recent_frame_count_same": recent_frame_count_same,
+        "pixel_identity_available": pixel_identity_available,
+        "pixel_identical": pixel_identical,
+        "timestamp_equivalent": timestamp_equivalent,
+        "frame_index_equivalent": frame_index_equivalent,
+        "recent_context_change_reason": recent_context_change_reason,
         "prompt_same": prompt_same,
         "baseline_final_chunk_ids": base_final_ids,
         "ours_recent_chunk_ids": ours_recent_ids,
         "ours_memory_chunk_ids": memory_ids,
         "ours_final_chunk_ids": ours_final_ids,
+        "ours_final_recent_chunk_ids": ours_final_recent_ids,
+        "baseline_recent_frame_hashes": base_recent_hashes,
+        "ours_recent_frame_hashes": ours_recent_hashes,
+        "baseline_recent_frame_timestamps": base_recent_timestamps,
+        "ours_recent_frame_timestamps": ours_recent_timestamps,
+        "baseline_recent_frame_indices": base_recent_indices,
+        "ours_recent_frame_indices": ours_recent_indices,
         "baseline_num_frames": base.get("num_frames"),
         "ours_num_frames": ours.get("num_frames"),
         "baseline_prompt_hash": stable_hash(base_prompt_final),
@@ -288,6 +391,34 @@ def print_same_context_different_prediction(rows: list[dict[str, Any]]) -> None:
         print(f"chunks={row['baseline_final_chunk_ids']} frames={row['baseline_num_frames']}")
         print(f"prompt_same={row['prompt_same']} decode={row['baseline_decode_backend']}->{row['ours_decode_backend']}")
         print(f"psm_iters={row['ours_num_sufficiency_iterations']} stop={row['ours_stop_reason']}")
+        print(f"generation_param_diffs={row['generation_param_diffs']}")
+
+
+def print_recent_context_changed_examples(rows: list[dict[str, Any]], limit: int = 20) -> None:
+    cases = [row for row in rows if row["context_change_type"] == "recent_context_changed"]
+    print(f"\nFIRST {min(limit, len(cases))} RECENT_CONTEXT_CHANGED CASES")
+    for row in cases[:limit]:
+        print("-" * 80)
+        print(f"Q{row['question_id']} {row['category']} {row['video_id']} {row['timestamp']}")
+        print(f"cause={row['recent_context_change_reason']}")
+        print("baseline:")
+        print(f"  timestamps={row['baseline_recent_frame_timestamps']}")
+        print(f"  chunk_ids={row['baseline_final_chunk_ids']}")
+        print(f"  frame_indices={row['baseline_recent_frame_indices']}")
+        print(f"  num_frames={row['baseline_num_frames']}")
+        print(f"  hashes={row['baseline_recent_frame_hashes']}")
+        print("PRISM:")
+        print(f"  timestamps={row['ours_recent_frame_timestamps']}")
+        print(f"  recent_chunk_ids={row['ours_recent_chunk_ids']}")
+        print(f"  final_recent_chunk_ids={row['ours_final_recent_chunk_ids']}")
+        print(f"  frame_indices={row['ours_recent_frame_indices']}")
+        print(f"  num_frames={row['ours_num_frames']}")
+        print(f"  hashes={row['ours_recent_frame_hashes']}")
+        print(
+            "equivalence: "
+            f"pixel={row['pixel_identical']} timestamp={row['timestamp_equivalent']} "
+            f"frame_index={row['frame_index_equivalent']} prompt={row['prompt_same']}"
+        )
         print(f"generation_param_diffs={row['generation_param_diffs']}")
 
 
@@ -339,6 +470,17 @@ def main() -> None:
         "matched_samples": len(rows),
         "group_counts": Counter(row["group"] for row in rows),
         "context_change_type_counts": Counter(row["context_change_type"] for row in rows),
+        "equivalence_counts": {
+            "pixel_identity_available": sum(1 for row in rows if row["pixel_identity_available"]),
+            "pixel_identical": sum(1 for row in rows if row["pixel_identical"]),
+            "timestamp_equivalent": sum(1 for row in rows if row["timestamp_equivalent"]),
+            "frame_index_equivalent": sum(1 for row in rows if row["frame_index_equivalent"]),
+            "recent_context_change_reasons": Counter(
+                row["recent_context_change_reason"]
+                for row in rows
+                if row["recent_context_change_reason"]
+            ),
+        },
         "outcome_by_context_change_type": {
             change_type: Counter(row["outcome_change"] for row in rows if row["context_change_type"] == change_type)
             for change_type in sorted({row["context_change_type"] for row in rows})
@@ -366,6 +508,15 @@ def main() -> None:
     print(f"Saved summary: {summary_path}")
     print_counts("FOUR GROUPS", Counter(row["group"] for row in rows))
     print_counts("CONTEXT CHANGE TYPES", Counter(row["context_change_type"] for row in rows))
+    print_counts(
+        "RECENT CONTEXT CHANGE REASONS",
+        Counter(row["recent_context_change_reason"] for row in rows if row["recent_context_change_reason"]),
+    )
+    print("\nEQUIVALENCE COUNTS")
+    print(f"pixel_identity_available: {sum(1 for row in rows if row['pixel_identity_available'])}")
+    print(f"pixel_identical: {sum(1 for row in rows if row['pixel_identical'])}")
+    print(f"timestamp_equivalent: {sum(1 for row in rows if row['timestamp_equivalent'])}")
+    print(f"frame_index_equivalent: {sum(1 for row in rows if row['frame_index_equivalent'])}")
 
     print("\nOUTCOME BY CONTEXT CHANGE TYPE")
     print("context_change_type,CC,WC,CW,WW,prediction_unchanged,net_accuracy_effect")
@@ -379,6 +530,7 @@ def main() -> None:
         )
 
     print_same_context_different_prediction(rows)
+    print_recent_context_changed_examples(rows)
     print_code_path_explanation()
 
 

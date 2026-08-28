@@ -28,6 +28,7 @@ from lib.minicpm.prism_event_ledger import (  # noqa: E402
 )
 from lib.minicpm.prism_retrieval_variants import representative_frame  # noqa: E402
 from lib.shared.recent_window import decode_video_to_chunks_qwen  # noqa: E402
+from main_experiments.minicpm_v46.streamingbench.eval_baseline import resolve_video_path  # noqa: E402
 
 
 def timestamp_to_seconds(ts: Any) -> float:
@@ -80,17 +81,18 @@ def load_counting_annotations(path: Path, video_dir: Path) -> list[dict[str, Any
     index = 0
     for video_entry in data:
         questions = sorted(video_entry.get("questions", []), key=lambda item: timestamp_to_seconds(item.get("time_stamp")))
-        video_name = video_entry.get("video") or video_entry.get("video_name") or video_entry.get("video_id")
-        video_basename = Path(str(video_name)).name
-        if not video_basename.endswith(".mp4"):
-            video_basename = f"{Path(video_basename).stem}_real.mp4" if not Path(video_basename).stem.endswith("_real") else f"{Path(video_basename).stem}.mp4"
+        video_path_raw = video_entry.get("video_path") or video_entry.get("video") or video_entry.get("video_name")
+        if not video_path_raw:
+            raise KeyError(f"Missing video_path for annotation entry with keys: {sorted(video_entry)}")
+        video_path = resolve_video_path(str(video_path_raw), str(video_dir))
+        video_basename = Path(video_path).name
         for question in questions:
             if str(question.get("task_type", "")).strip() == "Counting":
                 tasks.append(
                     {
                         "question_id": index,
                         "video_id": Path(video_basename).stem,
-                        "video_path": str(video_dir / video_basename),
+                        "video_path": video_path,
                         "question": str(question.get("question", "")),
                         "timestamp": question.get("time_stamp"),
                         "timestamp_seconds": timestamp_to_seconds(question.get("time_stamp")),

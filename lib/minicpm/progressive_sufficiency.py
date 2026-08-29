@@ -4,6 +4,7 @@ import math
 import os
 import re
 import time
+import hashlib
 from dataclasses import dataclass
 from typing import Any
 
@@ -54,6 +55,15 @@ def _env_offsets(name: str, default: str) -> list[float]:
             continue
         offsets.append(float(item))
     return offsets or [0.0]
+
+
+def _image_sha256(image: Image.Image) -> str:
+    rgb = image.convert("RGB")
+    return hashlib.sha256(rgb.tobytes()).hexdigest()
+
+
+def _frame_sizes(frames: list[Image.Image]) -> list[list[int]]:
+    return [[int(frame.width), int(frame.height)] for frame in frames]
 
 
 def _extract_mcq_options(prompt: str) -> list[dict[str, str]]:
@@ -1236,9 +1246,17 @@ def select_progressive_sufficiency_memory(
 
     if not options:
         final_ids = list(recent_ids)
+        recent_frame_hashes = [_image_sha256(frame) for frame in recent_frames]
+        recent_frame_sizes = _frame_sizes(recent_frames)
         metadata = {
             "mode": mode_name,
             "recent_chunk_ids": recent_ids,
+            "recent_frame_hashes": recent_frame_hashes,
+            "recent_frame_sizes": recent_frame_sizes,
+            "memory_frame_hashes": [],
+            "memory_frame_sizes": [],
+            "final_frame_hashes": list(recent_frame_hashes),
+            "final_frame_sizes": list(recent_frame_sizes),
             "baseline_recent_equivalence": {
                 "enabled": recent_chunk_ids is not None,
                 "source": "select_recent_window_frames",
@@ -1612,6 +1630,11 @@ def select_progressive_sufficiency_memory(
     memory_ids = [int(chunk.chunk_index) for chunk in best_memory]
     final_chunks = [*best_memory, *recent_chunks]
     final_ids = [int(chunk.chunk_index) for chunk in final_chunks]
+    memory_frames = [frame for chunk in best_memory for frame in chunk.frames]
+    final_frames = [*memory_frames, *recent_frames]
+    recent_frame_hashes = [_image_sha256(frame) for frame in recent_frames]
+    memory_frame_hashes = [_image_sha256(frame) for frame in memory_frames]
+    final_frame_hashes = [_image_sha256(frame) for frame in final_frames]
     metadata = {
         "mode": mode_name,
         "config": {
@@ -1665,6 +1688,12 @@ def select_progressive_sufficiency_memory(
             "clip_override_threshold": float(clip_override_threshold) if candidate_override_like else None,
         },
         "recent_chunk_ids": recent_ids,
+        "recent_frame_hashes": recent_frame_hashes,
+        "recent_frame_sizes": _frame_sizes(recent_frames),
+        "memory_frame_hashes": memory_frame_hashes,
+        "memory_frame_sizes": _frame_sizes(memory_frames),
+        "final_frame_hashes": final_frame_hashes,
+        "final_frame_sizes": _frame_sizes(final_frames),
         "recent_start_time_seconds": recent_start_time,
         "recent_end_time_seconds": recent_end_time,
         "baseline_recent_equivalence": {
@@ -1710,9 +1739,8 @@ def select_progressive_sufficiency_memory(
     _validate_metadata(metadata)
     _print_trace(metadata)
     answer_prompt = f"{_PSM_HISTORY_INSTRUCTION}{prompt}" if memory_ids else prompt
-    memory_frames = [frame for chunk in best_memory for frame in chunk.frames]
     return ProgressiveSufficiencySelection(
-        frames=[*memory_frames, *recent_frames],
+        frames=final_frames,
         final_chunk_ids=final_ids,
         metadata=metadata,
         answer_prompt=answer_prompt,

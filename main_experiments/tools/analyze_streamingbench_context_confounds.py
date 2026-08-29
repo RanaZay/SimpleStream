@@ -205,8 +205,8 @@ def row_context_record(
     else:
         ours_final_recent_ids = list(ours_final_ids)
 
-    base_recent_hashes = as_str_list(base_recent_meta.get("recent_frame_hashes"))
-    ours_recent_hashes = as_str_list(ours_recent_meta.get("recent_frame_hashes"))
+    base_recent_hashes = as_str_list(base_recent_meta.get("recent_frame_hashes") or adaptive_metadata(base).get("recent_frame_hashes"))
+    ours_recent_hashes = as_str_list(ours_recent_meta.get("recent_frame_hashes") or adaptive.get("recent_frame_hashes"))
     base_recent_timestamps = as_float_list(base_recent_meta.get("recent_frame_timestamps") or base_recent_meta.get("selected_timestamps"))
     ours_recent_timestamps = as_float_list(ours_recent_meta.get("recent_frame_timestamps") or ours_recent_meta.get("selected_timestamps"))
     base_recent_indices = as_int_list(base_recent_meta.get("recent_frame_indices") or base_recent_meta.get("selected_frame_indices"))
@@ -340,6 +340,8 @@ def row_context_record(
         "ours_final_recent_chunk_ids": ours_final_recent_ids,
         "baseline_recent_frame_hashes": base_recent_hashes,
         "ours_recent_frame_hashes": ours_recent_hashes,
+        "ours_memory_frame_hashes": as_str_list(adaptive.get("memory_frame_hashes")),
+        "ours_final_frame_hashes": as_str_list(adaptive.get("final_frame_hashes")),
         "baseline_recent_frame_timestamps": base_recent_timestamps,
         "ours_recent_frame_timestamps": ours_recent_timestamps,
         "baseline_recent_frame_indices": base_recent_indices,
@@ -429,8 +431,8 @@ def print_code_path_explanation() -> None:
     print("- If memory_chunk_ids is non-empty, PSM prepends a history instruction to the prompt.")
     print("- If memory_chunk_ids is empty, PSM final prompt is the original prompt.")
     print("- PSM always performs extra option/sufficiency forward passes before final generation.")
-    print("- Same chunk IDs do not prove pixel-identical frames; saved outputs do not include frame hashes.")
-    print("- Therefore SAME_CONTEXT means same saved chunk sequence/frame count/prompt/config, not byte-level frame identity.")
+    print("- Same chunk IDs do not prove pixel-identical frames; new exact-recent runs save ordered RGB frame hashes.")
+    print("- When hashes are present, SAME_CONTEXT uses ordered pixel identity plus frame count/prompt/config checks.")
 
 
 def main() -> None:

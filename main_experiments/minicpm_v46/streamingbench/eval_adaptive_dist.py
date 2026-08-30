@@ -46,6 +46,7 @@ def _consume_adaptive_args() -> argparse.Namespace:
             "progressive_sufficiency_memory_clip_mmr_candidate_override",
             "progressive_sufficiency_memory_clip_mmr_candidate_override_protected_rollback",
             "progressive_sufficiency_memory_clip_mmr_candidate_override_guarded_rollback",
+            "progressive_sufficiency_memory_clip_mmr_candidate_override_guarded_rollback_exact_recent",
             "progressive_sufficiency_memory_clip_mmr_p3_low_suff_disagree",
         ],
         default=os.environ.get("MINICPM_ADAPTIVE_MODE", "adaptive"),

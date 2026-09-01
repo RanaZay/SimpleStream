@@ -333,7 +333,15 @@ def main() -> None:
     )
     parser.add_argument("--video-dir", default="")
     parser.add_argument("--output-dir", required=True)
-    parser.add_argument("--mode", choices=["recent6", "progressive_sufficiency_memory"], required=True)
+    parser.add_argument(
+        "--mode",
+        choices=[
+            "recent6",
+            "progressive_sufficiency_memory",
+            "progressive_sufficiency_memory_clip_mmr_candidate_override_guarded_rollback_exact_recent",
+        ],
+        required=True,
+    )
     parser.add_argument("--qa-model", default="openbmb/MiniCPM-V-4.6")
     parser.add_argument("--qa-device", default=None)
     parser.add_argument("--chunk-duration", type=float, default=1.0)

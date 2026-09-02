@@ -637,8 +637,11 @@ def _mode_name(
     enable_candidate_override_protected_rollback: bool = False,
     enable_candidate_override_guarded_rollback: bool = False,
     enable_candidate_override_guarded_rollback_exact_recent: bool = False,
+    enable_evidence_arbitration: bool = False,
     enable_p3_low_suff_disagree: bool = False,
 ) -> str:
+    if retrieval_variant == "clip_mmr" and enable_evidence_arbitration:
+        return "progressive_sufficiency_memory_clip_mmr_evidence_arbitration"
     if retrieval_variant == "clip_mmr" and enable_p3_low_suff_disagree:
         return "progressive_sufficiency_memory_clip_mmr_p3_low_suff_disagree"
     if retrieval_variant == "clip_mmr" and enable_candidate_override_guarded_rollback_exact_recent:
@@ -1160,6 +1163,7 @@ def select_progressive_sufficiency_memory(
     enable_candidate_override_protected_rollback: bool = False,
     enable_candidate_override_guarded_rollback: bool = False,
     enable_candidate_override_guarded_rollback_exact_recent: bool = False,
+    enable_evidence_arbitration: bool = False,
     enable_p3_low_suff_disagree: bool = False,
 ) -> ProgressiveSufficiencySelection:
     recent_window = 6
@@ -1194,6 +1198,8 @@ def select_progressive_sufficiency_memory(
     evidence_override_gamma = _env_float("MINICPM_PSM_EVIDENCE_OVERRIDE_GAMMA", 0.30)
     evidence_override_min_margin = _env_float("MINICPM_PSM_EVIDENCE_OVERRIDE_MIN_MARGIN", 0.10)
     clip_override_threshold = _env_float("MINICPM_PSM_CLIP_OVERRIDE_THRESHOLD", 0.2995)
+    arbitration_min_margin = _env_float("MINICPM_PSM_ARBITRATION_MIN_MARGIN", 0.60)
+    arbitration_max_sufficiency_drop = _env_float("MINICPM_PSM_ARBITRATION_MAX_SUFFICIENCY_DROP", 0.08)
 
     if recent_chunks is None:
         recent_chunks = list(chunks[-recent_window:])
@@ -1235,12 +1241,14 @@ def select_progressive_sufficiency_memory(
         enable_candidate_override_protected_rollback=enable_candidate_override_protected_rollback,
         enable_candidate_override_guarded_rollback=enable_candidate_override_guarded_rollback,
         enable_candidate_override_guarded_rollback_exact_recent=enable_candidate_override_guarded_rollback_exact_recent,
+        enable_evidence_arbitration=enable_evidence_arbitration,
         enable_p3_low_suff_disagree=enable_p3_low_suff_disagree,
     )
     candidate_override_like = bool(
         enable_candidate_override
         or enable_candidate_override_protected_rollback
         or enable_candidate_override_guarded_rollback
+        or enable_evidence_arbitration
         or enable_p3_low_suff_disagree
     )
 
@@ -1506,6 +1514,7 @@ def select_progressive_sufficiency_memory(
             "candidate_override_enabled": bool(candidate_override_like),
             "candidate_override_protected_rollback_enabled": bool(enable_candidate_override_protected_rollback),
             "candidate_override_guarded_rollback_enabled": bool(enable_candidate_override_guarded_rollback),
+            "evidence_arbitration_enabled": bool(enable_evidence_arbitration),
             "p3_low_suff_disagree_enabled": bool(enable_p3_low_suff_disagree),
             "clip_override_threshold": float(clip_override_threshold) if candidate_override_like else None,
             "retrieval_disagreement": bool(retrieval_disagreement),
@@ -1536,6 +1545,21 @@ def select_progressive_sufficiency_memory(
             k1_prediction = str(score["predicted_option"])
             answer_changed = bool(override_k0_prediction is not None and k1_prediction != override_k0_prediction)
             confidence_collapsed = bool(float(score["answer_margin"]) < evidence_override_min_margin)
+            arbitration_confident = bool(float(score["answer_margin"]) >= arbitration_min_margin)
+            arbitration_sufficiency_drop = (
+                float(override_k0_sufficiency) - float(score["sufficiency"])
+                if override_k0_sufficiency is not None
+                else 0.0
+            )
+            arbitration_sufficiency_safe = bool(
+                arbitration_sufficiency_drop <= arbitration_max_sufficiency_drop
+            )
+            arbitration_accept = bool(
+                enable_evidence_arbitration
+                and answer_changed
+                and arbitration_confident
+                and arbitration_sufficiency_safe
+            )
             guarded_rollback_blocked = bool(
                 enable_candidate_override_guarded_rollback
                 and answer_changed
@@ -1547,7 +1571,31 @@ def select_progressive_sufficiency_memory(
             iteration_record["answer_changed_after_strong_candidate"] = answer_changed
             iteration_record["evidence_override_confidence_collapsed"] = confidence_collapsed
             iteration_record["evidence_override_min_margin"] = float(evidence_override_min_margin)
+            iteration_record["evidence_arbitration_accept"] = arbitration_accept
+            iteration_record["evidence_arbitration_min_margin"] = float(arbitration_min_margin)
+            iteration_record["evidence_arbitration_max_sufficiency_drop"] = float(
+                arbitration_max_sufficiency_drop
+            )
+            iteration_record["evidence_arbitration_sufficiency_drop"] = float(arbitration_sufficiency_drop)
+            iteration_record["evidence_arbitration_confident"] = arbitration_confident
+            iteration_record["evidence_arbitration_sufficiency_safe"] = arbitration_sufficiency_safe
             iteration_record["candidate_override_guarded_rollback_blocked"] = guarded_rollback_blocked
+            if enable_evidence_arbitration:
+                if arbitration_accept:
+                    override_protected_memory = list(chronological_memory)
+                    stop_reason = "evidence_arbitration_accept_k1"
+                else:
+                    best_memory = []
+                    best_sufficiency = float(override_k0_sufficiency or best_sufficiency)
+                    if not answer_changed:
+                        stop_reason = "evidence_arbitration_reject_no_answer_change"
+                    elif not arbitration_confident:
+                        stop_reason = "evidence_arbitration_reject_weak_k1_margin"
+                    elif not arbitration_sufficiency_safe:
+                        stop_reason = "evidence_arbitration_reject_sufficiency_drop"
+                    else:
+                        stop_reason = "evidence_arbitration_reject"
+                break
             if answer_changed and not confidence_collapsed and not guarded_rollback_blocked:
                 override_protected_memory = list(chronological_memory)
                 stop_reason = "strong_candidate_override_answer_changed_keep_k1"
@@ -1606,7 +1654,11 @@ def select_progressive_sufficiency_memory(
                 break
         elif candidate_override_like and iteration_index == 0:
             if (
-                (enable_candidate_override_protected_rollback or enable_candidate_override_guarded_rollback)
+                (
+                    enable_candidate_override_protected_rollback
+                    or enable_candidate_override_guarded_rollback
+                    or enable_evidence_arbitration
+                )
                 and strong_candidate_disagreement_override
             ):
                 override_triggered = True
@@ -1677,6 +1729,7 @@ def select_progressive_sufficiency_memory(
                     enable_evidence_override
                     or enable_candidate_override_protected_rollback
                     or enable_candidate_override_guarded_rollback
+                    or enable_evidence_arbitration
                     or enable_p3_low_suff_disagree
                 )
                 else None
@@ -1684,6 +1737,13 @@ def select_progressive_sufficiency_memory(
             "candidate_override_enabled": bool(candidate_override_like),
             "candidate_override_protected_rollback_enabled": bool(enable_candidate_override_protected_rollback),
             "candidate_override_guarded_rollback_enabled": bool(enable_candidate_override_guarded_rollback),
+            "evidence_arbitration_enabled": bool(enable_evidence_arbitration),
+            "evidence_arbitration_min_margin": (
+                float(arbitration_min_margin) if enable_evidence_arbitration else None
+            ),
+            "evidence_arbitration_max_sufficiency_drop": (
+                float(arbitration_max_sufficiency_drop) if enable_evidence_arbitration else None
+            ),
             "p3_low_suff_disagree_enabled": bool(enable_p3_low_suff_disagree),
             "clip_override_threshold": float(clip_override_threshold) if candidate_override_like else None,
         },
@@ -1734,6 +1794,7 @@ def select_progressive_sufficiency_memory(
         "candidate_override_enabled": bool(candidate_override_like),
         "candidate_override_protected_rollback_enabled": bool(enable_candidate_override_protected_rollback),
         "candidate_override_guarded_rollback_enabled": bool(enable_candidate_override_guarded_rollback),
+        "evidence_arbitration_enabled": bool(enable_evidence_arbitration),
         "p3_low_suff_disagree_enabled": bool(enable_p3_low_suff_disagree),
     }
     _validate_metadata(metadata)

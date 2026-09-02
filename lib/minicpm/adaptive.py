@@ -323,6 +323,9 @@ class AdaptiveWindowConfig:
       progressive_sufficiency_memory_clip_mmr_candidate_override_guarded_rollback_exact_recent:
         same controller, used with the exact-recent wrapper preserving corrected
         current_recent6 frame/chunk identity for no-memory baseline equivalence.
+      progressive_sufficiency_memory_clip_mmr_evidence_arbitration:
+        isolated CLIP-MMR mode that retrieves a candidate branch but keeps it
+        only when option-level evidence strongly arbitrates against Recent-6.
       progressive_sufficiency_memory_clip_mmr_p3_low_suff_disagree: isolated
         CLIP-MMR mode matching the offline P3 family: retrieve K1 only when
         low sufficiency, top-candidate relevance, and option disagreement agree.
@@ -394,6 +397,7 @@ class AdaptiveWindowConfig:
             "progressive_sufficiency_memory_clip_mmr_candidate_override_protected_rollback",
             "progressive_sufficiency_memory_clip_mmr_candidate_override_guarded_rollback",
             "progressive_sufficiency_memory_clip_mmr_candidate_override_guarded_rollback_exact_recent",
+            "progressive_sufficiency_memory_clip_mmr_evidence_arbitration",
             "progressive_sufficiency_memory_clip_mmr_p3_low_suff_disagree",
         }
         if self.mode not in valid_modes:
@@ -453,6 +457,7 @@ class AdaptiveWindowConfig:
             "progressive_sufficiency_memory_clip_mmr_candidate_override_protected_rollback",
             "progressive_sufficiency_memory_clip_mmr_candidate_override_guarded_rollback",
             "progressive_sufficiency_memory_clip_mmr_candidate_override_guarded_rollback_exact_recent",
+            "progressive_sufficiency_memory_clip_mmr_evidence_arbitration",
             "progressive_sufficiency_memory_clip_mmr_p3_low_suff_disagree",
         }
 
@@ -553,6 +558,10 @@ class AdaptiveWindowConfig:
         return self.mode == "progressive_sufficiency_memory_clip_mmr_candidate_override_guarded_rollback_exact_recent"
 
     @property
+    def progressive_sufficiency_memory_clip_mmr_evidence_arbitration(self) -> bool:
+        return self.mode == "progressive_sufficiency_memory_clip_mmr_evidence_arbitration"
+
+    @property
     def progressive_sufficiency_memory_clip_mmr_p3_low_suff_disagree(self) -> bool:
         return self.mode == "progressive_sufficiency_memory_clip_mmr_p3_low_suff_disagree"
 
@@ -570,6 +579,7 @@ class AdaptiveWindowConfig:
             "progressive_sufficiency_memory_clip_mmr_candidate_override_protected_rollback",
             "progressive_sufficiency_memory_clip_mmr_candidate_override_guarded_rollback",
             "progressive_sufficiency_memory_clip_mmr_candidate_override_guarded_rollback_exact_recent",
+            "progressive_sufficiency_memory_clip_mmr_evidence_arbitration",
             "progressive_sufficiency_memory_clip_mmr_p3_low_suff_disagree",
         }
 
@@ -890,6 +900,8 @@ def _memory_trigger_decision(
                     config.progressive_sufficiency_memory_clip_mmr_candidate_override_guarded_rollback
                     or config.progressive_sufficiency_memory_clip_mmr_candidate_override_guarded_rollback_exact_recent
                 )
+                else "progressive_sufficiency_clip_mmr_evidence_arbitration_pending"
+                if config.progressive_sufficiency_memory_clip_mmr_evidence_arbitration
                 else "progressive_sufficiency_clip_mmr_p3_low_suff_disagree_pending"
                 if config.progressive_sufficiency_memory_clip_mmr_p3_low_suff_disagree
                 else "progressive_sufficiency_clip_mmr_candidate_override_pending"
@@ -3156,6 +3168,8 @@ def _memory_selector_label(config: AdaptiveWindowConfig) -> str:
         return "progressive_sufficiency_memory_clip_mmr_candidate_override_guarded_rollback"
     if config.progressive_sufficiency_memory_clip_mmr_candidate_override_guarded_rollback_exact_recent:
         return "progressive_sufficiency_memory_clip_mmr_candidate_override_guarded_rollback_exact_recent"
+    if config.progressive_sufficiency_memory_clip_mmr_evidence_arbitration:
+        return "progressive_sufficiency_memory_clip_mmr_evidence_arbitration"
     if config.progressive_sufficiency_memory_clip_mmr_p3_low_suff_disagree:
         return "progressive_sufficiency_memory_clip_mmr_p3_low_suff_disagree"
     if config.gated_semantic_episodic_memory:
@@ -3428,6 +3442,7 @@ def query_adaptive_window(
                         or config.progressive_sufficiency_memory_clip_mmr_candidate_override_protected_rollback
                         or config.progressive_sufficiency_memory_clip_mmr_candidate_override_guarded_rollback
                         or config.progressive_sufficiency_memory_clip_mmr_candidate_override_guarded_rollback_exact_recent
+                        or config.progressive_sufficiency_memory_clip_mmr_evidence_arbitration
                         or config.progressive_sufficiency_memory_clip_mmr_p3_low_suff_disagree
                     )
                     else "clip_question_options"
@@ -3446,6 +3461,7 @@ def query_adaptive_window(
                 enable_candidate_override_guarded_rollback_exact_recent=(
                     config.progressive_sufficiency_memory_clip_mmr_candidate_override_guarded_rollback_exact_recent
                 ),
+                enable_evidence_arbitration=config.progressive_sufficiency_memory_clip_mmr_evidence_arbitration,
                 enable_p3_low_suff_disagree=config.progressive_sufficiency_memory_clip_mmr_p3_low_suff_disagree,
             )
         selection = AdaptiveSelection(

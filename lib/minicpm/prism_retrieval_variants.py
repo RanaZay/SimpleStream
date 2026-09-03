@@ -242,6 +242,29 @@ def rank_candidates(
         best_indices = torch.argmax(scores, dim=1).detach().cpu().tolist()
         relevance = [float(value) for value in torch.max(scores, dim=1).values.detach().cpu().tolist()]
         best_supported_options = [queries[int(index)][0] for index in best_indices]
+        option_letters = [letter for letter, _query in queries]
+        option_support_scores = [
+            {
+                option_letters[col_index]: float(value)
+                for col_index, value in enumerate(row)
+            }
+            for row in scores.detach().cpu().tolist()
+        ]
+        option_support_scores_norm = [
+            {
+                letter: float(psm._normalize_clip_support(value))
+                for letter, value in row.items()
+            }
+            for row in option_support_scores
+        ]
+        best_supported_scores = [
+            float(option_support_scores[index][best_supported_options[index]])
+            for index in range(len(chunks))
+        ]
+        best_supported_margins = []
+        for row in option_support_scores:
+            ordered = sorted(row.values(), reverse=True)
+            best_supported_margins.append(float(ordered[0] - ordered[1]) if len(ordered) > 1 else 0.0)
 
     candidates: list[dict[str, Any]] = []
     for index, entry in enumerate(bank):
@@ -264,6 +287,11 @@ def rank_candidates(
             "retrieval_variant": variant,
             "best_supported_option": best_supported_options[index],
         }
+        if variant != "clip_question":
+            item["option_support_scores"] = option_support_scores[index]
+            item["option_support_scores_norm"] = option_support_scores_norm[index]
+            item["best_supported_score"] = best_supported_scores[index]
+            item["best_supported_margin"] = best_supported_margins[index]
         candidates.append(item)
 
     selected: list[dict[str, Any]] = []

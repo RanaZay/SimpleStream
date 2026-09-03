@@ -530,6 +530,10 @@ def _candidate_metadata(candidate: dict[str, Any]) -> dict[str, Any]:
         "retrieval_variant",
         "retrieval_relevance",
         "best_supported_option",
+        "best_supported_score",
+        "best_supported_margin",
+        "option_support_scores",
+        "option_support_scores_norm",
         "visual_redundancy",
     ):
         if key in candidate:
@@ -638,8 +642,20 @@ def _mode_name(
     enable_candidate_override_guarded_rollback: bool = False,
     enable_candidate_override_guarded_rollback_exact_recent: bool = False,
     enable_evidence_arbitration: bool = False,
+    enable_evidence_arbitration_temporal_band: bool = False,
+    enable_evidence_arbitration_temporal_consistency: bool = False,
+    enable_evidence_contract: bool = False,
+    enable_answer_evidence_verification: bool = False,
     enable_p3_low_suff_disagree: bool = False,
 ) -> str:
+    if retrieval_variant == "clip_mmr" and enable_evidence_contract:
+        return "progressive_sufficiency_memory_clip_mmr_evidence_contract"
+    if retrieval_variant == "clip_mmr" and enable_evidence_arbitration_temporal_consistency:
+        return "progressive_sufficiency_memory_clip_mmr_evidence_arbitration_temporal_consistency"
+    if retrieval_variant == "clip_mmr" and enable_answer_evidence_verification:
+        return "progressive_sufficiency_memory_clip_mmr_answer_evidence_verification"
+    if retrieval_variant == "clip_mmr" and enable_evidence_arbitration_temporal_band:
+        return "progressive_sufficiency_memory_clip_mmr_evidence_arbitration_temporal_band"
     if retrieval_variant == "clip_mmr" and enable_evidence_arbitration:
         return "progressive_sufficiency_memory_clip_mmr_evidence_arbitration"
     if retrieval_variant == "clip_mmr" and enable_p3_low_suff_disagree:
@@ -663,6 +679,43 @@ def _mode_name(
     if enable_heg:
         return "progressive_sufficiency_memory_heg"
     return "progressive_sufficiency_memory"
+
+
+_CUMULATIVE_EVIDENCE_PATTERNS = (
+    r"\bso far\b",
+    r"\bin total\b",
+    r"\baltogether\b",
+    r"\boverall\b",
+    r"\bup to (?:now|this point|that point)\b",
+    r"\bhow many times\b",
+    r"\bhow many\b.*\b(?:have|has|been|were|did)\b.*\b(?:so far|total|times)\b",
+)
+
+
+def _has_numeric_option_space(options: list[dict[str, str]]) -> bool:
+    if len(options) < 2:
+        return False
+    numeric_like = 0
+    number_words = re.compile(
+        r"\b(?:zero|one|two|three|four|five|six|seven|eight|nine|ten|"
+        r"eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|"
+        r"eighteen|nineteen|twenty)\b",
+        re.IGNORECASE,
+    )
+    for option in options:
+        value = str(option.get("text", ""))
+        if re.search(r"\b\d+(?:\.\d+)?\b", value) or number_words.search(value):
+            numeric_like += 1
+    return numeric_like >= max(2, len(options) - 1)
+
+
+def _cumulative_evidence_contract_required(prompt: str, options: list[dict[str, str]]) -> bool:
+    question = _question_text(prompt).lower()
+    if any(re.search(pattern, question, re.IGNORECASE) for pattern in _CUMULATIVE_EVIDENCE_PATTERNS):
+        return True
+    if re.search(r"\bhow many\b|\bnumber of\b|\bcount\b", question, re.IGNORECASE):
+        return _has_numeric_option_space(options)
+    return False
 
 
 def _chunk_temporal_bounds(chunk: Any) -> tuple[float, float]:
@@ -1164,6 +1217,10 @@ def select_progressive_sufficiency_memory(
     enable_candidate_override_guarded_rollback: bool = False,
     enable_candidate_override_guarded_rollback_exact_recent: bool = False,
     enable_evidence_arbitration: bool = False,
+    enable_evidence_arbitration_temporal_band: bool = False,
+    enable_evidence_arbitration_temporal_consistency: bool = False,
+    enable_evidence_contract: bool = False,
+    enable_answer_evidence_verification: bool = False,
     enable_p3_low_suff_disagree: bool = False,
 ) -> ProgressiveSufficiencySelection:
     recent_window = 6
@@ -1200,6 +1257,12 @@ def select_progressive_sufficiency_memory(
     clip_override_threshold = _env_float("MINICPM_PSM_CLIP_OVERRIDE_THRESHOLD", 0.2995)
     arbitration_min_margin = _env_float("MINICPM_PSM_ARBITRATION_MIN_MARGIN", 0.60)
     arbitration_max_sufficiency_drop = _env_float("MINICPM_PSM_ARBITRATION_MAX_SUFFICIENCY_DROP", 0.08)
+    temporal_band_min_seconds = _env_float("MINICPM_PSM_TEMPORAL_BAND_MIN_SECONDS", 3.0)
+    temporal_band_max_seconds = _env_float("MINICPM_PSM_TEMPORAL_BAND_MAX_SECONDS", 30.0)
+    temporal_consistency_max_seconds = _env_float(
+        "MINICPM_PSM_CANDIDATE_K1_DISAGREE_MAX_DISTANCE_SECONDS", 10.0
+    )
+    option_support_margin_threshold = _env_float("MINICPM_PSM_OPTION_SUPPORT_MARGIN", 0.02)
 
     if recent_chunks is None:
         recent_chunks = list(chunks[-recent_window:])
@@ -1242,6 +1305,10 @@ def select_progressive_sufficiency_memory(
         enable_candidate_override_guarded_rollback=enable_candidate_override_guarded_rollback,
         enable_candidate_override_guarded_rollback_exact_recent=enable_candidate_override_guarded_rollback_exact_recent,
         enable_evidence_arbitration=enable_evidence_arbitration,
+        enable_evidence_arbitration_temporal_band=enable_evidence_arbitration_temporal_band,
+        enable_evidence_arbitration_temporal_consistency=enable_evidence_arbitration_temporal_consistency,
+        enable_evidence_contract=enable_evidence_contract,
+        enable_answer_evidence_verification=enable_answer_evidence_verification,
         enable_p3_low_suff_disagree=enable_p3_low_suff_disagree,
     )
     candidate_override_like = bool(
@@ -1249,7 +1316,14 @@ def select_progressive_sufficiency_memory(
         or enable_candidate_override_protected_rollback
         or enable_candidate_override_guarded_rollback
         or enable_evidence_arbitration
+        or enable_evidence_arbitration_temporal_band
+        or enable_evidence_arbitration_temporal_consistency
+        or enable_evidence_contract
+        or enable_answer_evidence_verification
         or enable_p3_low_suff_disagree
+    )
+    cumulative_contract_required = bool(
+        enable_evidence_contract and _cumulative_evidence_contract_required(prompt, options)
     )
 
     if not options:
@@ -1345,6 +1419,28 @@ def select_progressive_sufficiency_memory(
         candidate["history_temporal_violation"] = bool(
             recent_start_time is not None and end_time >= float(recent_start_time)
         )
+    candidate_queue_unfiltered_count = len(candidate_queue)
+    temporal_band_rejected_count = 0
+    if (
+        enable_evidence_arbitration_temporal_band
+        or enable_evidence_arbitration_temporal_consistency
+        or enable_evidence_contract
+        or enable_answer_evidence_verification
+    ):
+        filtered_queue = []
+        for candidate in candidate_queue:
+            distance = candidate.get("candidate_temporal_distance_seconds")
+            in_band = (
+                isinstance(distance, (int, float))
+                and math.isfinite(float(distance))
+                and float(distance) >= float(temporal_band_min_seconds)
+                and float(distance) <= float(temporal_band_max_seconds)
+            )
+            if in_band:
+                filtered_queue.append(candidate)
+            else:
+                temporal_band_rejected_count += 1
+        candidate_queue = filtered_queue
     temporal_violations = [
         candidate
         for candidate in candidate_queue
@@ -1437,10 +1533,30 @@ def select_progressive_sufficiency_memory(
             and bool(unused_candidates)
         )
         top1_best_supported_option = top1_candidate.get("best_supported_option") if top1_candidate else None
+        top1_option_support_scores = (
+            top1_candidate.get("option_support_scores") if top1_candidate else None
+        ) or {}
+        top1_best_supported_score = (
+            top1_option_support_scores.get(str(top1_best_supported_option))
+            if top1_best_supported_option is not None
+            else None
+        )
+        top1_current_option_support = top1_option_support_scores.get(str(score["predicted_option"]))
+        top1_option_support_delta = (
+            float(top1_best_supported_score) - float(top1_current_option_support)
+            if isinstance(top1_best_supported_score, (int, float))
+            and isinstance(top1_current_option_support, (int, float))
+            else None
+        )
         retrieval_disagreement = bool(
             candidate_override_like
             and top1_best_supported_option is not None
             and str(top1_best_supported_option) != str(score["predicted_option"])
+        )
+        option_evidence_disagreement = bool(
+            retrieval_disagreement
+            and top1_option_support_delta is not None
+            and top1_option_support_delta >= option_support_margin_threshold
         )
         strong_candidate_disagreement_override = bool(
             candidate_override_like
@@ -1448,6 +1564,7 @@ def select_progressive_sufficiency_memory(
             and top1_relevance is not None
             and top1_relevance >= clip_override_threshold
             and retrieval_disagreement
+            and (not enable_answer_evidence_verification or option_evidence_disagreement)
             and bool(unused_candidates)
         )
         conservative_gate: dict[str, Any] = {}
@@ -1505,6 +1622,13 @@ def select_progressive_sufficiency_memory(
             "top1_unused_candidate_relevance": top1_relevance,
             "top1_unused_candidate_total_score": top1_candidate.get("total_score") if top1_candidate else None,
             "top1_unused_candidate_best_supported_option": top1_best_supported_option,
+            "top1_unused_candidate_best_supported_score": top1_best_supported_score,
+            "top1_unused_candidate_current_option_support": top1_current_option_support,
+            "top1_unused_candidate_option_support_delta": top1_option_support_delta,
+            "option_support_margin_threshold": (
+                float(option_support_margin_threshold) if enable_answer_evidence_verification else None
+            ),
+            "option_evidence_disagreement": bool(option_evidence_disagreement),
             "top1_unused_candidate_temporal_distance_seconds": (
                 top1_candidate.get("candidate_temporal_distance_seconds") if top1_candidate else None
             ),
@@ -1515,6 +1639,34 @@ def select_progressive_sufficiency_memory(
             "candidate_override_protected_rollback_enabled": bool(enable_candidate_override_protected_rollback),
             "candidate_override_guarded_rollback_enabled": bool(enable_candidate_override_guarded_rollback),
             "evidence_arbitration_enabled": bool(enable_evidence_arbitration),
+            "evidence_arbitration_temporal_band_enabled": bool(enable_evidence_arbitration_temporal_band),
+            "evidence_arbitration_temporal_consistency_enabled": bool(
+                enable_evidence_arbitration_temporal_consistency
+            ),
+            "answer_evidence_verification_enabled": bool(enable_answer_evidence_verification),
+            "temporal_band_min_seconds": (
+                float(temporal_band_min_seconds)
+                if (
+                    enable_evidence_arbitration_temporal_band
+                    or enable_evidence_arbitration_temporal_consistency
+                    or enable_answer_evidence_verification
+                )
+                else None
+            ),
+            "temporal_band_max_seconds": (
+                float(temporal_band_max_seconds)
+                if (
+                    enable_evidence_arbitration_temporal_band
+                    or enable_evidence_arbitration_temporal_consistency
+                    or enable_answer_evidence_verification
+                )
+                else None
+            ),
+            "temporal_consistency_max_seconds": (
+                float(temporal_consistency_max_seconds)
+                if enable_evidence_arbitration_temporal_consistency
+                else None
+            ),
             "p3_low_suff_disagree_enabled": bool(enable_p3_low_suff_disagree),
             "clip_override_threshold": float(clip_override_threshold) if candidate_override_like else None,
             "retrieval_disagreement": bool(retrieval_disagreement),
@@ -1554,11 +1706,37 @@ def select_progressive_sufficiency_memory(
             arbitration_sufficiency_safe = bool(
                 arbitration_sufficiency_drop <= arbitration_max_sufficiency_drop
             )
+            answer_evidence_candidate_option = (
+                iterations[0].get("top1_unused_candidate_best_supported_option") if iterations else None
+            )
+            answer_evidence_candidate_distance = (
+                iterations[0].get("top1_unused_candidate_temporal_distance_seconds") if iterations else None
+            )
+            answer_evidence_candidate_match = bool(
+                answer_evidence_candidate_option is not None
+                and str(k1_prediction) == str(answer_evidence_candidate_option)
+            )
+            temporal_consistency_reject = bool(
+                (enable_evidence_arbitration_temporal_consistency or enable_evidence_contract)
+                and answer_evidence_candidate_option is not None
+                and str(k1_prediction) != str(answer_evidence_candidate_option)
+                and isinstance(answer_evidence_candidate_distance, (int, float))
+                and math.isfinite(float(answer_evidence_candidate_distance))
+                and float(answer_evidence_candidate_distance) < float(temporal_consistency_max_seconds)
+            )
             arbitration_accept = bool(
-                enable_evidence_arbitration
+                (
+                    enable_evidence_arbitration
+                    or enable_evidence_arbitration_temporal_band
+                    or enable_evidence_arbitration_temporal_consistency
+                    or enable_evidence_contract
+                    or enable_answer_evidence_verification
+                )
                 and answer_changed
                 and arbitration_confident
                 and arbitration_sufficiency_safe
+                and not temporal_consistency_reject
+                and (not enable_answer_evidence_verification or answer_evidence_candidate_match)
             )
             guarded_rollback_blocked = bool(
                 enable_candidate_override_guarded_rollback
@@ -1579,22 +1757,63 @@ def select_progressive_sufficiency_memory(
             iteration_record["evidence_arbitration_sufficiency_drop"] = float(arbitration_sufficiency_drop)
             iteration_record["evidence_arbitration_confident"] = arbitration_confident
             iteration_record["evidence_arbitration_sufficiency_safe"] = arbitration_sufficiency_safe
+            iteration_record["answer_evidence_verification_candidate_option"] = answer_evidence_candidate_option
+            iteration_record["answer_evidence_verification_candidate_match"] = answer_evidence_candidate_match
+            iteration_record["answer_evidence_verification_accept"] = bool(arbitration_accept)
+            iteration_record["temporal_consistency_candidate_option"] = answer_evidence_candidate_option
+            iteration_record["temporal_consistency_candidate_distance_seconds"] = answer_evidence_candidate_distance
+            iteration_record["temporal_consistency_max_seconds"] = (
+                float(temporal_consistency_max_seconds)
+                if (enable_evidence_arbitration_temporal_consistency or enable_evidence_contract)
+                else None
+            )
+            iteration_record["temporal_consistency_reject"] = bool(temporal_consistency_reject)
             iteration_record["candidate_override_guarded_rollback_blocked"] = guarded_rollback_blocked
-            if enable_evidence_arbitration:
+            if (
+                enable_evidence_arbitration
+                or enable_evidence_arbitration_temporal_band
+                or enable_evidence_arbitration_temporal_consistency
+                or enable_evidence_contract
+                or enable_answer_evidence_verification
+            ):
                 if arbitration_accept:
                     override_protected_memory = list(chronological_memory)
-                    stop_reason = "evidence_arbitration_accept_k1"
+                    stop_reason = (
+                        "answer_evidence_verification_accept_k1"
+                        if enable_answer_evidence_verification
+                        else "evidence_arbitration_accept_k1"
+                    )
                 else:
                     best_memory = []
                     best_sufficiency = float(override_k0_sufficiency or best_sufficiency)
                     if not answer_changed:
-                        stop_reason = "evidence_arbitration_reject_no_answer_change"
+                        stop_reason = (
+                            "answer_evidence_verification_reject_no_answer_change"
+                            if enable_answer_evidence_verification
+                            else "evidence_arbitration_reject_no_answer_change"
+                        )
                     elif not arbitration_confident:
-                        stop_reason = "evidence_arbitration_reject_weak_k1_margin"
+                        stop_reason = (
+                            "answer_evidence_verification_reject_weak_k1_margin"
+                            if enable_answer_evidence_verification
+                            else "evidence_arbitration_reject_weak_k1_margin"
+                        )
                     elif not arbitration_sufficiency_safe:
-                        stop_reason = "evidence_arbitration_reject_sufficiency_drop"
+                        stop_reason = (
+                            "answer_evidence_verification_reject_sufficiency_drop"
+                            if enable_answer_evidence_verification
+                            else "evidence_arbitration_reject_sufficiency_drop"
+                        )
+                    elif temporal_consistency_reject:
+                        stop_reason = "evidence_arbitration_temporal_consistency_reject"
+                    elif enable_answer_evidence_verification and not answer_evidence_candidate_match:
+                        stop_reason = "answer_evidence_verification_reject_candidate_answer_mismatch"
                     else:
-                        stop_reason = "evidence_arbitration_reject"
+                        stop_reason = (
+                            "answer_evidence_verification_reject"
+                            if enable_answer_evidence_verification
+                            else "evidence_arbitration_reject"
+                        )
                 break
             if answer_changed and not confidence_collapsed and not guarded_rollback_blocked:
                 override_protected_memory = list(chronological_memory)
@@ -1658,6 +1877,10 @@ def select_progressive_sufficiency_memory(
                     enable_candidate_override_protected_rollback
                     or enable_candidate_override_guarded_rollback
                     or enable_evidence_arbitration
+                    or enable_evidence_arbitration_temporal_band
+                    or enable_evidence_arbitration_temporal_consistency
+                    or enable_evidence_contract
+                    or enable_answer_evidence_verification
                 )
                 and strong_candidate_disagreement_override
             ):
@@ -1678,6 +1901,32 @@ def select_progressive_sufficiency_memory(
     if override_protected_memory is not None:
         best_memory = list(override_protected_memory)
         best_sufficiency = float(iterations[-1].get("sufficiency", best_sufficiency))
+    evidence_contract_applied = False
+    evidence_contract_valid = False
+    evidence_contract_reason = "not_required"
+    if enable_evidence_contract:
+        evidence_contract_valid = bool(
+            any(
+                bool(iteration.get("event_ledger_valid"))
+                or bool(iteration.get("count_ledger_valid"))
+                or bool(iteration.get("cumulative_evidence_valid"))
+                for iteration in iterations
+            )
+        )
+        if cumulative_contract_required and best_memory and not evidence_contract_valid:
+            best_memory = []
+            override_protected_memory = None
+            evidence_contract_applied = True
+            evidence_contract_reason = "cumulative_count_without_valid_ledger"
+            stop_reason = "evidence_contract_abstain_cumulative_count"
+            if iterations:
+                iterations[-1]["evidence_contract_applied"] = True
+                iterations[-1]["evidence_contract_reason"] = evidence_contract_reason
+                iterations[-1]["evidence_contract_valid"] = False
+        elif cumulative_contract_required:
+            evidence_contract_reason = "valid_ledger_available" if evidence_contract_valid else "no_memory_to_abstain"
+        else:
+            evidence_contract_reason = "not_cumulative_count"
     best_memory = sorted(best_memory, key=_chunk_sort_key)
     memory_ids = [int(chunk.chunk_index) for chunk in best_memory]
     final_chunks = [*best_memory, *recent_chunks]
@@ -1730,6 +1979,10 @@ def select_progressive_sufficiency_memory(
                     or enable_candidate_override_protected_rollback
                     or enable_candidate_override_guarded_rollback
                     or enable_evidence_arbitration
+                    or enable_evidence_arbitration_temporal_band
+                    or enable_evidence_arbitration_temporal_consistency
+                    or enable_evidence_contract
+                    or enable_answer_evidence_verification
                     or enable_p3_low_suff_disagree
                 )
                 else None
@@ -1738,11 +1991,67 @@ def select_progressive_sufficiency_memory(
             "candidate_override_protected_rollback_enabled": bool(enable_candidate_override_protected_rollback),
             "candidate_override_guarded_rollback_enabled": bool(enable_candidate_override_guarded_rollback),
             "evidence_arbitration_enabled": bool(enable_evidence_arbitration),
+            "evidence_arbitration_temporal_band_enabled": bool(enable_evidence_arbitration_temporal_band),
+            "evidence_arbitration_temporal_consistency_enabled": bool(
+                enable_evidence_arbitration_temporal_consistency
+            ),
+            "evidence_contract_enabled": bool(enable_evidence_contract),
+            "evidence_contract_required": bool(cumulative_contract_required),
+            "evidence_contract_valid": bool(evidence_contract_valid),
+            "evidence_contract_applied": bool(evidence_contract_applied),
+            "evidence_contract_reason": evidence_contract_reason,
+            "answer_evidence_verification_enabled": bool(enable_answer_evidence_verification),
+            "temporal_band_min_seconds": (
+                float(temporal_band_min_seconds)
+                if (
+                    enable_evidence_arbitration_temporal_band
+                    or enable_evidence_arbitration_temporal_consistency
+                    or enable_evidence_contract
+                    or enable_answer_evidence_verification
+                )
+                else None
+            ),
+            "temporal_band_max_seconds": (
+                float(temporal_band_max_seconds)
+                if (
+                    enable_evidence_arbitration_temporal_band
+                    or enable_evidence_arbitration_temporal_consistency
+                    or enable_evidence_contract
+                    or enable_answer_evidence_verification
+                )
+                else None
+            ),
+            "temporal_consistency_max_seconds": (
+                float(temporal_consistency_max_seconds)
+                if (enable_evidence_arbitration_temporal_consistency or enable_evidence_contract)
+                else None
+            ),
+            "candidate_queue_unfiltered_count": int(candidate_queue_unfiltered_count),
+            "temporal_band_rejected_count": int(temporal_band_rejected_count),
             "evidence_arbitration_min_margin": (
-                float(arbitration_min_margin) if enable_evidence_arbitration else None
+                float(arbitration_min_margin)
+                if (
+                    enable_evidence_arbitration
+                    or enable_evidence_arbitration_temporal_band
+                    or enable_evidence_arbitration_temporal_consistency
+                    or enable_evidence_contract
+                    or enable_answer_evidence_verification
+                )
+                else None
             ),
             "evidence_arbitration_max_sufficiency_drop": (
-                float(arbitration_max_sufficiency_drop) if enable_evidence_arbitration else None
+                float(arbitration_max_sufficiency_drop)
+                if (
+                    enable_evidence_arbitration
+                    or enable_evidence_arbitration_temporal_band
+                    or enable_evidence_arbitration_temporal_consistency
+                    or enable_evidence_contract
+                    or enable_answer_evidence_verification
+                )
+                else None
+            ),
+            "option_support_margin_threshold": (
+                float(option_support_margin_threshold) if enable_answer_evidence_verification else None
             ),
             "p3_low_suff_disagree_enabled": bool(enable_p3_low_suff_disagree),
             "clip_override_threshold": float(clip_override_threshold) if candidate_override_like else None,
@@ -1795,6 +2104,16 @@ def select_progressive_sufficiency_memory(
         "candidate_override_protected_rollback_enabled": bool(enable_candidate_override_protected_rollback),
         "candidate_override_guarded_rollback_enabled": bool(enable_candidate_override_guarded_rollback),
         "evidence_arbitration_enabled": bool(enable_evidence_arbitration),
+        "evidence_arbitration_temporal_band_enabled": bool(enable_evidence_arbitration_temporal_band),
+        "evidence_arbitration_temporal_consistency_enabled": bool(
+            enable_evidence_arbitration_temporal_consistency
+        ),
+        "evidence_contract_enabled": bool(enable_evidence_contract),
+        "evidence_contract_required": bool(cumulative_contract_required),
+        "evidence_contract_valid": bool(evidence_contract_valid),
+        "evidence_contract_applied": bool(evidence_contract_applied),
+        "evidence_contract_reason": evidence_contract_reason,
+        "answer_evidence_verification_enabled": bool(enable_answer_evidence_verification),
         "p3_low_suff_disagree_enabled": bool(enable_p3_low_suff_disagree),
     }
     _validate_metadata(metadata)

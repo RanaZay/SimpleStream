@@ -28,6 +28,165 @@ NUMBER_WORDS = {
 }
 
 
+_MOVIE_CLIP_PATTERNS = (
+    "movie clip",
+    "movie clips",
+    "clips been inserted",
+    "clip inserted",
+)
+
+
+def is_cumulative_count_question(question: str, options: list[dict[str, str]] | None = None) -> bool:
+    text = re.sub(r"\s+", " ", str(question).lower()).strip()
+    has_count = text.startswith("how many") or "how many " in text or "number of" in text
+    has_history = any(marker in text for marker in ("so far", "in total", "total", "have been", "has been"))
+    if not has_count or not has_history:
+        return False
+    if options is None:
+        return True
+    values = numeric_options(options)
+    return bool(values) and len(values) >= max(2, min(4, len(options)))
+
+
+def count_target_prompts(question: str) -> dict[str, list[str]]:
+    text = re.sub(r"\s+", " ", str(question).lower()).strip()
+    if any(pattern in text for pattern in _MOVIE_CLIP_PATTERNS):
+        return {
+            "positive": [
+                "an inserted movie clip is visible",
+                "a movie clip or cutaway video is shown",
+                "the video shows inserted movie footage",
+                "a clip from a movie appears on screen",
+            ],
+            "negative": [
+                "a person is explaining or talking to camera",
+                "no inserted movie clip is visible",
+                "only the speaker or presenter is visible",
+                "a static talking-head explanation",
+            ],
+        }
+
+    target = semantic_count_query(question, numeric_option_mode=True)
+    return {
+        "positive": [
+            target,
+            f"visible instance of {target}",
+            f"the counted object or event: {target}",
+        ],
+        "negative": [
+            "unrelated background",
+            "no relevant counted object or event",
+        ],
+    }
+
+
+def score_chunks_for_count_target(
+    scorer: EventLedgerClipScorer,
+    chunks: list[Any],
+    question: str,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    frames = [representative_frame(chunk) for chunk in chunks]
+    if not frames:
+        return [], {"prompts": count_target_prompts(question)}
+    image_embeddings = scorer.image_embeddings(frames)
+    prompts = count_target_prompts(question)
+    positive = prompts["positive"]
+    negative = prompts["negative"]
+    text_embeddings = scorer.text_embeddings(positive + negative)
+    scores = image_embeddings @ text_embeddings.T
+    pos_scores = torch.max(scores[:, : len(positive)], dim=1).values
+    neg_scores = torch.max(scores[:, len(positive) :], dim=1).values if negative else torch.zeros_like(pos_scores)
+    rows: list[dict[str, Any]] = []
+    for index, chunk in enumerate(chunks):
+        start, end = chunk_bounds(chunk)
+        pos = float(pos_scores[index].detach().cpu())
+        neg = float(neg_scores[index].detach().cpu())
+        rows.append(
+            {
+                "chunk_id": int(chunk_id(chunk)),
+                "start_time": float(start),
+                "end_time": float(end),
+                "timestamp": float(chunk_timestamp(chunk)),
+                "positive_score": pos,
+                "negative_score": neg,
+                "ledger_score": pos - neg,
+                "raw_relevance": pos,
+            }
+        )
+    return rows, {"prompts": prompts}
+
+
+def cluster_count_evidence(
+    scored_chunks: list[dict[str, Any]],
+    *,
+    score_threshold: float,
+    merge_gap_seconds: float,
+    min_positive_run: int = 1,
+) -> list[dict[str, Any]]:
+    positives = [row for row in scored_chunks if float(row["ledger_score"]) >= float(score_threshold)]
+    positives = sorted(positives, key=lambda item: (float(item["start_time"]), float(item["end_time"])))
+    clusters: list[dict[str, Any]] = []
+    for row in positives:
+        if not clusters or float(row["start_time"]) - float(clusters[-1]["end_time"]) > float(merge_gap_seconds):
+            clusters.append(
+                {
+                    "start_time": float(row["start_time"]),
+                    "end_time": float(row["end_time"]),
+                    "member_chunk_ids": [int(row["chunk_id"])],
+                    "member_scores": [float(row["ledger_score"])],
+                    "member_relevances": [float(row["raw_relevance"])],
+                    "peak_score": float(row["ledger_score"]),
+                    "peak_relevance": float(row["raw_relevance"]),
+                }
+            )
+        else:
+            cluster = clusters[-1]
+            cluster["end_time"] = max(float(cluster["end_time"]), float(row["end_time"]))
+            cluster["member_chunk_ids"].append(int(row["chunk_id"]))
+            cluster["member_scores"].append(float(row["ledger_score"]))
+            cluster["member_relevances"].append(float(row["raw_relevance"]))
+            cluster["peak_score"] = max(float(cluster["peak_score"]), float(row["ledger_score"]))
+            cluster["peak_relevance"] = max(float(cluster["peak_relevance"]), float(row["raw_relevance"]))
+    if int(min_positive_run) > 1:
+        clusters = [cluster for cluster in clusters if len(cluster["member_chunk_ids"]) >= int(min_positive_run)]
+    for index, cluster in enumerate(clusters):
+        scores = cluster["member_scores"]
+        cluster["event_id"] = index
+        cluster["mean_score"] = float(sum(scores) / len(scores)) if scores else 0.0
+    return clusters
+
+
+def targeted_count_ledger(
+    scorer: EventLedgerClipScorer,
+    chunks: list[Any],
+    question: str,
+    options: list[dict[str, str]],
+    *,
+    score_threshold: float,
+    merge_gap_seconds: float,
+    min_positive_run: int = 1,
+) -> dict[str, Any]:
+    scored_chunks, meta = score_chunks_for_count_target(scorer, chunks, question)
+    clusters = cluster_count_evidence(
+        scored_chunks,
+        score_threshold=score_threshold,
+        merge_gap_seconds=merge_gap_seconds,
+        min_positive_run=min_positive_run,
+    )
+    count = len(clusters)
+    mapped = option_for_count(count, options)
+    return {
+        "ledger_count": int(count),
+        "mapped_option": mapped,
+        "clusters": clusters,
+        "scored_chunks": scored_chunks,
+        "score_threshold": float(score_threshold),
+        "merge_gap_seconds": float(merge_gap_seconds),
+        "min_positive_run": int(min_positive_run),
+        **meta,
+    }
+
+
 @dataclass
 class LedgerEvent:
     event_id: int

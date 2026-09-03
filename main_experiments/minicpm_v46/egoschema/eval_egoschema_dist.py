@@ -339,6 +339,7 @@ def main() -> None:
             "recent6",
             "progressive_sufficiency_memory",
             "progressive_sufficiency_memory_clip_mmr_candidate_override_guarded_rollback_exact_recent",
+            "progressive_sufficiency_memory_clip_mmr_evidence_contract",
         ],
         required=True,
     )

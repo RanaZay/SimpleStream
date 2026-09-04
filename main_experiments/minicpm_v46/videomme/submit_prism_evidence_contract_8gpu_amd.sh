@@ -1,0 +1,126 @@
+#!/bin/bash
+#SBATCH --job-name=videomme_prism_evidence_contract
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=96
+#SBATCH --gres=gpu:8
+#SBATCH --mem=700G
+#SBATCH --time=24:00:00
+#SBATCH --qos=skqos
+#SBATCH --partition=faculty
+#SBATCH --output=logs/%x-%j.out
+
+set -euo pipefail
+source ~/.bashrc
+
+REPO_ROOT="${REPO_ROOT:-${SLURM_SUBMIT_DIR:-$(pwd)}}"
+cd "$REPO_ROOT"
+conda activate "${CONDA_ENV_PATH:-$REPO_ROOT/.conda/envs/stream35}"
+
+export PYTHONNOUSERSITE=1
+export PYTHONFAULTHANDLER=1
+export ROCM_HOME=${ROCM_HOME:-/opt/rocm}
+export PATH="${ROCM_HOME}/bin:${PATH}"
+export LD_LIBRARY_PATH="${ROCM_HOME}/lib:${ROCM_HOME}/lib64:${LD_LIBRARY_PATH:-}"
+export MIOPEN_DISABLE_CACHE=1
+export PYTORCH_TUNABLEOP_ENABLED=0
+export ATTN_IMPLEMENTATION=${ATTN_IMPLEMENTATION:-sdpa}
+export MINICPM_DOWNSAMPLE_MODE=${MINICPM_DOWNSAMPLE_MODE:-16x}
+export MINICPM_MAX_SLICE_NUMS=${MINICPM_MAX_SLICE_NUMS:-1}
+export MINICPM_PROFILE_COMPONENTS=${MINICPM_PROFILE_COMPONENTS:-1}
+export MINICPM_SERIALIZE_MODEL_LOAD=${MINICPM_SERIALIZE_MODEL_LOAD:-1}
+export MINICPM_MODEL_LOAD_TIMEOUT=${MINICPM_MODEL_LOAD_TIMEOUT:-7200}
+export HF_ENABLE_PARALLEL_LOADING=${HF_ENABLE_PARALLEL_LOADING:-false}
+export HF_PARALLEL_LOADING_WORKERS=${HF_PARALLEL_LOADING_WORKERS:-1}
+export HF_DEACTIVATE_ASYNC_LOAD=${HF_DEACTIVATE_ASYNC_LOAD:-1}
+export DECORD_EOF_RETRY_MAX=${DECORD_EOF_RETRY_MAX:-65536}
+export MINICPM_SEED=${MINICPM_SEED:-42}
+export PYTHONHASHSEED=${MINICPM_SEED}
+export HF_HOME=${HF_HOME:-$REPO_ROOT/.hf_home}
+export HF_HUB_CACHE=${HF_HUB_CACHE:-$HF_HOME/hub}
+
+mkdir -p logs .cache/miopen .cache/torch_kernels
+export MIOPEN_USER_DB_PATH="$REPO_ROOT/.cache/miopen"
+export MIOPEN_CUSTOM_CACHE_DIR="$REPO_ROOT/.cache/miopen"
+export PYTORCH_KERNEL_CACHE_PATH="$REPO_ROOT/.cache/torch_kernels"
+export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}
+export HIP_VISIBLE_DEVICES=${HIP_VISIBLE_DEVICES:-${CUDA_VISIBLE_DEVICES}}
+
+export ADAPTIVE_MODE=${ADAPTIVE_MODE:-progressive_sufficiency_memory_clip_mmr_evidence_contract}
+export PRISM_CLIP_MODE=${PRISM_CLIP_MODE:-evidence_contract}
+export ADAPTIVE_MIN_WINDOW=6
+export ADAPTIVE_MID_WINDOW=6
+export ADAPTIVE_MAX_WINDOW=6
+export ADAPTIVE_MEMORY_ANCHORS=3
+export ADAPTIVE_MEMORY_SEARCH_CHUNKS=64
+export MINICPM_EXACT_RECENT_CANDIDATE_FPS=${MINICPM_EXACT_RECENT_CANDIDATE_FPS:-4.0}
+export MINICPM_PSM_HISTORY_SEARCH_CHUNKS=${MINICPM_PSM_HISTORY_SEARCH_CHUNKS:-64}
+export MINICPM_PSM_HISTORY_CANDIDATE_POOL=${MINICPM_PSM_HISTORY_CANDIDATE_POOL:-12}
+export MINICPM_PSM_MAX_MEMORY_FRAMES=${MINICPM_PSM_MAX_MEMORY_FRAMES:-3}
+export MINICPM_PSM_MIN_TEMPORAL_GAP=${MINICPM_PSM_MIN_TEMPORAL_GAP:-2}
+export MINICPM_PSM_SUFFICIENCY_THRESHOLD=${MINICPM_PSM_SUFFICIENCY_THRESHOLD:-0.62}
+export MINICPM_PSM_MIN_EVIDENCE_GAIN=${MINICPM_PSM_MIN_EVIDENCE_GAIN:-0.035}
+export MINICPM_PSM_NEGATIVE_GAIN_TOLERANCE=${MINICPM_PSM_NEGATIVE_GAIN_TOLERANCE:-0.02}
+export MINICPM_PSM_MARGIN_WEIGHT=${MINICPM_PSM_MARGIN_WEIGHT:-0.50}
+export MINICPM_PSM_ENTROPY_WEIGHT=${MINICPM_PSM_ENTROPY_WEIGHT:-0.20}
+export MINICPM_PSM_VISUAL_SUPPORT_WEIGHT=${MINICPM_PSM_VISUAL_SUPPORT_WEIGHT:-0.30}
+export MINICPM_PSM_CLIP_OVERRIDE_THRESHOLD=${MINICPM_PSM_CLIP_OVERRIDE_THRESHOLD:-0.2995}
+export MINICPM_PSM_MMR_LAMBDA=${MINICPM_PSM_MMR_LAMBDA:-0.80}
+export MINICPM_PSM_ARBITRATION_MIN_MARGIN=${MINICPM_PSM_ARBITRATION_MIN_MARGIN:-0.60}
+export MINICPM_PSM_ARBITRATION_MAX_SUFFICIENCY_DROP=${MINICPM_PSM_ARBITRATION_MAX_SUFFICIENCY_DROP:-0.08}
+export MINICPM_PSM_TEMPORAL_BAND_MIN_SECONDS=${MINICPM_PSM_TEMPORAL_BAND_MIN_SECONDS:-3}
+export MINICPM_PSM_TEMPORAL_BAND_MAX_SECONDS=${MINICPM_PSM_TEMPORAL_BAND_MAX_SECONDS:-30}
+export MINICPM_PSM_CANDIDATE_K1_DISAGREE_MAX_DISTANCE_SECONDS=${MINICPM_PSM_CANDIDATE_K1_DISAGREE_MAX_DISTANCE_SECONDS:-10}
+export MINICPM_PSM_EXACT_RECENT_PRESERVE_SOURCE_IDS=${MINICPM_PSM_EXACT_RECENT_PRESERVE_SOURCE_IDS:-1}
+export MINICPM_PSM_ASSERT_TEMPORAL_ALIGNMENT=${MINICPM_PSM_ASSERT_TEMPORAL_ALIGNMENT:-1}
+export MINICPM_PSM_PRINT_TRACE=${MINICPM_PSM_PRINT_TRACE:-0}
+export NUM_PROCESSES=${NUM_PROCESSES:-8}
+export MAIN_PROCESS_PORT=${MAIN_PROCESS_PORT:-29972}
+export QWEN_EXACT_RECENT_DECODE=${QWEN_EXACT_RECENT_DECODE:-0}
+
+GAMMA_TAG=$(printf "%s" "$MINICPM_PSM_CLIP_OVERRIDE_THRESHOLD" | sed 's/\./p/g')
+SAMPLE_TAG="full"
+if [[ -n "${VIDEOMME_MAX_SAMPLES:-${MAX_SAMPLES:-}}" ]]; then
+    SAMPLE_TAG="n${VIDEOMME_MAX_SAMPLES:-${MAX_SAMPLES}}"
+fi
+RESULT_DIR="${VIDEOMME_RESULT_DIR:-$REPO_ROOT/reports/prism_retrieval_variants/videomme_prism_evidence_contract_g${GAMMA_TAG}_m0p60_d0p08_t3-30_c10_${SAMPLE_TAG}_d8}"
+ts=$(date +%Y%m%d_%H%M%S)
+if [[ "${RESUME:-0}" != "1" ]]; then
+    mv "$RESULT_DIR" "${RESULT_DIR}.old_$ts" 2>/dev/null || true
+fi
+
+echo "=== ENV CHECK ==="
+which python
+python -V
+python -c "import torch; print('torch=', torch.__version__); print('hip=', torch.version.hip); print('cuda_available=', torch.cuda.is_available()); print('device_count=', torch.cuda.device_count())"
+python -c "import pandas, pyarrow, transformers, accelerate; print('pandas=', pandas.__version__); print('pyarrow=', pyarrow.__version__); print('transformers=', transformers.__version__); print('accelerate=', accelerate.__version__)"
+echo "ADAPTIVE_MODE=$ADAPTIVE_MODE"
+echo "PRISM_CLIP_MODE=$PRISM_CLIP_MODE"
+echo "MINICPM_PSM_CLIP_OVERRIDE_THRESHOLD=$MINICPM_PSM_CLIP_OVERRIDE_THRESHOLD"
+echo "VIDEOMME_RESULT_DIR=$RESULT_DIR"
+echo "CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES"
+echo "HIP_VISIBLE_DEVICES=$HIP_VISIBLE_DEVICES"
+echo "=== END ENV CHECK ==="
+
+COMMON_ARGS=(
+    --annotation-parquet "${VIDEOMME_ANNOTATION_PARQUET:-$REPO_ROOT/data/video_mme/videomme/test-00000-of-00001.parquet}"
+    --video-dir "${VIDEOMME_VIDEO_DIR:-$REPO_ROOT/data/video_mme/videos}"
+    --output-dir "$RESULT_DIR"
+    --mode "${ADAPTIVE_MODE}"
+    --qa-model "${MINICPM_QA_MODEL:-openbmb/MiniCPM-V-4.6}"
+    --recent-frames-only 6
+    --decode-context-chunks "${VIDEOMME_DECODE_CONTEXT_CHUNKS:-192}"
+    --chunk-duration 1.0
+    --fps 1.0
+    --max-qa-tokens 256
+)
+if [[ -n "${VIDEOMME_MAX_SAMPLES:-${MAX_SAMPLES:-}}" ]]; then
+    COMMON_ARGS+=(--max-samples "${VIDEOMME_MAX_SAMPLES:-${MAX_SAMPLES}}")
+fi
+
+python -m accelerate.commands.launch \
+    --num_processes "${NUM_PROCESSES}" \
+    --main_process_port "${MAIN_PROCESS_PORT}" \
+    --multi_gpu \
+    --mixed_precision bf16 \
+    main_experiments/minicpm_v46/videomme/eval_videomme_dist.py "${COMMON_ARGS[@]}"

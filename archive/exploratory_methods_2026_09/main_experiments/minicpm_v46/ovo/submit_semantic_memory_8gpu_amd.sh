@@ -4,7 +4,7 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=96
 #SBATCH --gres=gpu:8
-#SBATCH --time=8:00:00
+#SBATCH --time=24:00:00
 #SBATCH --qos=skqos
 #SBATCH --partition=faculty
 #SBATCH --output=/vast/users/salman.khan/SimpleStream/logs/%x-%j.out
@@ -19,6 +19,8 @@ export PATH="${ROCM_HOME}/bin:${PATH}"
 export LD_LIBRARY_PATH="${ROCM_HOME}/lib:${ROCM_HOME}/lib64:${LD_LIBRARY_PATH}"
 export MIOPEN_DISABLE_CACHE=1
 export PYTORCH_TUNABLEOP_ENABLED=0
+export MINICPM_SEED=${MINICPM_SEED:-42}
+export PYTHONHASHSEED=${MINICPM_SEED}
 
 REPO_ROOT=/vast/users/salman.khan/SimpleStream
 cd "$REPO_ROOT" || exit 1

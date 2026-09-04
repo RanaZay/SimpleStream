@@ -13,6 +13,10 @@ efficiency/video/
 # Logs and temporary run state
 *.log
 *.jsonl
+logs/
+.cache/
+.hf_home/
+.write_test
 done
 offload/
 

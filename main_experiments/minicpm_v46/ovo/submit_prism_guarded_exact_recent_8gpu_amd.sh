@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=ovo_prism_guarded_exact
+#SBATCH --job-name=ovo_prism_evidence_contract
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=96
@@ -7,7 +7,7 @@
 #SBATCH --time=24:00:00
 #SBATCH --qos=skqos
 #SBATCH --partition=faculty
-#SBATCH --output=/vast/users/salman.khan/SimpleStream/logs/%x-%j.out
+#SBATCH --output=logs/%x-%j.out
 
 set -euo pipefail
 source ~/.bashrc
@@ -32,7 +32,7 @@ export PYTORCH_TUNABLEOP_ENABLED=0
 export MINICPM_SEED=${MINICPM_SEED:-42}
 export PYTHONHASHSEED=${MINICPM_SEED}
 
-REPO_ROOT=/vast/users/salman.khan/SimpleStream
+REPO_ROOT="${REPO_ROOT:-${SLURM_SUBMIT_DIR:-$(pwd)}}"
 cd "$REPO_ROOT"
 
 mkdir -p logs .cache/miopen .cache/torch_kernels
@@ -42,7 +42,8 @@ export PYTORCH_KERNEL_CACHE_PATH="$REPO_ROOT/.cache/torch_kernels"
 export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}
 export HIP_VISIBLE_DEVICES=${HIP_VISIBLE_DEVICES:-${CUDA_VISIBLE_DEVICES}}
 
-export ADAPTIVE_MODE=progressive_sufficiency_memory_clip_mmr_candidate_override_guarded_rollback_exact_recent
+export ADAPTIVE_MODE=${ADAPTIVE_MODE:-progressive_sufficiency_memory_clip_mmr_evidence_contract}
+export PRISM_CLIP_MODE=${PRISM_CLIP_MODE:-evidence_contract}
 export ADAPTIVE_MIN_WINDOW=6
 export ADAPTIVE_MID_WINDOW=6
 export ADAPTIVE_MAX_WINDOW=6
@@ -61,6 +62,11 @@ export MINICPM_PSM_ENTROPY_WEIGHT=0.20
 export MINICPM_PSM_VISUAL_SUPPORT_WEIGHT=0.30
 export MINICPM_PSM_MMR_LAMBDA=${MINICPM_PSM_MMR_LAMBDA:-0.80}
 export MINICPM_PSM_CLIP_OVERRIDE_THRESHOLD=${MINICPM_PSM_CLIP_OVERRIDE_THRESHOLD:-0.2995}
+export MINICPM_PSM_ARBITRATION_MIN_MARGIN=${MINICPM_PSM_ARBITRATION_MIN_MARGIN:-0.60}
+export MINICPM_PSM_ARBITRATION_MAX_SUFFICIENCY_DROP=${MINICPM_PSM_ARBITRATION_MAX_SUFFICIENCY_DROP:-0.08}
+export MINICPM_PSM_TEMPORAL_BAND_MIN_SECONDS=${MINICPM_PSM_TEMPORAL_BAND_MIN_SECONDS:-3}
+export MINICPM_PSM_TEMPORAL_BAND_MAX_SECONDS=${MINICPM_PSM_TEMPORAL_BAND_MAX_SECONDS:-30}
+export MINICPM_PSM_CANDIDATE_K1_DISAGREE_MAX_DISTANCE_SECONDS=${MINICPM_PSM_CANDIDATE_K1_DISAGREE_MAX_DISTANCE_SECONDS:-10}
 export MINICPM_PSM_EXACT_RECENT_PRESERVE_SOURCE_IDS=1
 export MINICPM_PSM_ASSERT_TEMPORAL_ALIGNMENT=1
 export MINICPM_PSM_PRINT_TRACE=${MINICPM_PSM_PRINT_TRACE:-0}
@@ -76,7 +82,7 @@ fi
 
 GAMMA_TAG="${MINICPM_PSM_CLIP_OVERRIDE_THRESHOLD}"
 GAMMA_TAG="${GAMMA_TAG/./p}"
-RESULT_DIR="$REPO_ROOT/reports/prism_retrieval_variants/ovo_full_prism_clip_mmr_candidate_override_guarded_rollback_exact_recent_g${GAMMA_TAG}_${LIMIT_TAG}_d8"
+RESULT_DIR="$REPO_ROOT/reports/prism_retrieval_variants/ovo_full_prism_clip_mmr_evidence_contract_g${GAMMA_TAG}_m0p60_d0p08_t3-30_c10_${LIMIT_TAG}_d8"
 ts=$(date +%Y%m%d_%H%M%S)
 if [[ "${RESUME:-0}" != "1" ]]; then
     mv "$RESULT_DIR" "${RESULT_DIR}.old_$ts" 2>/dev/null || true
@@ -88,7 +94,13 @@ which python
 python -V
 python -c "import torch; print('torch=', torch.__version__); print('hip=', torch.version.hip); print('cuda_available=', torch.cuda.is_available()); print('device_count=', torch.cuda.device_count())"
 echo "ADAPTIVE_MODE=$ADAPTIVE_MODE"
+echo "PRISM_CLIP_MODE=$PRISM_CLIP_MODE"
 echo "MINICPM_PSM_CLIP_OVERRIDE_THRESHOLD=$MINICPM_PSM_CLIP_OVERRIDE_THRESHOLD"
+echo "MINICPM_PSM_ARBITRATION_MIN_MARGIN=$MINICPM_PSM_ARBITRATION_MIN_MARGIN"
+echo "MINICPM_PSM_ARBITRATION_MAX_SUFFICIENCY_DROP=$MINICPM_PSM_ARBITRATION_MAX_SUFFICIENCY_DROP"
+echo "MINICPM_PSM_TEMPORAL_BAND_MIN_SECONDS=$MINICPM_PSM_TEMPORAL_BAND_MIN_SECONDS"
+echo "MINICPM_PSM_TEMPORAL_BAND_MAX_SECONDS=$MINICPM_PSM_TEMPORAL_BAND_MAX_SECONDS"
+echo "MINICPM_PSM_CANDIDATE_K1_DISAGREE_MAX_DISTANCE_SECONDS=$MINICPM_PSM_CANDIDATE_K1_DISAGREE_MAX_DISTANCE_SECONDS"
 echo "MINICPM_PSM_EXACT_RECENT_PRESERVE_SOURCE_IDS=$MINICPM_PSM_EXACT_RECENT_PRESERVE_SOURCE_IDS"
 echo "OVO_RESULT_DIR=$OVO_RESULT_DIR"
 echo "=== END ENV CHECK ==="

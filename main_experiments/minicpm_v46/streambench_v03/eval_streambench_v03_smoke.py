@@ -35,6 +35,8 @@ from main_experiments.minicpm_v46.streamingbench.eval_recent_sampler_dist import
     query_recent_sampler_window,
 )
 
+SUBTASK_ORDER = ["OS", "LM", "SM", "CI", "KG", "SF"]
+
 
 def _normalize_text(text: str) -> str:
     text = text.lower()
@@ -253,6 +255,25 @@ def _print_summary(summary: dict[str, Any]) -> None:
     print("\n" + "=" * 80)
     print("StreamBench-v0.3 Smoke Results (open-ended lexical diagnostics)")
     print("=" * 80)
+    print("Token-F1 by StreamBench subtask")
+    print("method | OS | LM | SM | CI | KG | SF | Avg")
+    for method, overall in summary["overall"].items():
+        values = []
+        for subtask in SUBTASK_ORDER:
+            row = summary["subtasks"].get(f"{method}:{subtask}", {"n": 0})
+            values.append(f"{row['mean_token_f1']:.3f}" if row.get("n", 0) else "-")
+        print(f"{method} | " + " | ".join(values) + f" | {overall['mean_token_f1']:.3f}")
+
+    print("\nContains-rate by StreamBench subtask")
+    print("method | OS | LM | SM | CI | KG | SF | Avg")
+    for method, overall in summary["overall"].items():
+        values = []
+        for subtask in SUBTASK_ORDER:
+            row = summary["subtasks"].get(f"{method}:{subtask}", {"n": 0})
+            values.append(f"{row['contains_rate']:.3f}" if row.get("n", 0) else "-")
+        print(f"{method} | " + " | ".join(values) + f" | {overall['contains_rate']:.3f}")
+
+    print()
     print("method | n | token_f1 | contains | exact | latency")
     for method, row in summary["overall"].items():
         print(

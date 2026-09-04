@@ -1,187 +1,188 @@
-<div align="center">
+# PRISM: Selective Evidence for Efficient Streaming Video Understanding
 
-<img src="assets/logo.svg" width="75%">
+This repository contains the PRISM paper-release implementation built on top of
+SimpleStream and MiniCPM-V-4.6. The active code path keeps the same efficient
+recent-frame backbone as SimpleStream, then selectively admits a small amount of
+historical evidence only when the current visual context is insufficient and the
+retrieved evidence passes lightweight consistency checks.
 
-### A Simple Baseline for Streaming Video Understanding
+The repository has been cleaned for paper experiments. Exploratory launchers and
+discontinued variants have been removed from the active tree so the main
+benchmark paths are easier to audit and rerun.
 
-<p>
-<a href="https://arxiv.org/abs/2604.02317"><img src="https://img.shields.io/badge/arXiv-2604.02317-b31b1b.svg" alt="Paper"></a>
-<a href="https://huggingface.co/papers/2604.02317"><img src="https://img.shields.io/badge/🤗-Paper_Page-yellow" alt="HF Paper"></a>
-<a href="https://simple-stream.github.io/"><img src="https://img.shields.io/badge/Project-Page-blue" alt="Project Page"></a>
-</p>
+## Selected Method
 
-<img src="assets/teaser.png" width="90%">
+The selected method is:
 
-A sliding-window baseline that feeds only the most recent ***N*** frames to an off-the-shelf VLM **matches or surpasses** published streaming video understanding models. No memory bank, no retrieval, no compression.
+```text
+progressive_sufficiency_memory_clip_mmr_evidence_contract
+```
 
-</div>
+PRISM uses:
 
-## 🚀 News
+- exact Recent-6 as the default current context
+- timestamp-correct historical candidate eligibility
+- CLIP-MMR retrieval over older valid frames
+- candidate override with `gamma=0.2995`
+- evidence arbitration with margin/drop checks
+- temporal evidence band of `3-30` seconds
+- K1 disagreement guard within `10` seconds
+- at most `3` historical frames
 
-📄 **[2026/04]** SimpleStream paper is released.
+Core implementation files:
 
-💻 **[2026/04]** Code and evaluation scripts are open-sourced.
+```text
+lib/minicpm/adaptive.py
+lib/minicpm/progressive_sufficiency.py
+lib/minicpm/prism_retrieval_variants.py
+lib/shared/recent_window.py
+```
 
-## ✨ Highlights
+## Environment
 
-- **Simple yet strong.** With only 4 recent frames, SimpleStream reaches **67.7%** on OVO-Bench and **80.59%** on StreamingBench, surpassing all published streaming methods.
-- **Perception-memory trade-off.** Adding historical context improves recall but consistently degrades real-time perception, which dominates aggregate scores.
-- **Training-free.** SimpleStream uses off-the-shelf VLMs (Qwen2.5-VL, Qwen3-VL) with zero fine-tuning.
-
-## 📊 Main Results
-
-<p align="center">
-<img src="assets/main_results.png" width="90%">
-</p>
-
-## 🛠️ Getting Started
-
-### Environment Setup
-
-`Qwen3-VL` and `Qwen2.5-VL` require separate `transformers` / `accelerate`
-stacks. Install PyTorch and torchvision first using the official instructions
-for your CUDA runtime, then install the matching dependency file below.
-
-**Qwen3-VL**
+The MiniCPM experiments use the `stream35` environment on the AMD cluster:
 
 ```bash
-conda create -n simplestream-qwen3 python=3.10 -y
-conda activate simplestream-qwen3
-
-# Install torch / torchvision first:
-# https://pytorch.org/get-started/locally/
-
-pip install -r requirements-qwen3.txt
-# Optional: faster attention backend
-pip install flash-attn --no-build-isolation
+source ~/.bashrc
+conda activate stream35
 ```
 
-**Qwen2.5-VL**
+Final PRISM settings:
 
 ```bash
-conda create -n simplestream-qwen25 python=3.11 -y
-conda activate simplestream-qwen25
-
-# Install torch / torchvision first:
-# https://pytorch.org/get-started/locally/
-
-pip install -r requirements-qwen25.txt
-# Optional: faster attention backend
-pip install flash-attn --no-build-isolation
+PRISM_CLIP_MODE=evidence_contract
+MINICPM_PSM_CLIP_OVERRIDE_THRESHOLD=0.2995
+MINICPM_PSM_ARBITRATION_MIN_MARGIN=0.60
+MINICPM_PSM_ARBITRATION_MAX_SUFFICIENCY_DROP=0.08
+MINICPM_PSM_TEMPORAL_BAND_MIN_SECONDS=3
+MINICPM_PSM_TEMPORAL_BAND_MAX_SECONDS=30
+MINICPM_PSM_CANDIDATE_K1_DISAGREE_MAX_DISTANCE_SECONDS=10
+MINICPM_PSM_MAX_MEMORY_FRAMES=3
+MINICPM_PSM_HISTORY_SEARCH_CHUNKS=64
+MINICPM_PSM_HISTORY_CANDIDATE_POOL=12
+MINICPM_PSM_MMR_LAMBDA=0.80
 ```
 
-### Models
+## Data Layout
 
-Downloaded automatically from HuggingFace on first run:
-- `Qwen/Qwen3-VL-8B-Instruct` (primary)
-- `Qwen/Qwen2.5-VL-7B-Instruct` (cross-validation)
+Place benchmark data under `data/`:
 
-### Data Preparation
+```text
+data/
+  streamingbench/
+    questions_real.json
+    videos/
+  ovo_bench/
+    ovo_bench_new.json
+    chunked_videos/
+  egoschema/
+    ...
+  streambench_v0_3/
+    streaming_bench_v0.3.json
+    Ego/
+    Movie/
+    WebVideo/
+```
 
-- **OVO-Bench**: Download from [OVO-Bench](https://github.com/JoeLeelyf/OVO-Bench). Place annotations at `data/ovo_bench/ovo_bench_new.json` and chunked videos at `data/ovo_bench/chunked_videos/`.
-- **StreamingBench**: Download from [StreamingBench](https://github.com/Infini-AI-Lab/StreamingBench). Place questions at `data/streamingbench/questions_real.json` and videos at `data/streamingbench/videos/`.
+`data/` is ignored by git.
 
-## 🧪 Experiments
+## StreamingBench
 
-<details>
-<summary><b>Qwen3-VL on OVO-Bench</b></summary>
+Corrected exact Recent-6 baseline:
 
 ```bash
-conda activate simplestream-qwen3
-
-CUDA_VISIBLE_DEVICES=0,1 accelerate launch --num_processes=2 \
-    main_experiments/qwen/evals/eval_qwen3vl_ovo.py \
-    --model_path Qwen/Qwen3-VL-8B-Instruct \
-    --anno_path data/ovo_bench/ovo_bench_new.json \
-    --chunked_dir data/ovo_bench/chunked_videos \
-    --result_dir main_experiments/results/ovo_qwen3vl_recent8 \
-    --recent_frames_only 8 \
-    --chunk_duration 1.0 \
-    --fps 1.0
+sbatch main_experiments/minicpm_v46/streamingbench/submit_exact_recent6_full_amd.sh
 ```
 
-Or use the convenience launcher for 4-GPU:
-```bash
-bash main_experiments/qwen/runs/run_qwen3vl_ovo_4gpu.sh
-```
-</details>
-
-<details>
-<summary><b>Qwen2.5-VL on OVO-Bench</b></summary>
+Final PRISM:
 
 ```bash
-conda activate simplestream-qwen25
-
-CUDA_VISIBLE_DEVICES=0,1 accelerate launch --num_processes=2 \
-    main_experiments/qwen/evals/eval_qwen25vl_ovo.py \
-    --model_path Qwen/Qwen2.5-VL-7B-Instruct \
-    --anno_path data/ovo_bench/ovo_bench_new.json \
-    --chunked_dir data/ovo_bench/chunked_videos \
-    --result_dir main_experiments/results/ovo_qwen25vl_recent8 \
-    --recent_frames_only 8 \
-    --chunk_duration 1.0 \
-    --fps 1.0
+sbatch main_experiments/minicpm_v46/streamingbench/submit_prism_evidence_contract_full_amd.sh
 ```
-</details>
 
-<details>
-<summary><b>StreamingBench</b></summary>
+Current validated full StreamingBench results:
 
-`--top-k 0` disables retrieval and keeps only the most recent chunks.
+| Method | Correct | Accuracy | Avg Frames | Avg Vision Tokens | TTFT | E2E |
+|---|---:|---:|---:|---:|---:|---:|
+| Corrected exact Recent-6 | 1903/2499 | 76.15 | 6.00 | 395.7 | 0.505s | 17.313s |
+| PRISM evidence contract | 1925/2499 | 77.03 | 6.08 | 401.4 | 0.521s | 19.166s |
+
+Reconstructed readable logs are kept in `logs/` when available:
+
+```text
+logs/RECONSTRUCTED_streamingbench_full_exact_recent6_76p15_20260901.out
+logs/RECONSTRUCTED_streamingbench_full_prism_evidence_contract_77p03_20260903.out
+```
+
+## OVO-Bench
+
+Exact Recent-6 baseline:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 python main_experiments/qwen/evals/eval_streamingbench.py \
-    --anno-path data/streamingbench/questions_real.json \
-    --video-dir data/streamingbench/videos \
-    --top-k 0 \
-    --recent-frames-only 4 \
-    --chunk-duration 1.0 \
-    --fps 1.0 \
-    --output-dir main_experiments/results/streamingbench_recent4
+sbatch main_experiments/minicpm_v46/ovo/submit_prism_exact_current6_8gpu_amd.sh
 ```
-</details>
 
-<details>
-<summary><b>Efficiency Benchmark</b></summary>
-
-Measures TTFT, throughput, and memory from a user-provided source video.
+Final PRISM:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 python efficiency/eval_efficiency.py \
-    --source-video /path/to/your/source_video.mp4 \
-    --model-name Qwen/Qwen2.5-VL-7B-Instruct \
-    --chunk-size 8 \
-    --recent-frames 4
+sbatch main_experiments/minicpm_v46/ovo/submit_prism_guarded_exact_recent_8gpu_amd.sh
 ```
-</details>
 
-<details>
-<summary><b>Scoring</b></summary>
+Before interpreting OVO as a final paper result, verify the Slurm log includes:
+
+```text
+ADAPTIVE_MODE=progressive_sufficiency_memory_clip_mmr_evidence_contract
+PRISM_CLIP_MODE=evidence_contract
+```
+
+## EgoSchema500
+
+Exact Recent-6 baseline:
 
 ```bash
-python scoring/score_ovo_bench.py \
-    --result_path main_experiments/results/ovo_qwen3vl_recent8/qwen3vl_results_*.json
-```
-</details>
-
-## Contact
-
-If you have any questions about the paper, codebase, or experimental setup, please feel free to contact [shenyujiao18@gmail.com](mailto:shenyujiao18@gmail.com).
-
-## 📢 Citation
-
-If you find this work useful, please consider citing our paper:
-
-```bibtex
-@article{simplestream2026,
-  title={A Simple Baseline for Streaming Video Understanding},
-  author={Shen, Yujiao and Tian, Shulin and Yang, Jingkang and Liu, Ziwei},
-  journal={arXiv preprint arXiv:2604.02317},
-  year={2026}
-}
+sbatch main_experiments/minicpm_v46/egoschema/submit_recent6_8gpu_amd.sh
 ```
 
-## 🙏 Acknowledgement
+Final PRISM:
 
-- [Qwen-VL](https://github.com/QwenLM/Qwen2.5-VL): the VLM backbone used in our experiments.
-- [OVO-Bench](https://github.com/JoeLeelyf/OVO-Bench) and [StreamingBench](https://github.com/Infini-AI-Lab/StreamingBench): the evaluation benchmarks.
+```bash
+sbatch main_experiments/minicpm_v46/egoschema/submit_prism_guarded_exact_recent_8gpu_amd.sh
+```
+
+## StreamBench-v0.3
+
+StreamBench-v0.3 is open-ended, while the current PRISM evidence-contract
+controller is designed around MCQ option evidence. Use these runs as
+generalization diagnostics:
+
+```bash
+sbatch main_experiments/minicpm_v46/streambench_v03/submit_streambench_v03_full_recent6_amd.sh
+sbatch main_experiments/minicpm_v46/streambench_v03/submit_streambench_v03_full_prism_amd.sh
+```
+
+The StreamBench-v0.3 report includes:
+
+```text
+OS | LM | SM | CI | KG | SF | Avg
+```
+
+## Active Directory Map
+
+```text
+lib/minicpm/                         MiniCPM wrappers and PRISM logic
+lib/shared/                          shared decoding/scoring utilities
+main_experiments/minicpm_v46/         benchmark evaluators and Slurm launchers
+main_experiments/qwen/                Qwen reproduction baselines
+scoring/                              benchmark scoring helpers
+efficiency/                           standalone efficiency tools
+archive/                              archived exploratory material
+```
+
+## Notes
+
+The original SimpleStream project showed that a small recent-frame window is a
+strong streaming-video baseline. PRISM keeps that principle intact and adds a
+small, selective evidence mechanism instead of uniformly increasing historical
+context.
+
+For the original SimpleStream paper, see arXiv `2604.02317`.

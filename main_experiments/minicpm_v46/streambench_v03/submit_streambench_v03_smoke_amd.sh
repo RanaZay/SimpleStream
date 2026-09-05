@@ -7,14 +7,14 @@
 #SBATCH --time=1:00:00
 #SBATCH --qos=skqos
 #SBATCH --partition=faculty
-#SBATCH --output=/vast/users/salman.khan/SimpleStream/logs/%x-%j.out
+#SBATCH --output=logs/%x-%j.out
 
 set -euo pipefail
 source ~/.bashrc
-conda activate stream35
 
-REPO_ROOT=/vast/users/salman.khan/SimpleStream
+REPO_ROOT="${REPO_ROOT:-${SLURM_SUBMIT_DIR:-$(pwd)}}"
 cd "$REPO_ROOT"
+conda activate "${CONDA_ENV_PATH:-$REPO_ROOT/.conda/envs/stream35}"
 
 mkdir -p logs reports/streambench_v0_3_smoke
 

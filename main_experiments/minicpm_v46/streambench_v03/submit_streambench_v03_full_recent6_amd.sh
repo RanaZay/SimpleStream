@@ -7,11 +7,11 @@
 #SBATCH --time=12:00:00
 #SBATCH --qos=skqos
 #SBATCH --partition=faculty
-#SBATCH --output=/vast/users/salman.khan/SimpleStream/logs/%x-%j.out
+#SBATCH --output=logs/%x-%j.out
 
 set -euo pipefail
 
-REPO_ROOT=/vast/users/salman.khan/SimpleStream
+REPO_ROOT="${REPO_ROOT:-${SLURM_SUBMIT_DIR:-$(pwd)}}"
 cd "$REPO_ROOT"
 
 export STREAMBENCH_V03_MAX_VIDEOS=0

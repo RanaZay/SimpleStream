@@ -10,8 +10,12 @@
 #SBATCH --output=logs/%x-%j.out
 
 set -euo pipefail
+
+REPO_ROOT="${REPO_ROOT:-${SLURM_SUBMIT_DIR:-$(pwd)}}"
+cd "$REPO_ROOT"
+
 source ~/.bashrc
-conda activate stream35
+conda activate "${CONDA_ENV_PATH:-$REPO_ROOT/.conda/envs/stream35}"
 
 export PYTHONNOUSERSITE=1
 export PYTHONFAULTHANDLER=1
@@ -31,9 +35,6 @@ export MIOPEN_DISABLE_CACHE=1
 export PYTORCH_TUNABLEOP_ENABLED=0
 export MINICPM_SEED=${MINICPM_SEED:-42}
 export PYTHONHASHSEED=${MINICPM_SEED}
-
-REPO_ROOT="${REPO_ROOT:-${SLURM_SUBMIT_DIR:-$(pwd)}}"
-cd "$REPO_ROOT"
 
 mkdir -p logs .cache/miopen .cache/torch_kernels
 export MIOPEN_USER_DB_PATH="$REPO_ROOT/.cache/miopen"

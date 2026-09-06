@@ -96,15 +96,19 @@ def _as_list(value: Any) -> list[Any]:
 def _option_texts(row: dict[str, Any]) -> list[str]:
     raw_options = _first_present(row, ["options", "option", "choices", "candidates"])
     options = _as_list(raw_options)
-    if len(options) < 5:
-        options = [_first_present(row, [f"option_{i}", f"option{i}", chr(ord("A") + i)], "") for i in range(5)]
+    if len(options) < 2:
+        options = [
+            _first_present(row, [f"option_{i}", f"option{i}", chr(ord("A") + i)], "")
+            for i in range(len(LETTERS))
+        ]
     normalized: list[str] = []
-    for option in options[:5]:
+    for option in options[: len(LETTERS)]:
         text = str(option).strip()
         text = re.sub(r"^\s*[A-Ea-e][\.\)]\s*", "", text).strip()
         normalized.append(text)
-    if len(normalized) < 5 or any(not item for item in normalized):
-        raise ValueError(f"Video-MME row has no five-option field: {sorted(row.keys())}")
+    normalized = [item for item in normalized if item]
+    if len(normalized) < 2:
+        raise ValueError(f"Video-MME row has no usable option field: {sorted(row.keys())}")
     return normalized
 
 

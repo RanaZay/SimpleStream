@@ -22,7 +22,17 @@ export PYTHONFAULTHANDLER=1
 export ROCM_HOME=${ROCM_HOME:-/opt/rocm}
 export PATH="${ROCM_HOME}/bin:${PATH}"
 export LD_LIBRARY_PATH="${ROCM_HOME}/lib:${ROCM_HOME}/lib64:${LD_LIBRARY_PATH:-}"
-export TMPDIR="${PRISM_TMPDIR:-/tmp/${USER}/prism_${SLURM_JOB_ID:-$$}}"
+if [[ -n "${PRISM_TMPDIR:-}" ]]; then
+    export TMPDIR="$PRISM_TMPDIR"
+elif [[ -n "${SLURM_TMPDIR:-}" ]]; then
+    export TMPDIR="$SLURM_TMPDIR/prism_${SLURM_JOB_ID:-$$}"
+elif [[ -d /local_scratch && -w /local_scratch ]]; then
+    export TMPDIR="/local_scratch/${USER}/prism_${SLURM_JOB_ID:-$$}"
+elif [[ -d /scratch && -w /scratch ]]; then
+    export TMPDIR="/scratch/${USER}/prism_${SLURM_JOB_ID:-$$}"
+else
+    export TMPDIR="/tmp/${USER}/prism_${SLURM_JOB_ID:-$$}"
+fi
 export MIOPEN_DISABLE_CACHE=${MIOPEN_DISABLE_CACHE:-0}
 export PYTORCH_TUNABLEOP_ENABLED=0
 export ATTN_IMPLEMENTATION=${ATTN_IMPLEMENTATION:-sdpa}

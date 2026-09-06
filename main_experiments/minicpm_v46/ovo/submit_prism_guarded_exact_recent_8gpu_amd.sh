@@ -31,7 +31,17 @@ export MINICPM_MODEL_LOAD_TIMEOUT=${MINICPM_MODEL_LOAD_TIMEOUT:-7200}
 export HF_ENABLE_PARALLEL_LOADING=false
 export HF_PARALLEL_LOADING_WORKERS=1
 export HF_DEACTIVATE_ASYNC_LOAD=1
-export TMPDIR="${PRISM_TMPDIR:-/tmp/${USER}/prism_${SLURM_JOB_ID:-$$}}"
+if [[ -n "${PRISM_TMPDIR:-}" ]]; then
+    export TMPDIR="$PRISM_TMPDIR"
+elif [[ -n "${SLURM_TMPDIR:-}" ]]; then
+    export TMPDIR="$SLURM_TMPDIR/prism_${SLURM_JOB_ID:-$$}"
+elif [[ -d /local_scratch && -w /local_scratch ]]; then
+    export TMPDIR="/local_scratch/${USER}/prism_${SLURM_JOB_ID:-$$}"
+elif [[ -d /scratch && -w /scratch ]]; then
+    export TMPDIR="/scratch/${USER}/prism_${SLURM_JOB_ID:-$$}"
+else
+    export TMPDIR="/tmp/${USER}/prism_${SLURM_JOB_ID:-$$}"
+fi
 export MIOPEN_DISABLE_CACHE=${MIOPEN_DISABLE_CACHE:-0}
 export PYTORCH_TUNABLEOP_ENABLED=0
 export MINICPM_SEED=${MINICPM_SEED:-42}

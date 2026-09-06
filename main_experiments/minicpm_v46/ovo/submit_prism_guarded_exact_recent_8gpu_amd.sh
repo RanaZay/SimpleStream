@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=ovo_prism_evidence_contract
+#SBATCH --job-name=ovo_prism_guarded_exact
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=96
@@ -54,8 +54,8 @@ export PYTORCH_KERNEL_CACHE_PATH="${PYTORCH_KERNEL_CACHE_PATH:-$TMPDIR/torch_ker
 export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}
 export HIP_VISIBLE_DEVICES=${HIP_VISIBLE_DEVICES:-${CUDA_VISIBLE_DEVICES}}
 
-export ADAPTIVE_MODE=${ADAPTIVE_MODE:-progressive_sufficiency_memory_clip_mmr_evidence_contract}
-export PRISM_CLIP_MODE=${PRISM_CLIP_MODE:-evidence_contract}
+export ADAPTIVE_MODE=${ADAPTIVE_MODE:-progressive_sufficiency_memory_clip_mmr_candidate_override_guarded_rollback_exact_recent}
+export PRISM_CLIP_MODE=${PRISM_CLIP_MODE:-candidate_override_guarded_rollback_exact_recent}
 export ADAPTIVE_MIN_WINDOW=6
 export ADAPTIVE_MID_WINDOW=6
 export ADAPTIVE_MAX_WINDOW=6
@@ -94,7 +94,7 @@ fi
 
 GAMMA_TAG="${MINICPM_PSM_CLIP_OVERRIDE_THRESHOLD}"
 GAMMA_TAG="${GAMMA_TAG/./p}"
-RESULT_DIR="$REPO_ROOT/reports/prism_retrieval_variants/ovo_full_prism_clip_mmr_evidence_contract_g${GAMMA_TAG}_m0p60_d0p08_t3-30_c10_${LIMIT_TAG}_d8"
+RESULT_DIR="$REPO_ROOT/reports/prism_retrieval_variants/ovo_full_prism_clip_mmr_candidate_override_guarded_rollback_exact_recent_g${GAMMA_TAG}_${LIMIT_TAG}_d8"
 ts=$(date +%Y%m%d_%H%M%S)
 if [[ "${RESUME:-0}" != "1" ]]; then
     mv "$RESULT_DIR" "${RESULT_DIR}.old_$ts" 2>/dev/null || true

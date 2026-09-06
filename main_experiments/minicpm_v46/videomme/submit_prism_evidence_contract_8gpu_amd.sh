@@ -22,7 +22,7 @@ export PYTHONFAULTHANDLER=1
 export ROCM_HOME=${ROCM_HOME:-/opt/rocm}
 export PATH="${ROCM_HOME}/bin:${PATH}"
 export LD_LIBRARY_PATH="${ROCM_HOME}/lib:${ROCM_HOME}/lib64:${LD_LIBRARY_PATH:-}"
-export TMPDIR="${TMPDIR:-/tmp/${USER}/prism_${SLURM_JOB_ID:-$$}}"
+export TMPDIR="${PRISM_TMPDIR:-/tmp/${USER}/prism_${SLURM_JOB_ID:-$$}}"
 export MIOPEN_DISABLE_CACHE=${MIOPEN_DISABLE_CACHE:-0}
 export PYTORCH_TUNABLEOP_ENABLED=0
 export ATTN_IMPLEMENTATION=${ATTN_IMPLEMENTATION:-sdpa}
@@ -40,10 +40,10 @@ export PYTHONHASHSEED=${MINICPM_SEED}
 export HF_HOME=${HF_HOME:-$REPO_ROOT/.hf_home}
 export HF_HUB_CACHE=${HF_HUB_CACHE:-$HF_HOME/hub}
 
-mkdir -p logs .cache/miopen .cache/torch_kernels "$TMPDIR" "$TMPDIR/miopen-lockfiles"
-export MIOPEN_USER_DB_PATH="${MIOPEN_USER_DB_PATH:-$REPO_ROOT/.cache/miopen}"
-export MIOPEN_CUSTOM_CACHE_DIR="${MIOPEN_CUSTOM_CACHE_DIR:-$REPO_ROOT/.cache/miopen}"
-export PYTORCH_KERNEL_CACHE_PATH="${PYTORCH_KERNEL_CACHE_PATH:-$REPO_ROOT/.cache/torch_kernels}"
+mkdir -p logs "$TMPDIR" "$TMPDIR/miopen" "$TMPDIR/miopen-lockfiles" "$TMPDIR/torch_kernels"
+export MIOPEN_USER_DB_PATH="${MIOPEN_USER_DB_PATH:-$TMPDIR/miopen}"
+export MIOPEN_CUSTOM_CACHE_DIR="${MIOPEN_CUSTOM_CACHE_DIR:-$TMPDIR/miopen}"
+export PYTORCH_KERNEL_CACHE_PATH="${PYTORCH_KERNEL_CACHE_PATH:-$TMPDIR/torch_kernels}"
 export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}
 export HIP_VISIBLE_DEVICES=${HIP_VISIBLE_DEVICES:-${CUDA_VISIBLE_DEVICES}}
 

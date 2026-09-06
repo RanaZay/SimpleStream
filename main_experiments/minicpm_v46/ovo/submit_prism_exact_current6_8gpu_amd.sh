@@ -52,7 +52,7 @@ export ADAPTIVE_MEMORY_SEARCH_CHUNKS=64
 export MINICPM_EXACT_RECENT_CANDIDATE_FPS=4.0
 export MINICPM_PSM_HISTORY_SEARCH_CHUNKS=64
 export MINICPM_PSM_HISTORY_CANDIDATE_POOL=12
-export MINICPM_PSM_MAX_MEMORY_FRAMES=3
+export MINICPM_PSM_MAX_MEMORY_FRAMES=${MINICPM_PSM_MAX_MEMORY_FRAMES:-0}
 export MINICPM_PSM_MIN_TEMPORAL_GAP=2
 export MINICPM_PSM_SUFFICIENCY_THRESHOLD=0.62
 export MINICPM_PSM_MIN_EVIDENCE_GAIN=0.035
@@ -71,7 +71,7 @@ if [[ -n "${MAX_SAMPLES_TOTAL:-}" ]]; then
 elif [[ -n "${MAX_SAMPLES_PER_SPLIT:-}" ]]; then
     LIMIT_TAG="limit${MAX_SAMPLES_PER_SPLIT}_per_split"
 fi
-RESULT_DIR="$REPO_ROOT/main_experiments/results/repro_adaptive/ovo_minicpmv46_prism_current_recent6_exact6_h64_p12_m3_t0p62_${LIMIT_TAG}_d8"
+RESULT_DIR="$REPO_ROOT/main_experiments/results/repro_adaptive/ovo_minicpmv46_prism_current_recent6_exact6_h64_p12_m${MINICPM_PSM_MAX_MEMORY_FRAMES}_t0p62_${LIMIT_TAG}_d8"
 ts=$(date +%Y%m%d_%H%M%S)
 if [[ "${RESUME:-0}" != "1" ]]; then
     mv "$RESULT_DIR" "${RESULT_DIR}.old_$ts" 2>/dev/null || true

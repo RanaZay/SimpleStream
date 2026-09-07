@@ -3551,6 +3551,23 @@ def query_adaptive_window(
     if not selection.frames:
         raise ValueError(f"No frames selected from video: {video_path}")
 
+    if os.environ.get("MINICPM_PSM_DEBUG_FRAME_SHAPES", "0").strip().lower() not in {"0", "false", "no", "off"}:
+        frame_sizes = [getattr(frame, "size", None) for frame in selection.frames]
+        metadata = selection.metadata if isinstance(selection.metadata, dict) else {}
+        print(
+            "[PRISM_DEBUG] "
+            f"mode={config.mode} "
+            f"frames={len(selection.frames)} "
+            f"downsample={selection.downsample_mode or getattr(qa, 'downsample_mode', None)} "
+            f"max_slice_nums={getattr(qa, 'max_slice_nums', None)} "
+            f"chunk_ids={selection.final_chunk_ids} "
+            f"frame_sizes={frame_sizes} "
+            f"memory_chunk_ids={metadata.get('memory_chunk_ids')} "
+            f"recent_chunk_ids={metadata.get('recent_chunk_ids')} "
+            f"stop_reason={metadata.get('stop_reason')}",
+            flush=True,
+        )
+
     t0 = time.perf_counter()
     answer = qa.generate_from_frames(selection.frames, answer_prompt, downsample_mode=selection.downsample_mode)
     _synchronize_gpu_devices()

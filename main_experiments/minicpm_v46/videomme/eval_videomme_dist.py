@@ -6,7 +6,9 @@ entry points. It evaluates two causal recent-window style methods on the
 official lmms-lab/Video-MME mirror:
 
   * recent6: corrected exact-six Recent-6 context at the end of the video.
-  * progressive_sufficiency_memory_clip_mmr_evidence_contract: final PRISM.
+  * progressive_sufficiency_memory_clip_mmr_evidence_contract: evidence-contract diagnostic.
+  * progressive_sufficiency_memory_clip_mmr_candidate_override_guarded_rollback_exact_recent:
+    final StreamingBench-selected PRISM.
 """
 
 from __future__ import annotations
@@ -404,6 +406,7 @@ def main() -> None:
         choices=[
             "recent6",
             "progressive_sufficiency_memory_clip_mmr_evidence_contract",
+            "progressive_sufficiency_memory_clip_mmr_candidate_override_guarded_rollback_exact_recent",
         ],
         required=True,
     )
@@ -420,6 +423,7 @@ def main() -> None:
     baseline_mod.select_recent_window_frames = select_exact_current_recent_frames
     adaptive_mod.select_recent_window_frames = select_exact_current_recent_frames
     os.environ["MINICPM_SEED"] = str(SEED)
+    os.environ["MINICPM_ADAPTIVE_MODE"] = args.mode
 
     dist_timeout_seconds = int(os.environ.get("MINICPM_DIST_TIMEOUT_SECONDS", "7200"))
     accelerator = Accelerator(

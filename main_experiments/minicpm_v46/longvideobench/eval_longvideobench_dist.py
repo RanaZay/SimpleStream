@@ -23,6 +23,8 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../.
 
 from lib.minicpm.baseline import RecentWindowQAModel
 from lib.minicpm.baseline import query_recent_window as baseline_query_recent_window
+from lib.minicpm.adaptive import query_recent_window as adaptive_query_recent_window
+import lib.minicpm.adaptive as adaptive_mod
 import lib.minicpm.baseline as baseline_mod
 from lib.shared.recent_window import load_jsonl_results, save_json
 from main_experiments.minicpm_v46.streamingbench.eval_prism_exact_recent_dist import (
@@ -327,12 +329,20 @@ def main() -> None:
     parser.add_argument("--data-root", default="data/longvideobench")
     parser.add_argument("--annotation-json", default="data/longvideobench/lvb_val.json")
     parser.add_argument("--output-dir", required=True)
-    parser.add_argument("--mode", choices=["recent6"], default="recent6")
+    parser.add_argument(
+        "--mode",
+        choices=[
+            "recent6",
+            "progressive_sufficiency_memory_clip_mmr_candidate_override_guarded_rollback_exact_recent",
+        ],
+        default="recent6",
+    )
     parser.add_argument("--qa-model", default="openbmb/MiniCPM-V-4.6")
     parser.add_argument("--qa-device", default=None)
     parser.add_argument("--chunk-duration", type=float, default=1.0)
     parser.add_argument("--fps", type=float, default=1.0)
     parser.add_argument("--recent-frames-only", type=int, default=6)
+    parser.add_argument("--decode-context-chunks", type=int, default=192)
     parser.add_argument("--max-qa-tokens", type=int, default=256)
     parser.add_argument("--max-samples", type=int, default=0)
     parser.add_argument("--max-subtitle-chars", type=int, default=0)
@@ -340,7 +350,9 @@ def main() -> None:
     args = parser.parse_args()
 
     baseline_mod.select_recent_window_frames = select_exact_current_recent_frames
+    adaptive_mod.select_recent_window_frames = select_exact_current_recent_frames
     os.environ["MINICPM_SEED"] = str(SEED)
+    os.environ["MINICPM_ADAPTIVE_MODE"] = args.mode
 
     accelerator = Accelerator(
         kwargs_handlers=[
@@ -384,16 +396,28 @@ def main() -> None:
                 )
             else:
                 try:
-                    result, decode_backend = baseline_query_recent_window(
-                        qa,
-                        task["video_path"],
-                        prompt,
-                        chunk_duration=args.chunk_duration,
-                        fps=args.fps,
-                        recent_frames_only=args.recent_frames_only,
-                        video_start=0.0,
-                        video_end=None,
-                    )
+                    if args.mode == "recent6":
+                        result, decode_backend = baseline_query_recent_window(
+                            qa,
+                            task["video_path"],
+                            prompt,
+                            chunk_duration=args.chunk_duration,
+                            fps=args.fps,
+                            recent_frames_only=args.recent_frames_only,
+                            video_start=0.0,
+                            video_end=None,
+                        )
+                    else:
+                        result, decode_backend = adaptive_query_recent_window(
+                            qa,
+                            task["video_path"],
+                            prompt,
+                            chunk_duration=args.chunk_duration,
+                            fps=args.fps,
+                            recent_frames_only=args.decode_context_chunks,
+                            video_start=0.0,
+                            video_end=None,
+                        )
                     record = _result_record(
                         task,
                         prompt=prompt,

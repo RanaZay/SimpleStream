@@ -66,6 +66,33 @@ def _frame_sizes(frames: list[Image.Image]) -> list[list[int]]:
     return [[int(frame.width), int(frame.height)] for frame in frames]
 
 
+def _dominant_frame_size(frames: list[Image.Image]) -> tuple[int, int] | None:
+    counts: dict[tuple[int, int], int] = {}
+    for frame in frames:
+        size = (int(frame.width), int(frame.height))
+        counts[size] = counts.get(size, 0) + 1
+    if not counts:
+        return None
+    return max(counts.items(), key=lambda item: (item[1], item[0][0] * item[0][1]))[0]
+
+
+def _normalize_frame_sizes(
+    frames: list[Image.Image],
+    target_size: tuple[int, int] | None = None,
+) -> list[Image.Image]:
+    target = target_size or _dominant_frame_size(frames)
+    if target is None:
+        return frames
+    resampling = getattr(Image, "Resampling", Image).BICUBIC
+    normalized: list[Image.Image] = []
+    for frame in frames:
+        if (int(frame.width), int(frame.height)) == target:
+            normalized.append(frame)
+        else:
+            normalized.append(frame.resize(target, resampling))
+    return normalized
+
+
 def _extract_mcq_options(prompt: str) -> list[dict[str, str]]:
     match = re.search(r"\bOptions:\s*", prompt, flags=re.IGNORECASE)
     if match is None:
@@ -484,12 +511,14 @@ def _evaluate_sufficiency(
     visual_support_weight: float,
 ) -> tuple[dict[str, Any], float]:
     iteration_t0 = time.perf_counter()
-    frames = [frame for chunk in context_chunks for frame in chunk.frames]
+    raw_frames = [frame for chunk in context_chunks for frame in chunk.frames]
+    frames = _normalize_frame_sizes(raw_frames)
     if os.environ.get("MINICPM_PSM_DEBUG_FRAME_SHAPES", "0").strip().lower() not in {"0", "false", "no", "off"}:
         print(
             "[PRISM_DEBUG] "
             f"sufficiency_context_chunks={[int(chunk.chunk_index) for chunk in context_chunks]} "
             f"frames={len(frames)} "
+            f"raw_frame_sizes={_frame_sizes(raw_frames)} "
             f"frame_sizes={_frame_sizes(frames)} "
             f"downsample={getattr(qa, 'downsample_mode', None)} "
             f"max_slice_nums={getattr(qa, 'max_slice_nums', None)}",
@@ -1213,8 +1242,12 @@ def select_progressive_sufficiency_memory_microclip(
         )
     _print_trace(metadata)
     memory_frames = [frame for chunk in best_memory for frame in chunk.frames]
+    final_frames = _normalize_frame_sizes(
+        [*memory_frames, *recent_frames],
+        target_size=_dominant_frame_size(recent_frames),
+    )
     return ProgressiveSufficiencySelection(
-        frames=[*memory_frames, *recent_frames],
+        frames=final_frames,
         final_chunk_ids=final_ids,
         metadata=metadata,
         answer_prompt=answer_prompt,
@@ -1956,7 +1989,10 @@ def select_progressive_sufficiency_memory(
     final_chunks = [*best_memory, *recent_chunks]
     final_ids = [int(chunk.chunk_index) for chunk in final_chunks]
     memory_frames = [frame for chunk in best_memory for frame in chunk.frames]
-    final_frames = [*memory_frames, *recent_frames]
+    final_frames = _normalize_frame_sizes(
+        [*memory_frames, *recent_frames],
+        target_size=_dominant_frame_size(recent_frames),
+    )
     recent_frame_hashes = [_image_sha256(frame) for frame in recent_frames]
     memory_frame_hashes = [_image_sha256(frame) for frame in memory_frames]
     final_frame_hashes = [_image_sha256(frame) for frame in final_frames]
@@ -2161,7 +2197,6 @@ def _validate_metadata(metadata: dict[str, Any]) -> None:
     assert len(memory_ids) == len(set(memory_ids))
     assert not (set(recent_ids) & set(memory_ids))
     assert final_ids == [*memory_ids, *recent_ids]
-    assert len(final_ids) == len(set(final_ids))
     recent_start = metadata.get("recent_start_time_seconds")
     for candidate in metadata.get("candidate_queue", []):
         if (

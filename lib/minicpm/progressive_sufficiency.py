@@ -840,6 +840,20 @@ def _print_trace(metadata: dict[str, Any]) -> None:
         )
 
 
+def _dedupe_memory_against_recent(memory_chunks: list[Any], recent_ids: set[int]) -> list[Any]:
+    """Keep admitted memory unique and strictly outside the exact recent context."""
+
+    deduped: list[Any] = []
+    seen = set(recent_ids)
+    for chunk in sorted(memory_chunks, key=_chunk_sort_key):
+        chunk_id = int(chunk.chunk_index)
+        if chunk_id in seen:
+            continue
+        seen.add(chunk_id)
+        deduped.append(chunk)
+    return deduped
+
+
 def select_progressive_sufficiency_memory_microclip(
     qa: RecentWindowQAModel,
     chunks: list[Any],
@@ -1081,7 +1095,7 @@ def select_progressive_sufficiency_memory_microclip(
                     else "microclip_variant_stop"
                 )
 
-    best_memory = sorted(best_memory, key=_chunk_sort_key)
+    best_memory = _dedupe_memory_against_recent(best_memory, set(recent_ids))
     memory_ids = [int(chunk.chunk_index) for chunk in best_memory]
     final_chunks = [*best_memory, *recent_chunks]
     final_ids = [int(chunk.chunk_index) for chunk in final_chunks]
@@ -1927,7 +1941,7 @@ def select_progressive_sufficiency_memory(
             evidence_contract_reason = "valid_ledger_available" if evidence_contract_valid else "no_memory_to_abstain"
         else:
             evidence_contract_reason = "not_cumulative_count"
-    best_memory = sorted(best_memory, key=_chunk_sort_key)
+    best_memory = _dedupe_memory_against_recent(best_memory, set(recent_ids))
     memory_ids = [int(chunk.chunk_index) for chunk in best_memory]
     final_chunks = [*best_memory, *recent_chunks]
     final_ids = [int(chunk.chunk_index) for chunk in final_chunks]

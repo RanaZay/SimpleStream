@@ -485,6 +485,16 @@ def _evaluate_sufficiency(
 ) -> tuple[dict[str, Any], float]:
     iteration_t0 = time.perf_counter()
     frames = [frame for chunk in context_chunks for frame in chunk.frames]
+    if os.environ.get("MINICPM_PSM_DEBUG_FRAME_SHAPES", "0").strip().lower() not in {"0", "false", "no", "off"}:
+        print(
+            "[PRISM_DEBUG] "
+            f"sufficiency_context_chunks={[int(chunk.chunk_index) for chunk in context_chunks]} "
+            f"frames={len(frames)} "
+            f"frame_sizes={_frame_sizes(frames)} "
+            f"downsample={getattr(qa, 'downsample_mode', None)} "
+            f"max_slice_nums={getattr(qa, 'max_slice_nums', None)}",
+            flush=True,
+        )
     option_score = _score_options(qa, frames, prompt, options)
     support_text = f"{_question_text(prompt)} Answer: {option_score['predicted_answer_text']}"
     support_scores = scorer.score(support_text, frames)

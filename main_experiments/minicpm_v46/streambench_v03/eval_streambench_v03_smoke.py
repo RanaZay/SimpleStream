@@ -185,8 +185,10 @@ def _run_method(
             video_end=video_end,
         )
     elif method == "prism":
-        os.environ["MINICPM_ADAPTIVE_MODE"] = "progressive_sufficiency_memory_clip_mmr_evidence_contract"
-        os.environ["PRISM_CLIP_MODE"] = "evidence_contract"
+        os.environ["MINICPM_ADAPTIVE_MODE"] = os.environ.get(
+            "STREAMBENCH_PRISM_MODE", "progressive_sufficiency_memory_clip_mmr_evidence_contract"
+        )
+        os.environ["PRISM_CLIP_MODE"] = os.environ.get("STREAMBENCH_PRISM_CLIP_MODE", "evidence_contract")
         adaptive_mod.select_recent_window_frames = select_exact_current_recent_frames
         result, decode_backend = adaptive_mod.query_adaptive_window(
             qa=qa,

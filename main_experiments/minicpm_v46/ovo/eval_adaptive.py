@@ -55,6 +55,8 @@ def _consume_adaptive_args() -> argparse.Namespace:
             "progressive_sufficiency_memory_clip_mmr_candidate_override_protected_rollback",
             "progressive_sufficiency_memory_clip_mmr_candidate_override_guarded_rollback",
             "progressive_sufficiency_memory_clip_mmr_candidate_override_guarded_rollback_exact_recent",
+            "progressive_sufficiency_memory_clip_mmr_progressive_arbitration_exact_recent",
+            "progressive_arbitration_exact_recent6_control",
             "progressive_sufficiency_memory_clip_mmr_evidence_arbitration",
             "progressive_sufficiency_memory_clip_mmr_evidence_arbitration_temporal_band",
             "progressive_sufficiency_memory_clip_mmr_evidence_arbitration_temporal_consistency",

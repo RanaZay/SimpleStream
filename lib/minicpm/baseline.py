@@ -591,6 +591,7 @@ class RecentWindowQAModel:
             if generated_ids.shape[1] > prompt_length
             else generated_ids[0]
         ]
+        self._last_generated_tokens = int(trimmed[0].numel())
         return self.processor.batch_decode(
             trimmed,
             skip_special_tokens=True,

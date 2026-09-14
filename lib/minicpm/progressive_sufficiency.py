@@ -38,6 +38,12 @@ class ProgressiveSufficiencySelection:
     downsample_mode: str | None = None
 
 
+def select_progressive_arbitration(*args, **kwargs):
+    """Opt-in K0 -> K3 controller; the historical PSM functions remain unchanged."""
+    from lib.minicpm.progressive_arbitration import select
+    return select(*args, **kwargs)
+
+
 def _env_int(name: str, default: int) -> int:
     return int(os.environ.get(name, str(default)))
 

@@ -146,6 +146,7 @@ def _profile_result(result: Any) -> dict[str, Any]:
     profile = getattr(result, "profile_metadata", None) or {}
     adaptive = getattr(result, "adaptive_metadata", None)
     return {
+        **({"profile": profile} if "progressive_arbitration" in profile else {}),
         "final_chunk_ids": getattr(result, "final_chunk_ids", None),
         "num_frames": getattr(result, "num_frames", None),
         "num_vision_tokens": getattr(result, "num_vision_tokens", None),
@@ -189,6 +190,11 @@ def _run_method(
             "STREAMBENCH_PRISM_MODE", "progressive_sufficiency_memory_clip_mmr_evidence_contract"
         )
         os.environ["PRISM_CLIP_MODE"] = os.environ.get("STREAMBENCH_PRISM_CLIP_MODE", "evidence_contract")
+        if os.environ["MINICPM_ADAPTIVE_MODE"] in {
+            "progressive_sufficiency_memory_clip_mmr_progressive_arbitration_exact_recent",
+            "progressive_arbitration_exact_recent6_control",
+        }:
+            video_start = 0.0
         adaptive_mod.select_recent_window_frames = select_exact_current_recent_frames
         result, decode_backend = adaptive_mod.query_adaptive_window(
             qa=qa,

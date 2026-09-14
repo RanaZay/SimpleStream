@@ -3417,6 +3417,13 @@ def query_adaptive_window(
     evaluator, but adaptive runs do not apply CDAS.
     """
 
+    if os.environ.get("MINICPM_ADAPTIVE_MODE") in {
+        "progressive_sufficiency_memory_clip_mmr_progressive_arbitration_exact_recent",
+        "progressive_arbitration_exact_recent6_control",
+    }:
+        from lib.minicpm.progressive_arbitration import query
+        return query(qa, video_path, prompt, chunk_duration, fps, recent_frames_only,
+                     video_start=video_start, video_end=video_end, cdas_config=cdas_config)
     config = AdaptiveWindowConfig.from_env()
     config.validate()
     before_memory = _reset_gpu_memory_peaks()

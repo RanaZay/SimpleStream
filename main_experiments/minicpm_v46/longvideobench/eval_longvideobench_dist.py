@@ -334,6 +334,8 @@ def main() -> None:
         choices=[
             "recent6",
             "progressive_sufficiency_memory_clip_mmr_candidate_override_guarded_rollback_exact_recent",
+            "progressive_sufficiency_memory_clip_mmr_progressive_arbitration_exact_recent",
+            "progressive_arbitration_exact_recent6_control",
         ],
         default="recent6",
     )

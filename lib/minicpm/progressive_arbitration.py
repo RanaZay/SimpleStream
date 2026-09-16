@@ -12,6 +12,7 @@ from dataclasses import asdict, dataclass
 import hashlib
 import math
 import os
+import re
 import time
 from types import SimpleNamespace
 
@@ -44,6 +45,23 @@ class Config:
 
 
 CONFIG = Config()
+
+
+def extract_options(prompt):
+    match = re.search(r'\bOptions:\s*', prompt, flags=re.IGNORECASE)
+    if match is None:
+        return []
+    text = re.split(r'\n\s*(?:Only give|Answer with|Respond with)',
+                    prompt[match.end():], maxsplit=1, flags=re.IGNORECASE)[0]
+    # Labels must start an option, not match the last letter of words like "Liga.".
+    matches = re.finditer(r'(?:^|[;\n])\s*([A-E])[.)]\s*(.*?)(?=(?:[;\n]\s*[A-E][.)]\s)|$)',
+                          text.strip(), flags=re.IGNORECASE | re.DOTALL)
+    options = [{'letter':m.group(1).upper(), 'text':m.group(2).strip()} for m in matches]
+    if len(options) < 2 or any(not o['text'] for o in options):
+        return []
+    if len({o['letter'] for o in options}) != len(options):
+        raise ValueError('Duplicate MCQ option labels')
+    return options
 
 
 def sync():
@@ -247,12 +265,11 @@ def score_context(qa, frames, prompt, options, clip, stats, depth):
 
 
 def select(qa, chunks, recent, prompt, clip, stats, control=False, scorer=score_context):
-    from lib.minicpm.progressive_sufficiency import _extract_mcq_options
     assert len(recent.frames) == CONFIG.recent, 'Exact Recent-6 requires six distinct selected frame records'
     if len({f.size for f in recent.frames}) != 1:
         raise ValueError('Recent frame geometry differs; refusing to alter the exact baseline backbone')
     original_hashes = [image_key(f) for f in recent.frames]
-    options = _extract_mcq_options(prompt)
+    options = extract_options(prompt)
     # No synthesized choices or label-dependent handling for open-ended tasks.
     eligible = prefilter(chunks, recent, stats) if options and not control else []
     accepted, iterations, candidates = [], [], []

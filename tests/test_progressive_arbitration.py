@@ -25,6 +25,14 @@ def chunk(index,stamp):
 
 
 class IntegratedController(unittest.TestCase):
+    def test_option_labels_do_not_match_word_endings(self):
+        texts = ['FIFA and La Liga.', 'UEFA and La Liga.', 'Bundesliga and La Liga.', 'Aeromexico and La Liga.']
+        for separator in ('; ', '\n'):
+            prompt = 'Question: logos?\nOptions: ' + separator.join(f'{label}. {text}' for label, text in zip('ABCD', texts))
+            prompt += '\nAnswer with only the option letter.'
+            self.assertEqual(pa.extract_options(prompt), [{'letter':label, 'text':text} for label,text in zip('ABCD',texts)])
+        self.assertEqual(pa.extract_options('Describe the video.'), [])
+
     def test_twenty_four_progressive_paths(self):
         for case in range(24):
             recent_chunks=[chunk(i,45+i) for i in range(100,106)]

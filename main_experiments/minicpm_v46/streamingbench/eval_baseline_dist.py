@@ -339,6 +339,13 @@ def main() -> None:
                             else float(args.recent_frames_only) * float(args.chunk_duration)
                         )
                         video_start = max(0.0, ts_sec - max(window_seconds, float(args.chunk_duration)))
+                        if os.environ.get('MINICPM_ADAPTIVE_MODE') in {
+                            'progressive_sufficiency_memory_clip_mmr_progressive_arbitration_exact_recent',
+                            'progressive_arbitration_exact_recent6_control',
+                        }:
+                            # The new controller independently decodes its exact recent window.
+                            # Its history input must not be truncated to that same window.
+                            video_start = 0.0
                         effective_recent_chunks = max(
                             int(args.recent_frames_only),
                             int(math.ceil(window_seconds / max(float(args.chunk_duration), 1e-6))),

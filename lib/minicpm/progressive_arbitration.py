@@ -373,9 +373,13 @@ def query(qa, video_path, prompt, chunk_duration, fps, recent_frames_only, video
     # Preserve caller bounds; never silently clamp out-of-range annotations.
     saved = os.environ.pop('QWEN_EXACT_RECENT_DECODE',None)
     try:
-        with timed(stats,'broad_history_decode_ms'):
-            chunks, backend = decode_video_to_chunks_qwen(video_path,chunk_duration,fps,CONFIG.horizon+6,
-                                                          video_start=video_start,video_end=video_end)
+        if control:
+            chunks, backend = [], 'exact_recent_control'
+            stats['broad_history_decode_ms'] = 0.0
+        else:
+            with timed(stats,'broad_history_decode_ms'):
+                chunks, backend = decode_video_to_chunks_qwen(video_path,chunk_duration,fps,CONFIG.horizon+6,
+                                                              video_start=video_start,video_end=video_end)
         start = max(0.,video_end-6.) if video_end is not None else video_start
         with timed(stats,'recent6_decode_ms'):
             recent = select_exact_current_recent_frames(qa,video_path,chunk_duration,fps,6,video_start=start,video_end=video_end)

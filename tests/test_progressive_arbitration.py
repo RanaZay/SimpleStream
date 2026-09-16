@@ -1,5 +1,7 @@
 """Deterministic integration fixtures, not model accuracy or latency experiments."""
 import unittest
+import os
+from contextlib import ExitStack
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -55,6 +57,26 @@ class IntegratedController(unittest.TestCase):
         stats=pa.initial_stats()
         self.assertIsNone(stats['k3_total_ms'])
         self.assertIsNone(stats['arbitration_k2_ms'])
+
+    def test_control_never_decodes_history(self):
+        recent = SimpleNamespace(frames=[Image.new('RGB', (16,16)) for _ in range(6)],
+            final_chunk_ids=list(range(6)), downsample_mode='16x', selected_chunks=[], cdas_metadata={})
+        qa = SimpleNamespace(_progressive_arbitration_clip=SimpleNamespace(begin=lambda video: None),
+            _progressive_arbitration_warm=True, _last_model_generate_seconds=0.,
+            _last_preprocess_seconds=0., _last_ttft_seconds=0., _last_num_vision_tokens=396,
+            generate_from_frames=lambda *a, **k: 'A')
+        with ExitStack() as stack:
+            stack.enter_context(patch.dict(os.environ, MINICPM_ADAPTIVE_MODE=pa.BASELINE_MODE))
+            stack.enter_context(patch.object(pa, 'sync', lambda: None))
+            decode = stack.enter_context(patch('lib.shared.recent_window.decode_video_to_chunks_qwen'))
+            stack.enter_context(patch('main_experiments.minicpm_v46.streamingbench.eval_prism_exact_recent_dist.select_exact_current_recent_frames', return_value=recent))
+            stack.enter_context(patch('lib.minicpm.baseline._reset_gpu_memory_peaks', return_value={}))
+            stack.enter_context(patch('lib.minicpm.baseline._capture_gpu_memory', return_value={}))
+            stack.enter_context(patch('lib.minicpm.baseline._build_profile', return_value={'gpu_peak_allocated_mb':0., 'gpu_peak_reserved_mb':0.}))
+            result, _ = pa.query(qa, 'test.mp4', 'Question: test\nOptions:\nA. one\nB. two', 1., 1., 6, video_end=60.)
+            decode.assert_not_called()
+            self.assertEqual(result.num_frames, 6)
+            self.assertEqual(result.profile_metadata['progressive_arbitration']['broad_history_decode_ms'], 0.)
 
 
 if __name__=='__main__':

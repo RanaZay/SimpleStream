@@ -99,8 +99,11 @@ Per-query metadata is under `profile.progressive_arbitration` and
 - Full-system timing includes visual preparation, excluding initialization/warmup.
   Peak allocated/reserved GPU memory and final visual tokens are recorded.
 
-The controller still decodes broad history and the Recent-6 candidate path
-separately. No claim of a decoding speedup is made. Future pre-decode pruning
+The PRISM controller still decodes broad history and the Recent-6 candidate path
+separately. The matched Recent-6 control skips broad history decoding entirely.
+StreamingBench passes history from time zero to the query timestamp to the new
+controller, which independently selects the exact recent window.
+No claim of a PRISM decoding speedup is made. Future pre-decode pruning
 must preserve sampler targets and decoded frame equivalence.
 
 ## AMD submission

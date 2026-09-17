@@ -115,6 +115,15 @@ def _profile_fields(record: dict[str, Any], profile_metadata: dict[str, Any] | N
     record["gpu_peak_extra_reserved_mb"] = profile_metadata.get("gpu_peak_extra_reserved_mb")
 
 
+def _task_key(task):
+    if os.environ.get('MINICPM_ADAPTIVE_MODE') in {
+        'progressive_arbitration_exact_recent6_control',
+        'progressive_sufficiency_memory_clip_mmr_progressive_arbitration_exact_recent',
+    }:
+        return f"streamingbench::{task['_index']}"
+    return make_key(task['video_basename'], task['question'], question_limit=80)
+
+
 def _result_record(
     *,
     task: dict[str, Any],
@@ -128,7 +137,7 @@ def _result_record(
     question = task["question"]
     record: dict[str, Any] = {
         "_index": int(task["_index"]),
-        "_key": make_key(task["video_basename"], question, question_limit=80),
+        "_key": _task_key(task),
         "video": task["video_basename"],
         "video_categories": task.get("video_categories", ""),
         "task_type": question.get("task_type", ""),
@@ -296,7 +305,7 @@ def main() -> None:
     with open(ckpt_path, "a") as ckpt_file:
         for local_index, task in enumerate(local_tasks, start=1):
             question = task["question"]
-            key = make_key(task["video_basename"], question, question_limit=80)
+            key = _task_key(task)
             if key in done_keys:
                 logger.info("[rank %d] skip %s", accelerator.process_index, key)
                 continue

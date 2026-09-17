@@ -25,6 +25,31 @@ def chunk(index,stamp):
 
 
 class IntegratedController(unittest.TestCase):
+    def test_short_context_preserved_for_both_modes(self):
+        for count in range(1, 7):
+            for control in (False, True):
+                chunks = [chunk(i, i) for i in range(count)]
+                recent = SimpleNamespace(frames=[c.frames[0] for c in chunks],
+                    selected_chunks=chunks, final_chunk_ids=list(range(count)), cdas_metadata={})
+                def scorer(*args):
+                    return dict(predicted_option='A', answer_margin=.7, sufficiency=.8, entropy_confidence=.5)
+                with patch.object(pa, 'sync', lambda: None):
+                    frames, memory, metadata = pa.select(None, [], recent,
+                        'Question: test\nOptions:\nA. one\nB. two', Clip(), pa.initial_stats(),
+                        control=control, scorer=scorer)
+                self.assertEqual(frames, recent.frames)
+                self.assertEqual(memory, [])
+                self.assertEqual(metadata['recent_frame_count'], count)
+                self.assertEqual(metadata['short_recent_context'], count < 6)
+
+    def test_timing_discrepancy_is_nonfatal_and_visible(self):
+        stats = pa.initial_stats()
+        stats.update(final_generation_ms=100., PRISM_algorithmic_latency_ms=250.)
+        pa.aggregate_timing(stats)
+        self.assertFalse(stats['latency_accounting_valid'])
+        self.assertEqual(stats['latency_accounting_residual_ms'], 150.)
+        self.assertEqual(stats['PRISM_algorithmic_latency_ms'], 250.)
+
     def test_option_labels_do_not_match_word_endings(self):
         texts = ['FIFA and La Liga.', 'UEFA and La Liga.', 'Bundesliga and La Liga.', 'Aeromexico and La Liga.']
         for separator in ('; ', '\n'):

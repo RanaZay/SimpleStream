@@ -41,7 +41,7 @@ def load(directory):
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument('--benchmark', required=True, choices=['ovo', 'streamingbench'])
+    p.add_argument('--benchmark', required=True, choices=['ovo', 'streamingbench', 'egoschema'])
     p.add_argument('--prism', required=True)
     p.add_argument('--oasis', required=True)
     p.add_argument('--recent6')

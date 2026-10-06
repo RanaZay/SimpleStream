@@ -195,7 +195,7 @@ QUESTION_TEMPLATE_OPEN = (
 
 # Benchmark wrappers ask for a bare letter; OASIS asks for reasoning, a tool call, then a tagged letter.
 _PREAMBLE = re.compile(r'^You are an advanced video question-answering AI assistant\..*?(?=Question:)', re.S)
-_MC_FORMAT = re.compile(r'\n\s*Only give the best option\'s letter[^\n]*\s*$', re.I)
+_MC_FORMAT = re.compile(r'\n\s*(?:Only give the best option\'s letter|Answer with only the option letter)[^\n]*\s*$', re.I)
 _TOOL_CALL = re.compile(r'<tool_call>(.*?)</tool_call>', re.S)
 _ANSWER = re.compile(r'<answer>\s*(.*?)\s*</answer>', re.S)
 

@@ -41,6 +41,18 @@ class Prompts(unittest.TestCase):
         self.assertIn('A. cup', question)
         self.assertIn('<answer> </answer> tags', question)
 
+    def test_egoschema_prompt(self):
+        prompt = ("You are an advanced video question-answering AI assistant.\n"
+                  "The video is processed causally up to the end of the clip. "
+                  "Answer the multiple-choice question using the provided visual evidence.\n\n"
+                  "Question: What did C do?\nOptions:\nA. cook\nB. clean\nC. read\nD. walk\nE. sleep\n\n"
+                  "Answer with only the option letter.")
+        question, mc = om.build_query(prompt)
+        self.assertTrue(mc)
+        self.assertTrue(question.startswith('Question: What did C do?'))
+        self.assertIn('E. sleep', question)
+        self.assertNotIn('Answer with only the option letter', question)
+
     def test_ovo_prompts(self):
         question, mc = om.build_query("Which tool?\nOptions: A. saw; B. drill; C. hammer; D. knife;\n"
                                       "Only give the best option's letter directly.")

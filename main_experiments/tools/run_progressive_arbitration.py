@@ -94,8 +94,8 @@ def main():
     args = parser.parse_args()
     baseline = args.baseline or os.environ.get('PRISM_BASELINE') == '1'
     oasis = args.oasis or os.environ.get('PRISM_OASIS') == '1'
-    if oasis and (baseline or args.benchmark not in ('ovo','streamingbench')):
-        raise ValueError('OASIS is wired for ovo and streamingbench only, and excludes the Recent-6 control')
+    if oasis and (baseline or args.benchmark not in ('ovo','streamingbench','egoschema')):
+        raise ValueError('OASIS is wired for ovo, streamingbench and egoschema only, and excludes the Recent-6 control')
     module, extra, tasks = specification(args.benchmark,args.max_samples)
     if not tasks:
         raise ValueError('Empty dataset')

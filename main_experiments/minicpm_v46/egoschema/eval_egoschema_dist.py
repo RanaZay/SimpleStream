@@ -341,6 +341,7 @@ def main() -> None:
             "progressive_sufficiency_memory_clip_mmr_candidate_override_guarded_rollback_exact_recent",
             "progressive_sufficiency_memory_clip_mmr_progressive_arbitration_exact_recent",
             "progressive_arbitration_exact_recent6_control",
+            "recent6_oasis_hierarchical_event_memory",
             "progressive_sufficiency_memory_clip_mmr_evidence_contract",
         ],
         required=True,

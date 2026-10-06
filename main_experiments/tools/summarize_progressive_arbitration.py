@@ -26,7 +26,8 @@ def distribution(values):
 
 def records(directory):
     rows=[]
-    files=sorted(directory.glob('rank_*/results_incremental.jsonl'))
+    # Single-process OVO runs write the checkpoint at the top level instead of under rank_*/.
+    files=sorted(directory.glob('rank_*/results_incremental.jsonl')) or sorted(directory.glob('results_incremental.jsonl'))
     if files:
         for file in files:
             for line in file.read_text().splitlines():

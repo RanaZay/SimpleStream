@@ -50,6 +50,19 @@ class Prompts(unittest.TestCase):
         self.assertFalse(mc)
         self.assertIn('Only give a number as answer.', question)
 
+    def test_tool_call_variants(self):
+        cases = {
+            '\n{"name": "rag_retrieval", "arguments": {"text_input": "red cup"}}\n': ('red cup', 'json'),
+            '{"name": "rag_retrieval", "arguments": "{\\"text_input\\": \\"red cup\\"}"}': ('red cup', 'json'),
+            '{"text_input": "red cup"}': ('red cup', 'json'),
+            "{'name': 'rag_retrieval', 'arguments': {'text_input': 'red cup'}}": ('red cup', 'text_input_regex'),
+            '{"name": "rag_retrieval", "arguments": {"text_input": "red cup",}}': ('red cup', 'text_input_regex'),
+            'red cup on table': ('red cup on table', 'plain_text'),
+            '  ': (None, 'unparsed'),
+        }
+        for block, expected in cases.items():
+            self.assertEqual(om.parse_tool_query(block), expected, block)
+
     def test_answer_parsing(self):
         self.assertEqual(om.parse_answer('think <answer>B</answer>', True), ('B', 'answer_tag'))
         self.assertEqual(om.parse_answer('So the answer is C.', True), ('C', 'answer_phrase'))

@@ -227,6 +227,24 @@ def parse_answer(response, multiple_choice):
     return _TOOL_CALL.sub('', response).strip(), 'untagged_text'
 
 
+def parse_tool_query(block):
+    """Retrieval query from a <tool_call> body; tolerates format slips a strict json.loads rejects."""
+    try:
+        call = json.loads(block)
+        arguments = call.get('arguments', call) if isinstance(call, dict) else None
+        if isinstance(arguments, str):
+            arguments = json.loads(arguments)
+        if isinstance(arguments, dict) and isinstance(arguments.get('text_input'), str):
+            return arguments['text_input'], 'json'
+    except (json.JSONDecodeError, TypeError, AttributeError):
+        pass
+    match = re.search(r'text_input[\'"]?\s*[:=]\s*[\'"]([^\'"]+)[\'"]', block)
+    if match:
+        return match.group(1), 'text_input_regex'
+    plain = re.sub(r'[{}\[\]"]|\brag_retrieval\b|\bname\b|\barguments\b|:', ' ', block).strip(' ,\n')
+    return (plain, 'plain_text') if plain else (None, 'unparsed')
+
+
 def hhmmss(t):
     t = int(t)
     return f"{t // 3600:02d}:{t % 3600 // 60:02d}:{t % 60:02d}"
@@ -569,10 +587,8 @@ def query(qa, video_path, prompt, chunk_duration, fps, recent_frames_only, video
     final_call, response, tool_query, events, qas = coarse_call, coarse, None, [], []
     with timed(stats, 'tool_call_parse_ms'):
         calls = _TOOL_CALL.findall(coarse)
-        try:
-            tool_query = json.loads(calls[0])['arguments']['text_input'] if calls else None
-        except (json.JSONDecodeError, KeyError, TypeError):
-            tool_query = None  # Official behaviour: malformed tool calls keep the coarse answer.
+        # The release drops non-JSON calls; MiniCPM's format slips would otherwise silently disable retrieval.
+        tool_query, tool_parse = parse_tool_query(calls[0]) if calls else (None, 'no_tool_call')
     stats['tool_call_emitted'] = bool(calls)
     if tool_query is not None:
         with timed(stats, 'retrieval_total_ms'):
@@ -648,7 +664,7 @@ def query(qa, video_path, prompt, chunk_duration, fps, recent_frames_only, video
     metadata = dict(
         mode=MODE, config=asdict(config), baseline_control=False, memory_triggered=fine_triggered,
         memory_accepted=bool(events), arbitration_supported=True, multiple_choice=multiple_choice,
-        answer_parse_source=parse_source, tool_query=tool_query, coarse_response=coarse,
+        answer_parse_source=parse_source, tool_query=tool_query, tool_call_parse=tool_parse, coarse_response=coarse,
         fine_response=response if final_call is not coarse_call else None,
         retrieved_event_ids=[n.id for n in events], retrieved_event_spans=[[n.t_start, n.t_end] for n in events],
         retrieved_qa_times=[q.t for q in qas], root_ids=list(state.roots),

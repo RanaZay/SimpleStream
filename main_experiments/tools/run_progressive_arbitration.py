@@ -89,8 +89,13 @@ def main():
     parser.add_argument('benchmark',choices=BENCHMARKS)
     parser.add_argument('--check',action='store_true')
     parser.add_argument('--baseline',action='store_true')
+    parser.add_argument('--oasis',action='store_true',help='Recent-6 + OASIS hierarchical event memory baseline')
     parser.add_argument('--max-samples',type=int,default=int(os.environ.get('MAX_SAMPLES','0')))
     args = parser.parse_args()
+    baseline = args.baseline or os.environ.get('PRISM_BASELINE') == '1'
+    oasis = args.oasis or os.environ.get('PRISM_OASIS') == '1'
+    if oasis and (baseline or args.benchmark not in ('ovo','streamingbench')):
+        raise ValueError('OASIS is wired for ovo and streamingbench only, and excludes the Recent-6 control')
     module, extra, tasks = specification(args.benchmark,args.max_samples)
     if not tasks:
         raise ValueError('Empty dataset')
@@ -100,9 +105,11 @@ def main():
     print(f'Validated {len(tasks)} tasks for {args.benchmark}',flush=True)
     if args.check:
         return
-    mode = BASELINE_MODE if args.baseline or os.environ.get('PRISM_BASELINE') == '1' else MODE
+    from lib.minicpm import oasis_memory
+    mode = BASELINE_MODE if baseline else oasis_memory.MODE if oasis else MODE
     job = os.environ.get('SLURM_JOB_ID',str(time.time_ns()))
-    output = ROOT/'reports/progressive_arbitration'/args.benchmark/('recent6_' if mode==BASELINE_MODE else 'prism_')
+    output = ROOT/'reports/progressive_arbitration'/args.benchmark/(
+        'recent6_' if mode==BASELINE_MODE else 'recent6_oasis_' if oasis else 'prism_')
     output = output.with_name(output.name+job)
     output.mkdir(parents=True,exist_ok=False)
     env = dict(os.environ)
@@ -126,7 +133,11 @@ def main():
     manifest = dict(config=asdict(CONFIG),mode=mode,benchmark=args.benchmark,command=command,
         git_commit=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip(),
         latency_definition=DEFINITION,system_definition=SYSTEM_DEFINITION,
-        environment={k:v for k,v in env.items() if k.startswith(('MINICPM_','ROCM_','MIOPEN_','SLURM_','HIP_','CUDA_','ATTN_','HF_HOME'))})
+        environment={k:v for k,v in env.items() if k.startswith(('MINICPM_','ROCM_','MIOPEN_','SLURM_','HIP_','CUDA_','ATTN_','HF_HOME','OASIS_','OVO_'))})
+    if oasis:
+        manifest.update(config=asdict(oasis_memory.config_from_env()),latency_definition=oasis_memory.DEFINITION,
+                        system_definition=oasis_memory.SYSTEM_DEFINITION,
+                        method_source='OASIS arXiv:2604.17052; github.com/Solus-sano/OASIS@dbd342c')
     (output/'run_config.json').write_text(json.dumps(manifest,indent=2))
     print('RESULT_DIR='+str(output),flush=True)
     start = time.perf_counter()

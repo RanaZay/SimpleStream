@@ -3417,6 +3417,10 @@ def query_adaptive_window(
     evaluator, but adaptive runs do not apply CDAS.
     """
 
+    if os.environ.get("MINICPM_ADAPTIVE_MODE") == "recent6_oasis_hierarchical_event_memory":
+        from lib.minicpm.oasis_memory import query
+        return query(qa, video_path, prompt, chunk_duration, fps, recent_frames_only,
+                     video_start=video_start, video_end=video_end, cdas_config=cdas_config)
     if os.environ.get("MINICPM_ADAPTIVE_MODE") in {
         "progressive_sufficiency_memory_clip_mmr_progressive_arbitration_exact_recent",
         "progressive_arbitration_exact_recent6_control",

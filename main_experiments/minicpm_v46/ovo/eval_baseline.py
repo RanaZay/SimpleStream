@@ -119,6 +119,13 @@ def main() -> None:
     random.shuffle(backward_anno)
     random.shuffle(realtime_anno)
     random.shuffle(forward_anno)
+    # Optional comma list, e.g. OVO_SPLITS=backward,realtime (the OASIS paper's protocol).
+    splits = {s.strip() for s in os.environ.get("OVO_SPLITS", "backward,realtime,forward").split(",") if s.strip()}
+    if not splits or splits - {"backward", "realtime", "forward"}:
+        raise ValueError(f"OVO_SPLITS must name backward/realtime/forward, got {sorted(splits)}")
+    backward_anno = backward_anno if "backward" in splits else []
+    realtime_anno = realtime_anno if "realtime" in splits else []
+    forward_anno = forward_anno if "forward" in splits else []
     if args.max_samples_per_split is not None:
         if args.max_samples_per_split < 1:
             raise ValueError("--max_samples_per_split must be >= 1")

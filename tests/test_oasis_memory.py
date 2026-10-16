@@ -131,7 +131,7 @@ class Forest(unittest.TestCase):
 class Query(unittest.TestCase):
     """Full query() control flow with MiniCPM, decoding and GPU profiling replaced by stubs."""
 
-    def run_questions(self, coarse_text, times, video='v.mp4', fine_text='<answer>A</answer>'):
+    def run_questions(self, coarse_text, times, video='v.mp4', fine_text='<answer>A</answer>', config=None):
         calls = []
 
         def generate(qa, messages, max_new_tokens):
@@ -161,13 +161,17 @@ class Query(unittest.TestCase):
         base = SimpleNamespace(_reset_gpu_memory_peaks=lambda: {}, _capture_gpu_memory=lambda: {},
                                _build_profile=lambda **kw: dict(gpu_peak_allocated_mb=0., gpu_peak_reserved_mb=0.),
                                RecentWindowResult=lambda **kw: SimpleNamespace(**kw))
-        qa = SimpleNamespace(_oasis_embedder=Embedder(), _oasis_config=om.Config(), _last_preprocess_seconds=0.,
+        def now(path, end, config):
+            return [om.Packet(end - 8 + 0.5 * i, image(int(2 * end) + i)) for i in range(16)]
+
+        qa = SimpleNamespace(_oasis_embedder=Embedder(), _oasis_config=config or om.Config(), _last_preprocess_seconds=0.,
                              _last_model_generate_seconds=0., _last_ttft_seconds=0., _last_num_vision_tokens=0,
                              _last_num_vision_frames=0, _last_generated_tokens=0, _last_component_times={})
         results = []
         with patch.dict(sys.modules, {'main_experiments.minicpm_v46.streamingbench.eval_prism_exact_recent_dist': fake}), \
              patch('lib.minicpm.baseline', base, create=True), patch.object(om, 'generate', generate), \
-             patch.object(om, 'stream_frames', frames), patch.object(om, 'sync', lambda: None), \
+             patch.object(om, 'stream_frames', frames), patch.object(om, 'now_window_frames', now), \
+             patch.object(om, 'sync', lambda: None), \
              patch.object(om, 'image_key', lambda f: str(f.getpixel((0, 0)))):
             import lib.minicpm as pkg
             with patch.object(pkg, 'baseline', base, create=True):
@@ -204,6 +208,43 @@ class Query(unittest.TestCase):
         self.assertEqual(second['oasis_reused_stream_until_s'], 39.)
         self.assertEqual(second['oasis_qa_history'], 1)
         self.assertEqual(qa._oasis_state.events_created, 2)
+
+    def test_paper_now_window_replaces_recent6(self):
+        coarse = 'Need memory. <tool_call>{"name": "rag_retrieval", "arguments": {"text_input": "pasta kitchen"}}</tool_call>'
+        (result,), calls, _ = self.run_questions(coarse, [100], config=om.Config(now_window='paper'))
+        meta = result.adaptive_metadata
+        self.assertEqual(meta['mode'], om.PAPER_MODE)
+        self.assertIsNone(meta['recent_frame_hashes'])
+        self.assertEqual(meta['recent_frame_count'], 16)
+        self.assertTrue(all(92 <= t < 100 + 1e-4 for t in meta['now_window_timestamps']))
+        self.assertTrue(any(c['roles'] == ['system', 'user'] and c['images'] == 16 + 32 for c in calls))
+        fine_call = next(c for c in calls if c['roles'] == ['system', 'user', 'assistant', 'user'])
+        self.assertEqual(fine_call['images'], 16 + 32 + 2 * 16)
+
+
+class NowWindow(unittest.TestCase):
+    def decode(self, video_path, chunk_duration, fps, recent, video_start=None, video_end=None):
+        low = video_start or 0.0
+        stamps = [low + i / fps for i in range(int((video_end - low) * fps) + 1)]
+        return [SimpleNamespace(frames=[image(int(10 * t))], frame_timestamps=[t]) for t in stamps], 'stub'
+
+    def test_last_8_seconds_at_2_fps(self):
+        with patch('lib.shared.recent_window.decode_video_to_chunks_qwen', self.decode):
+            window = om.now_window_frames('v.mp4', 100.0, om.Config(now_window='paper'))
+        self.assertEqual(len(window), 16)
+        self.assertTrue(all(92.0 <= p.t < 100.0 for p in window))
+        self.assertEqual([p.t for p in window], sorted(p.t for p in window))
+
+    def test_question_at_stream_start_keeps_one_frame(self):
+        with patch('lib.shared.recent_window.decode_video_to_chunks_qwen', self.decode):
+            window = om.now_window_frames('v.mp4', 0.0, om.Config(now_window='paper'))
+        self.assertEqual(len(window), 1)
+
+    def test_mode_selects_config(self):
+        with patch.dict('os.environ', {'MINICPM_ADAPTIVE_MODE': om.PAPER_MODE}):
+            self.assertEqual(om.config_from_env().now_window, 'paper')
+        with patch.dict('os.environ', {'MINICPM_ADAPTIVE_MODE': om.MODE}):
+            self.assertEqual(om.config_from_env().now_window, 'recent6')
 
 
 if __name__ == '__main__':

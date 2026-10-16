@@ -26,7 +26,7 @@ ROWS = [
 ]
 OASIS_ROWS = ['oasis_coarse_generation_ms', 'retrieval_total_ms', 'oasis_fine_generation_ms', 'context_total_ms',
               'memory_update_before_query_ms', 'memory_event_summary_ms', 'memory_merge_ms', 'memory_embedding_ms',
-              'memory_qa_update_ms', 'broad_history_decode_ms', 'recent6_decode_ms']
+              'memory_qa_update_ms', 'broad_history_decode_ms', 'recent6_decode_ms', 'now_window_decode_ms']
 
 
 def _sum(t, *keys):
@@ -47,7 +47,10 @@ def main():
     p.add_argument('--recent6')
     p.add_argument('--output', required=True)
     args = p.parse_args()
-    methods = {'PRISM (ours)': load(args.prism), 'Recent-6 + OASIS': load(args.oasis)}
+    oasis_rows = load(args.oasis)
+    paper = any(profile(r)[1].get('mode') == 'oasis_paper_hierarchical_event_memory' for r in oasis_rows.values())
+    oasis_label = 'OASIS (paper NowWindow)' if paper else 'Recent-6 + OASIS'
+    methods = {'PRISM (ours)': load(args.prism), oasis_label: oasis_rows}
     if args.recent6:
         methods = {'Recent-6': load(args.recent6), **methods}
     keys = set.intersection(*(set(m) for m in methods.values()))
@@ -55,7 +58,7 @@ def main():
         raise SystemExit('No common question keys; check that the runs use the same annotations')
     coverage = {name: dict(total=len(m), used=len(keys)) for name, m in methods.items()}
 
-    prism, oasis = methods['PRISM (ours)'], methods['Recent-6 + OASIS']
+    prism, oasis = methods['PRISM (ours)'], methods[oasis_label]
     checked = mismatched = 0
     for k in keys:
         a, b = profile(prism[k])[1].get('recent_frame_hashes'), profile(oasis[k])[1].get('recent_frame_hashes')
@@ -91,10 +94,12 @@ def main():
     names = list(methods)
     sec = lambda d: '-' if d['mean'] is None else f"{d['mean'] / 1000:.3f}"
     acc = lambda v: '-' if v is None else f'{v:.2f}%'
-    lines = [f'# {args.benchmark}: PRISM vs Recent-6 + OASIS (MiniCPM-V-4.6)', '',
+    hashes = ('NowWindow differs by design (paper: 8 s at 2 fps), so Recent-6 hashes are not compared.' if paper else
+              f'Recent-6 frame hashes PRISM vs OASIS: {checked - mismatched}/{checked} identical.')
+    lines = [f'# {args.benchmark}: PRISM vs {oasis_label} (MiniCPM-V-4.6)', '',
              f'Matched questions: {len(keys)}. Errors (counted wrong): '
              + ', '.join(f'{n} {e}' for n, e in errors.items()) + '.',
-             f'Recent-6 frame hashes PRISM vs OASIS: {checked - mismatched}/{checked} identical.', '',
+             hashes, '',
              '| Metric | ' + ' | '.join(names) + ' |', '|---|' + '---:|' * len(names),
              '| Accuracy | ' + ' | '.join(acc(result['accuracy'][n]) for n in names) + ' |']
     lines += [f'| {label} (s/question, mean) | ' + ' | '.join(sec(result['latency'][label][n]) for n in names) + ' |'

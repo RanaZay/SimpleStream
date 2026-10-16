@@ -90,10 +90,12 @@ def main():
     parser.add_argument('--check',action='store_true')
     parser.add_argument('--baseline',action='store_true')
     parser.add_argument('--oasis',action='store_true',help='Recent-6 + OASIS hierarchical event memory baseline')
+    parser.add_argument('--oasis-paper',action='store_true',help='OASIS with the paper NowWindow (8 s at 2 fps)')
     parser.add_argument('--max-samples',type=int,default=int(os.environ.get('MAX_SAMPLES','0')))
     args = parser.parse_args()
     baseline = args.baseline or os.environ.get('PRISM_BASELINE') == '1'
-    oasis = args.oasis or os.environ.get('PRISM_OASIS') == '1'
+    oasis_paper = args.oasis_paper or os.environ.get('PRISM_OASIS') == 'paper'
+    oasis = oasis_paper or args.oasis or os.environ.get('PRISM_OASIS') == '1'
     if oasis and (baseline or args.benchmark not in ('ovo','streamingbench','egoschema')):
         raise ValueError('OASIS is wired for ovo, streamingbench and egoschema only, and excludes the Recent-6 control')
     module, extra, tasks = specification(args.benchmark,args.max_samples)
@@ -106,10 +108,11 @@ def main():
     if args.check:
         return
     from lib.minicpm import oasis_memory
-    mode = BASELINE_MODE if baseline else oasis_memory.MODE if oasis else MODE
+    mode = (BASELINE_MODE if baseline else oasis_memory.PAPER_MODE if oasis_paper
+            else oasis_memory.MODE if oasis else MODE)
     job = os.environ.get('SLURM_JOB_ID',str(time.time_ns()))
     output = ROOT/'reports/progressive_arbitration'/args.benchmark/(
-        'recent6_' if mode==BASELINE_MODE else 'recent6_oasis_' if oasis else 'prism_')
+        'recent6_' if mode==BASELINE_MODE else 'oasis_paper_' if oasis_paper else 'recent6_oasis_' if oasis else 'prism_')
     output = output.with_name(output.name+job)
     output.mkdir(parents=True,exist_ok=False)
     env = dict(os.environ)
@@ -135,7 +138,7 @@ def main():
         latency_definition=DEFINITION,system_definition=SYSTEM_DEFINITION,
         environment={k:v for k,v in env.items() if k.startswith(('MINICPM_','ROCM_','MIOPEN_','SLURM_','HIP_','CUDA_','ATTN_','HF_HOME','OASIS_','OVO_'))})
     if oasis:
-        manifest.update(config=asdict(oasis_memory.config_from_env()),latency_definition=oasis_memory.DEFINITION,
+        manifest.update(config=asdict(oasis_memory.config_from_env(paper=oasis_paper)),latency_definition=oasis_memory.DEFINITION,
                         system_definition=oasis_memory.SYSTEM_DEFINITION,
                         method_source='OASIS arXiv:2604.17052; github.com/Solus-sano/OASIS@dbd342c')
     (output/'run_config.json').write_text(json.dumps(manifest,indent=2))

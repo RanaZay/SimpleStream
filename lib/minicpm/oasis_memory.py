@@ -7,9 +7,13 @@ Follows the paper (Sec. 3-4.2, Alg. 1, Figs. 7-10) where it and the release diff
 32 s at 1 fps, event forest (16 keyframes per node, root budget 4, merge score cos - 0.1 (d_j + d_k)),
 QA history + QA summary, Qwen3-Embedding-0.6B retrieval of k_f = 2 events (ancestors and descendants
 pruned) and k_q = 1 QA pair with the generated query I_i, the two-phase coarse -> tool call -> fine
-policy with the final answer from the fine stage, and the paper's prompts. Changed for a matched
-comparison only: the 2 fps NowWindow is the exact Recent-6 context used by PRISM and its control, and
-MiniCPM-V-4.6 replaces Qwen3-VL in every call (greedy decoding; the release samples at T=0.1, top-p=0.001).
+policy with the final answer from the fine stage, and the paper's prompts. MiniCPM-V-4.6 replaces Qwen3-VL in
+every call (greedy decoding; the release samples at T=0.1, top-p=0.001, which is near-greedy).
+
+Two NowWindow settings:
+  PAPER_MODE  the paper's NowWindow (Sec. 4.2): the last tau_s = 8 s at r_s = 2 fps, i.e. 16 frames.
+  MODE        matched variant: the NowWindow is replaced by PRISM's exact Recent-6 context, so the
+              Recent-6 frame hashes can be verified pairwise against PRISM and its control.
 
 Timing scopes (ms per question):
   visual preparation  incremental 1 fps stream decode + exact Recent-6 decode
@@ -30,15 +34,21 @@ from typing import Any
 from lib.minicpm.progressive_arbitration import extract_options, image_key, sync, timed
 
 MODE = "recent6_oasis_hierarchical_event_memory"
+PAPER_MODE = "oasis_paper_hierarchical_event_memory"
+MODES = (MODE, PAPER_MODE)
 DEFINITION = ("OASIS algorithmic latency runs from question arrival (memory already up to date) to the final answer: "
               "coarse MiniCPM call, embedding retrieval and the fine MiniCPM call when triggered. It excludes video "
               "decoding and memory maintenance, which are reported separately.")
-SYSTEM_DEFINITION = ("Full-system latency includes incremental stream decoding, exact Recent-6 decoding, event "
+SYSTEM_DEFINITION = ("Full-system latency includes incremental stream decoding, NowWindow decoding, event "
                      "summarization/merging, the query itself and the post-answer QA-summary update.")
 
 
 @dataclass(frozen=True)
 class Config:
+    now_window: str = "recent6"  # "paper": 8 s at 2 fps; "recent6": PRISM's exact Recent-6 context.
+    now_seconds: float = 8.0
+    now_fps: float = 2.0
+    now_frames: int = 16
     recent: int = 6
     buffer_fps: float = 1.0
     buffer_frames: int = 32
@@ -52,8 +62,11 @@ class Config:
     embedding_model: str = "Qwen/Qwen3-Embedding-0.6B"
 
 
-def config_from_env():
-    return Config(max_new_tokens=int(os.environ.get('OASIS_MAX_NEW_TOKENS', '1024')),
+def config_from_env(paper=None):
+    if paper is None:
+        paper = os.environ.get('MINICPM_ADAPTIVE_MODE') == PAPER_MODE
+    return Config(now_window='paper' if paper else 'recent6',
+                  max_new_tokens=int(os.environ.get('OASIS_MAX_NEW_TOKENS', '1024')),
                   buffer_frames=int(os.environ.get('OASIS_BUFFER_FRAMES', '32')),
                   embedding_model=os.environ.get('OASIS_EMBEDDING_MODEL', 'Qwen/Qwen3-Embedding-0.6B'))
 
@@ -314,7 +327,7 @@ class State:
         self.events_created = self.merges = 0
 
     def push(self, packet):
-        """OASIS ShortMemory.push without the NowWindow (replaced by exact Recent-6)."""
+        """OASIS ShortMemory.push for the 1 fps buffer; the NowWindow is decoded separately at query time."""
         cuts = []
         # 1 ms slack: decoded 1 fps timestamps can land a hair under the 1 s spacing.
         if not self.buf or packet.t - self.buf[-1].t >= 1.0 / self.config.buffer_fps - 1e-3:
@@ -485,6 +498,25 @@ def stream_frames(video_path, start, end, config):
     return out
 
 
+def now_window_frames(video_path, end, config):
+    """Paper NowWindow: frames at now_fps in [end - now_seconds, end), at most now_frames of them."""
+    from lib.shared.recent_window import decode_video_to_chunks_qwen
+    start = max(0.0, end - config.now_seconds)
+    chunks, _ = decode_video_to_chunks_qwen(video_path, 1.0, config.now_fps, None,
+                                            video_start=start if start > 0 else None, video_end=end)
+    packets = sorted((Packet(t, f) for c in chunks for f, t in zip(c.frames, c.frame_timestamps)), key=lambda p: p.t)
+    unique = []
+    for p in packets:
+        if not unique or p.t > unique[-1].t + 1e-6:
+            unique.append(p)
+    before = [p for p in unique if p.t < end - 1e-6]
+    # A question at t ~ 0 can precede every decoded timestamp; keep the earliest frame rather than none.
+    window = (before or unique[:1])[-config.now_frames:]
+    if not window:
+        raise ValueError(f'No NowWindow frames decoded for {video_path} at t={end:.2f}s')
+    return window
+
+
 def coarse_messages(state, recent, recent_times, question, query_time):
     content = [{'type': 'text', 'text': (f"Here is the NowWindow, very recent video frames that the headset is looking at, "
                                          f"time[{hhmmss(recent_times[0])} - {hhmmss(recent_times[-1])}]: \n")},
@@ -528,9 +560,11 @@ def query(qa, video_path, prompt, chunk_duration, fps, recent_frames_only, video
     from lib.minicpm import baseline as base
     from main_experiments.minicpm_v46.streamingbench.eval_prism_exact_recent_dist import select_exact_current_recent_frames
     if chunk_duration != 1.0 or fps != 1.0:
-        raise ValueError('Matched Recent-6 control requires chunk_duration=1 and fps=1')
+        raise ValueError('OASIS streaming requires chunk_duration=1 and fps=1')
     config = getattr(qa, '_oasis_config', None) or config_from_env()
     qa._oasis_config = config
+    paper = config.now_window == 'paper'
+    mode = PAPER_MODE if paper else MODE
     embedder = getattr(qa, '_oasis_embedder', None)
     if embedder is None:
         embedder = qa._oasis_embedder = Embedder(config.embedding_model, qa.model.device)  # Outside all timers.
@@ -550,10 +584,19 @@ def query(qa, video_path, prompt, chunk_duration, fps, recent_frames_only, video
             # OVO clips end at the question; OASIS answers after the whole clip has streamed in.
             stream_end = end if end is not None else video_duration(video_path)
             new = stream_frames(video_path, state.last_t if math.isfinite(state.last_t) else -1.0, stream_end, config)
-        start = max(0., end - 6.) if end is not None else None
-        with timed(stats, 'recent6_decode_ms'):
-            # Identical call to PRISM's, so the Recent-6 hashes can be verified pairwise.
-            recent = select_exact_current_recent_frames(qa, video_path, 1.0, 1.0, 6, video_start=start, video_end=end)
+        if paper:
+            from types import SimpleNamespace
+            with timed(stats, 'now_window_decode_ms'):
+                now = now_window_frames(video_path, end if end is not None else stream_end, config)
+            times = [p.t for p in now]
+            recent = SimpleNamespace(frames=[p.frame for p in now], final_chunk_ids=sorted({int(t) for t in times}),
+                                     cdas_metadata=dict(selected_timestamps=times, now_window='paper',
+                                                        now_seconds=config.now_seconds, now_fps=config.now_fps))
+        else:
+            start = max(0., end - 6.) if end is not None else None
+            with timed(stats, 'recent6_decode_ms'):
+                # Identical call to PRISM's, so the Recent-6 hashes can be verified pairwise.
+                recent = select_exact_current_recent_frames(qa, video_path, 1.0, 1.0, 6, video_start=start, video_end=end)
     finally:
         if saved is not None:
             os.environ['QWEN_EXACT_RECENT_DECODE'] = saved
@@ -662,18 +705,20 @@ def query(qa, video_path, prompt, chunk_duration, fps, recent_frames_only, video
     stats['memory_maintenance_total_ms'] = stats['memory_update_before_query_ms'] + stats['memory_qa_update_ms']
 
     metadata = dict(
-        mode=MODE, config=asdict(config), baseline_control=False, memory_triggered=fine_triggered,
+        mode=mode, config=asdict(config), baseline_control=False, memory_triggered=fine_triggered,
         memory_accepted=bool(events), arbitration_supported=True, multiple_choice=multiple_choice,
         answer_parse_source=parse_source, tool_query=tool_query, tool_call_parse=tool_parse, coarse_response=coarse,
         fine_response=response if final_call is not coarse_call else None,
         retrieved_event_ids=[n.id for n in events], retrieved_event_spans=[[n.t_start, n.t_end] for n in events],
         retrieved_qa_times=[q.t for q in qas], root_ids=list(state.roots),
         system_turn_supported=getattr(qa, '_oasis_system_supported', None),
-        recent_frame_hashes=[image_key(f) for f in recent.frames], recent_frame_count=len(recent.frames),
+        recent_frame_hashes=None if paper else [image_key(f) for f in recent.frames],
+        now_window_frame_hashes=[image_key(f) for f in recent.frames], recent_frame_count=len(recent.frames),
+        now_window_timestamps=list(recent_times),
         recent_chunk_ids=list(recent.final_chunk_ids), baseline_recent_equivalence=dict(baseline_recent=recent.cdas_metadata),
         query_time=query_time, timing=stats, latency_definition=DEFINITION, full_system_definition=SYSTEM_DEFINITION,
         warmup_enabled=True)
-    profile = base._build_profile(mode=MODE, decode_time=stats['total_visual_preparation_ms'] / 1000,
+    profile = base._build_profile(mode=mode, decode_time=stats['total_visual_preparation_ms'] / 1000,
                                   selection_time=stats['PRISM_selection_latency_ms'] / 1000,
                                   generate_time=stats['final_generation_ms'] / 1000,
                                   before_memory=before, after_memory=after_memory, qa=qa)

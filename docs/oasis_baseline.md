@@ -15,6 +15,14 @@ then a fine call whose `<answer>` is final. Where the paper and release differ, 
 Matched-comparison changes only: the NowWindow is PRISM's exact Recent-6 context (same selector call; hashes
 are verified pairwise), and MiniCPM-V-4.6 (greedy) replaces Qwen3-VL for every call.
 
+## Paper NowWindow mode
+
+`PRISM_OASIS=paper` (mode `oasis_paper_hierarchical_event_memory`, launchers `submit_oasis_paper_amd.sh`) keeps the
+paper's NowWindow instead of Recent-6: the last 8 s at 2 fps (16 frames, Sec. 4.2), decoded at question time and
+sent to the coarse and fine calls together with the 32 s / 1 fps buffer. Everything else is identical to the
+matched mode. Results go to `reports/progressive_arbitration/<bench>/oasis_paper_<jobid>/`; Recent-6 hashes are not
+compared because the NowWindow differs by design.
+
 ## Latency scopes
 
 | Field | Meaning |

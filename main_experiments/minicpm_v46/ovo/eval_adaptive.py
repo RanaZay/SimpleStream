@@ -58,6 +58,7 @@ def _consume_adaptive_args() -> argparse.Namespace:
             "progressive_sufficiency_memory_clip_mmr_progressive_arbitration_exact_recent",
             "progressive_arbitration_exact_recent6_control",
             "recent6_oasis_hierarchical_event_memory",
+            "oasis_paper_hierarchical_event_memory",
             "progressive_sufficiency_memory_clip_mmr_evidence_arbitration",
             "progressive_sufficiency_memory_clip_mmr_evidence_arbitration_temporal_band",
             "progressive_sufficiency_memory_clip_mmr_evidence_arbitration_temporal_consistency",

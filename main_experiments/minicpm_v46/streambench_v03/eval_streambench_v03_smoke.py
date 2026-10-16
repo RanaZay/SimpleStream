@@ -360,7 +360,8 @@ def main() -> None:
 
     qa = RecentWindowQAModel(
         model_name=args.qa_model,
-        device=args.qa_device,
+        # Single-process run: default to the first visible GPU (ROCm also exposes it as cuda:0).
+        device=args.qa_device or "cuda:0",
         max_new_tokens=args.max_new_tokens,
         attn_implementation=os.environ.get("ATTN_IMPLEMENTATION", "sdpa"),
     )

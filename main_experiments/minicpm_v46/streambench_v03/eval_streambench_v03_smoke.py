@@ -192,6 +192,7 @@ def _run_method(
         os.environ["PRISM_CLIP_MODE"] = os.environ.get("STREAMBENCH_PRISM_CLIP_MODE", "evidence_contract")
         if os.environ["MINICPM_ADAPTIVE_MODE"] in {
             "progressive_sufficiency_memory_clip_mmr_progressive_arbitration_exact_recent",
+            "prism_unified_format_agnostic_exact_recent",
             "progressive_arbitration_exact_recent6_control",
         }:
             video_start = 0.0

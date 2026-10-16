@@ -119,6 +119,7 @@ def _task_key(task):
     if os.environ.get('MINICPM_ADAPTIVE_MODE') in {
         'progressive_arbitration_exact_recent6_control',
         'progressive_sufficiency_memory_clip_mmr_progressive_arbitration_exact_recent',
+        'prism_unified_format_agnostic_exact_recent',
     }:
         return f"streamingbench::{task['_index']}"
     return make_key(task['video_basename'], task['question'], question_limit=80)
@@ -350,6 +351,7 @@ def main() -> None:
                         video_start = max(0.0, ts_sec - max(window_seconds, float(args.chunk_duration)))
                         if os.environ.get('MINICPM_ADAPTIVE_MODE') in {
                             'progressive_sufficiency_memory_clip_mmr_progressive_arbitration_exact_recent',
+                            'prism_unified_format_agnostic_exact_recent',
                             'progressive_arbitration_exact_recent6_control',
                         }:
                             # The new controller independently decodes its exact recent window.

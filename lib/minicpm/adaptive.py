@@ -3417,6 +3417,10 @@ def query_adaptive_window(
     evaluator, but adaptive runs do not apply CDAS.
     """
 
+    if os.environ.get("MINICPM_ADAPTIVE_MODE") == "prism_unified_format_agnostic_exact_recent":
+        from lib.minicpm.prism_unified import query
+        return query(qa, video_path, prompt, chunk_duration, fps, recent_frames_only,
+                     video_start=video_start, video_end=video_end, cdas_config=cdas_config)
     if os.environ.get("MINICPM_ADAPTIVE_MODE") in {"recent6_oasis_hierarchical_event_memory",
                                                    "oasis_paper_hierarchical_event_memory"}:
         from lib.minicpm.oasis_memory import query

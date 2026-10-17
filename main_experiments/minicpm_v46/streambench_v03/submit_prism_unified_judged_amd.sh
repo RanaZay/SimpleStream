@@ -34,7 +34,8 @@ echo "JUDGE_MODEL=$JUDGE_MODEL"
 echo "STREAMCHAT_SOURCE=$STREAMCHAT_SOURCE"
 
 # 1) Inference. The launcher execs the runner in a child shell, so control returns here afterwards.
-bash main_experiments/minicpm_v46/streambench_v03/submit_prism_unified_amd.sh
+# A nonzero exit after the results file is written means some questions failed; the judge counts those wrong.
+bash main_experiments/minicpm_v46/streambench_v03/submit_prism_unified_amd.sh || echo "Inference exited nonzero; judging saved answers anyway"
 RESULTS="reports/progressive_arbitration/streambench_v03/prism_unified_${SLURM_JOB_ID}/streambench_v0_3_smoke_results.json"
 if [[ ! -f "$RESULTS" ]]; then
     echo "Inference finished without $RESULTS" >&2

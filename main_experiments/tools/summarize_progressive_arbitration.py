@@ -47,7 +47,11 @@ def records(directory):
                 out.append({**row,**child,'pair_key':f"{row.get('task')}:{row.get('id')}:{j}"})
         elif 'methods' in row:
             for child in row['methods']:
-                out.append({**row,**child,'pair_key':str((row.get('video_path'),row.get('time'),row.get('question')))})
+                # StreamBench repeats some questions at the same time; (video, breakpoint) is unique.
+                key=(row.get('video_index'),row.get('breakpoint_index'))
+                if None in key:
+                    key=(row.get('video_path'),row.get('time'),row.get('question'))
+                out.append({**row,**child,'pair_key':str(key)})
         else:
             out.append({**row,'pair_key':str(row.get('_key',row.get('question_id',row.get('id',row.get('_index')))))})
     keys=[r['pair_key'] for r in out]

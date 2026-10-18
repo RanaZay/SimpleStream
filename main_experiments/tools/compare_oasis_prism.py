@@ -34,6 +34,17 @@ def _sum(t, *keys):
     return None if values[0] is None else sum(v or 0.0 for v in values)
 
 
+def content_keyed(rows):
+    out = {}
+    for r in rows.values():
+        video = r.get('video_basename') or Path(str(r.get('video_path') or r.get('video') or '')).name
+        key = str((video, r.get('question'), r.get('time', r.get('timestamp'))))
+        if key in out:
+            raise SystemExit(f'Ambiguous content key {key}; cannot match runs safely')
+        out[key] = r
+    return out
+
+
 def load(directory):
     rows = records(Path(directory))
     return {r['pair_key']: r for r in rows}
@@ -54,6 +65,10 @@ def main():
     if args.recent6:
         methods = {'Recent-6': load(args.recent6), **methods}
     keys = set.intersection(*(set(m) for m in methods.values()))
+    if not keys:
+        # Runs written with different key schemes (index vs video+question): re-key by video and question.
+        methods = {name: content_keyed(m) for name, m in methods.items()}
+        keys = set.intersection(*(set(m) for m in methods.values()))
     if not keys:
         raise SystemExit('No common question keys; check that the runs use the same annotations')
     coverage = {name: dict(total=len(m), used=len(keys)) for name, m in methods.items()}

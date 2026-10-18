@@ -58,7 +58,7 @@ def specification(bench, limit=0):
         videos = path('STREAMBENCH_V03_DATA_ROOT','data/streambench_v0_3')
         mod = importlib.import_module(prefix+'streambench_v03.eval_streambench_v03_smoke')
         tasks = mod._load_tasks(Path(annotation),Path(videos),0,0,'',0)
-        if os.environ.get('PRISM_UNIFIED') != '1':
+        if os.environ.get('PRISM_UNIFIED') != '1' and os.environ.get('PRISM_SHALLOWSTREAM') != '1':
             print('WARNING: open-ended samples use logged Exact Recent-6 fallback; this is NOT option arbitration on those samples.')
         return prefix+'streambench_v03.eval_streambench_v03_smoke',['--anno-path',annotation,'--data-root',videos,
             '--methods','prism','--max-videos','0','--max-questions',str(limit),'--recent-window','6','--max-new-tokens','256'],tasks
@@ -91,12 +91,14 @@ def main():
     parser.add_argument('--check',action='store_true')
     parser.add_argument('--baseline',action='store_true')
     parser.add_argument('--oasis',action='store_true',help='Recent-6 + OASIS hierarchical event memory baseline')
+    parser.add_argument('--shallowstream',action='store_true',help='ShallowStream ported to MiniCPM-V-4.6')
     parser.add_argument('--unified',action='store_true',help='Format-agnostic PRISM (MCQ and open-ended)')
     parser.add_argument('--oasis-paper',action='store_true',help='OASIS with the paper NowWindow (8 s at 2 fps)')
     parser.add_argument('--max-samples',type=int,default=int(os.environ.get('MAX_SAMPLES','0')))
     args = parser.parse_args()
     baseline = args.baseline or os.environ.get('PRISM_BASELINE') == '1'
     unified = args.unified or os.environ.get('PRISM_UNIFIED') == '1'
+    shallowstream = args.shallowstream or os.environ.get('PRISM_SHALLOWSTREAM') == '1'
     oasis_paper = args.oasis_paper or os.environ.get('PRISM_OASIS') == 'paper'
     oasis = oasis_paper or args.oasis or os.environ.get('PRISM_OASIS') == '1'
     if oasis and (baseline or args.benchmark not in ('ovo','streamingbench','egoschema')):
@@ -116,10 +118,13 @@ def main():
         raise ValueError('PRISM_UNIFIED excludes the Recent-6 control and OASIS modes')
     mode = (BASELINE_MODE if baseline else oasis_memory.PAPER_MODE if oasis_paper
             else oasis_memory.MODE if oasis else prism_unified.MODE if unified else MODE)
+    if shallowstream:
+        from lib.minicpm import shallowstream as shallowstream_module
+        mode = shallowstream_module.MODE
     job = os.environ.get('SLURM_JOB_ID',str(time.time_ns()))
     output = ROOT/'reports/progressive_arbitration'/args.benchmark/(
         'recent6_' if mode==BASELINE_MODE else 'oasis_paper_' if oasis_paper else 'recent6_oasis_' if oasis
-        else 'prism_unified_' if unified else 'prism_')
+        else 'shallowstream_' if shallowstream else 'prism_unified_' if unified else 'prism_')
     output = output.with_name(output.name+job)
     output.mkdir(parents=True,exist_ok=False)
     env = dict(os.environ)
@@ -146,6 +151,10 @@ def main():
         environment={k:v for k,v in env.items() if k.startswith(('MINICPM_','ROCM_','MIOPEN_','SLURM_','HIP_','CUDA_','ATTN_','HF_HOME','OASIS_','OVO_'))})
     if unified:
         manifest.update(config=asdict(prism_unified.config_from_env()))
+    if shallowstream:
+        manifest.update(config=asdict(shallowstream_module.CONFIG), method_source=shallowstream_module.SOURCE,
+                        latency_definition=shallowstream_module.DEFINITION,
+                        system_definition=shallowstream_module.SYSTEM_DEFINITION)
     if oasis:
         manifest.update(config=asdict(oasis_memory.config_from_env(paper=oasis_paper)),latency_definition=oasis_memory.DEFINITION,
                         system_definition=oasis_memory.SYSTEM_DEFINITION,

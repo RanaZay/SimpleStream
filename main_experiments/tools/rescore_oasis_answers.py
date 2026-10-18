@@ -14,7 +14,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-from main_experiments.tools.summarize_progressive_arbitration import records
+from main_experiments.tools.summarize_progressive_arbitration import accuracy, records
 
 PATTERNS = [
     re.compile(r'"answer"\s*:\s*"\s*([A-E])\b'),                                     # {"answer": "E. ..."}
@@ -46,25 +46,34 @@ def lenient(text):
 def main():
     p = argparse.ArgumentParser()
     p.add_argument('result_dir')
+    p.add_argument('--benchmark', choices=['egoschema', 'streamingbench', 'ovo'],
+                   help='Scoring rules; inferred from the path when omitted')
     args = p.parse_args()
+    bench = args.benchmark or next((b for b in ('ovo', 'streamingbench', 'egoschema') if b in args.result_dir), 'egoschema')
     rows = records(Path(args.result_dir))
-    strict = sum(bool(r.get('correct')) for r in rows)
-    rescored, sources, recovered = strict, collections.Counter(), []
+    sources, recovered, rescored_rows = collections.Counter(), 0, []
     for r in rows:
         source = find(r, 'answer_parse_source')
         sources[source] += 1
-        if source != 'unparsed':
-            continue
-        pred = lenient(find(r, 'fine_response')) or lenient(find(r, 'coarse_response'))
+        pred = None
+        if source == 'unparsed':
+            pred = lenient(find(r, 'fine_response')) or lenient(find(r, 'coarse_response'))
         if pred:
-            recovered.append((r.get('video_idx'), pred, r.get('answer_gt')))
-            rescored += pred == r.get('answer_gt')
+            recovered += 1
+            r = {k: v for k, v in r.items() if k != 'correct'}
+            r['response'] = pred
+            if 'answer_gt' in r and bench != 'ovo':
+                r['correct'] = pred == str(r['answer_gt']).strip().upper()[:1]
+        rescored_rows.append(r)
+    strict, rescored = accuracy(rows, bench), accuracy(rescored_rows, bench)
+    if strict is None:  # EgoSchema rows carry a boolean 'correct' that accuracy() reads directly.
+        strict = 100 * sum(bool(r.get('correct')) for r in rows) / len(rows)
+        rescored = 100 * sum(bool(r.get('correct')) for r in rescored_rows) / len(rows)
     n = len(rows)
-    print(f'questions {n}; parse sources {dict(sources)}')
-    print(f'strict accuracy   {100 * strict / n:.2f}% ({strict}/{n})')
-    print(f'unparsed recovered {len(recovered)}/{sources["unparsed"]}; '
-          f'still unanswered {sources["unparsed"] - len(recovered)}')
-    print(f'rescored accuracy {100 * rescored / n:.2f}% ({rescored}/{n})')
+    print(f'{bench}: questions {n}; parse sources {dict(sources)}')
+    print(f'strict accuracy   {strict:.2f}%')
+    print(f'unparsed recovered {recovered}/{sources["unparsed"]}; still unanswered {sources["unparsed"] - recovered}')
+    print(f'rescored accuracy {rescored:.2f}%' + ('  (OVO: mean of category averages)' if bench == 'ovo' else ''))
     fine = sum(bool(find(r, 'oasis_fine_triggered')) for r in rows)
     print(f'fine stage (memory retrieval) triggered on {fine}/{n} ({100 * fine / n:.1f}%)')
 

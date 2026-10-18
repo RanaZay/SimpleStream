@@ -36,9 +36,11 @@ def _sum(t, *keys):
 
 def content_keyed(rows):
     out = {}
+    use_index = all(isinstance(r.get('_index'), int) for r in rows.values())
     for r in rows.values():
         video = r.get('video_basename') or Path(str(r.get('video_path') or r.get('video') or '')).name
-        key = str((video, r.get('question'), r.get('time', r.get('timestamp'))))
+        # Both evaluators enumerate the same task list, so its position is the safest shared key.
+        key = str(r['_index']) if use_index else str((video, r.get('question'), r.get('time_stamp', r.get('time'))))
         if key in out:
             raise SystemExit(f'Ambiguous content key {key}; cannot match runs safely')
         out[key] = r

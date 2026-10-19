@@ -1,0 +1,381 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="790" viewBox="0 0 1800 790">
+<defs><marker id="head" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#1f2433"/></marker><marker id="headred" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c8473f"/></marker></defs>
+<rect width="1800" height="790" fill="#ffffff"/>
+<rect x="20" y="14" width="1760" height="205" rx="14" fill="#fafbfd" stroke="#c9cedb" stroke-width="1.4" opacity="1"/>
+<text x="40" y="44" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="17" font-weight="bold" font-style="normal" fill="#1f2433" text-anchor="start">Streaming input (1 fps)</text>
+<text x="275" y="44" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="14" font-weight="normal" font-style="italic" fill="#5b6275" text-anchor="start">the frozen VLM only ever sees the exact Recent-6 window plus at most 3 admitted history frames</text>
+<rect x="52" y="92" width="58" height="42" rx="4" fill="#d9dde6" stroke="#9aa1b2" stroke-width="1.6"/>
+<rect x="53" y="118.03999999999999" width="56" height="14.96" rx="3" fill="#b9bfcc"/>
+<rect x="62.68000000000001" y="106.28" width="13.44" height="12.6" rx="2" fill="#e0553f"/>
+<rect x="119" y="92" width="58" height="42" rx="4" fill="#d9dde6" stroke="#9aa1b2" stroke-width="1.6"/>
+<rect x="120" y="118.03999999999999" width="56" height="14.96" rx="3" fill="#b9bfcc"/>
+<circle cx="152.64" cy="113.0" r="7.140000000000001" fill="#3f7fe0"/>
+<rect x="186" y="92" width="58" height="42" rx="4" fill="#d9dde6" stroke="#9aa1b2" stroke-width="1.6"/>
+<rect x="187" y="118.03999999999999" width="56" height="14.96" rx="3" fill="#b9bfcc"/>
+<rect x="205.96" y="106.28" width="13.44" height="12.6" rx="2" fill="#2f9a5c"/>
+<rect x="253" y="92" width="58" height="42" rx="4" fill="#d9dde6" stroke="#9aa1b2" stroke-width="1.6"/>
+<rect x="254" y="118.03999999999999" width="56" height="14.96" rx="3" fill="#b9bfcc"/>
+<circle cx="272.72" cy="113.0" r="7.140000000000001" fill="#8a5bd6"/>
+<rect x="320" y="92" width="58" height="42" rx="4" fill="#d9dde6" stroke="#9aa1b2" stroke-width="1.6"/>
+<rect x="321" y="118.03999999999999" width="56" height="14.96" rx="3" fill="#b9bfcc"/>
+<rect x="349.23999999999995" y="106.28" width="13.44" height="12.6" rx="2" fill="#e0553f"/>
+<rect x="387" y="92" width="58" height="42" rx="4" fill="#d9dde6" stroke="#9aa1b2" stroke-width="1.6"/>
+<rect x="388" y="118.03999999999999" width="56" height="14.96" rx="3" fill="#b9bfcc"/>
+<circle cx="416.0" cy="113.0" r="7.140000000000001" fill="#3f7fe0"/>
+<rect x="454" y="92" width="58" height="42" rx="4" fill="#d9dde6" stroke="#9aa1b2" stroke-width="1.6"/>
+<rect x="455" y="118.03999999999999" width="56" height="14.96" rx="3" fill="#b9bfcc"/>
+<rect x="469.32" y="106.28" width="13.44" height="12.6" rx="2" fill="#2f9a5c"/>
+<rect x="521" y="92" width="58" height="42" rx="4" fill="#d9dde6" stroke="#9aa1b2" stroke-width="1.6"/>
+<rect x="522" y="118.03999999999999" width="56" height="14.96" rx="3" fill="#b9bfcc"/>
+<circle cx="559.28" cy="113.0" r="7.140000000000001" fill="#8a5bd6"/>
+<rect x="588" y="92" width="58" height="42" rx="4" fill="#f6dcb0" stroke="#d98a1c" stroke-width="1.6"/>
+<rect x="589" y="118.03999999999999" width="56" height="14.96" rx="3" fill="#e8b46a"/>
+<rect x="612.6" y="106.28" width="13.44" height="12.6" rx="2" fill="#e0553f"/>
+<rect x="655" y="92" width="58" height="42" rx="4" fill="#f6dcb0" stroke="#d98a1c" stroke-width="1.6"/>
+<rect x="656" y="118.03999999999999" width="56" height="14.96" rx="3" fill="#e8b46a"/>
+<circle cx="679.36" cy="113.0" r="7.140000000000001" fill="#3f7fe0"/>
+<rect x="722" y="92" width="58" height="42" rx="4" fill="#f6dcb0" stroke="#d98a1c" stroke-width="1.6"/>
+<rect x="723" y="118.03999999999999" width="56" height="14.96" rx="3" fill="#e8b46a"/>
+<rect x="732.68" y="106.28" width="13.44" height="12.6" rx="2" fill="#2f9a5c"/>
+<rect x="789" y="92" width="58" height="42" rx="4" fill="#f6dcb0" stroke="#d98a1c" stroke-width="1.6"/>
+<rect x="790" y="118.03999999999999" width="56" height="14.96" rx="3" fill="#e8b46a"/>
+<circle cx="822.64" cy="113.0" r="7.140000000000001" fill="#8a5bd6"/>
+<rect x="856" y="92" width="58" height="42" rx="4" fill="#f6dcb0" stroke="#d98a1c" stroke-width="1.6"/>
+<rect x="857" y="118.03999999999999" width="56" height="14.96" rx="3" fill="#e8b46a"/>
+<rect x="875.9599999999999" y="106.28" width="13.44" height="12.6" rx="2" fill="#e0553f"/>
+<rect x="923" y="92" width="58" height="42" rx="4" fill="#f6dcb0" stroke="#d98a1c" stroke-width="1.6"/>
+<rect x="924" y="118.03999999999999" width="56" height="14.96" rx="3" fill="#e8b46a"/>
+<circle cx="942.72" cy="113.0" r="7.140000000000001" fill="#3f7fe0"/>
+<rect x="990" y="92" width="58" height="42" rx="4" fill="#f6dcb0" stroke="#d98a1c" stroke-width="1.6"/>
+<rect x="991" y="118.03999999999999" width="56" height="14.96" rx="3" fill="#e8b46a"/>
+<rect x="1019.24" y="106.28" width="13.44" height="12.6" rx="2" fill="#2f9a5c"/>
+<rect x="1057" y="92" width="58" height="42" rx="4" fill="#f6dcb0" stroke="#d98a1c" stroke-width="1.6"/>
+<rect x="1058" y="118.03999999999999" width="56" height="14.96" rx="3" fill="#e8b46a"/>
+<circle cx="1086.0" cy="113.0" r="7.140000000000001" fill="#8a5bd6"/>
+<rect x="1124" y="92" width="58" height="42" rx="4" fill="#c9dbf7" stroke="#2f6fd6" stroke-width="1.6"/>
+<rect x="1125" y="118.03999999999999" width="56" height="14.96" rx="3" fill="#8fb3ea"/>
+<rect x="1139.32" y="106.28" width="13.44" height="12.6" rx="2" fill="#e0553f"/>
+<rect x="1191" y="92" width="58" height="42" rx="4" fill="#c9dbf7" stroke="#2f6fd6" stroke-width="1.6"/>
+<rect x="1192" y="118.03999999999999" width="56" height="14.96" rx="3" fill="#8fb3ea"/>
+<circle cx="1229.28" cy="113.0" r="7.140000000000001" fill="#3f7fe0"/>
+<rect x="1258" y="92" width="58" height="42" rx="4" fill="#c9dbf7" stroke="#2f6fd6" stroke-width="1.6"/>
+<rect x="1259" y="118.03999999999999" width="56" height="14.96" rx="3" fill="#8fb3ea"/>
+<rect x="1282.6" y="106.28" width="13.44" height="12.6" rx="2" fill="#2f9a5c"/>
+<rect x="1325" y="92" width="58" height="42" rx="4" fill="#c9dbf7" stroke="#2f6fd6" stroke-width="1.6"/>
+<rect x="1326" y="118.03999999999999" width="56" height="14.96" rx="3" fill="#8fb3ea"/>
+<circle cx="1349.36" cy="113.0" r="7.140000000000001" fill="#8a5bd6"/>
+<rect x="1392" y="92" width="58" height="42" rx="4" fill="#c9dbf7" stroke="#2f6fd6" stroke-width="1.6"/>
+<rect x="1393" y="118.03999999999999" width="56" height="14.96" rx="3" fill="#8fb3ea"/>
+<rect x="1402.68" y="106.28" width="13.44" height="12.6" rx="2" fill="#e0553f"/>
+<rect x="1459" y="92" width="58" height="42" rx="4" fill="#c9dbf7" stroke="#2f6fd6" stroke-width="1.6"/>
+<rect x="1460" y="118.03999999999999" width="56" height="14.96" rx="3" fill="#8fb3ea"/>
+<circle cx="1492.64" cy="113.0" r="7.140000000000001" fill="#3f7fe0"/>
+<path d="M52,84 v-8 h527 v8" fill="none" stroke="#9aa1b2" stroke-width="2"/>
+<text x="315.5" y="70" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="14" font-weight="bold" font-style="normal" fill="#9aa1b2" text-anchor="middle">older history: out of band, never scored</text>
+<path d="M588,84 v-8 h527 v8" fill="none" stroke="#d98a1c" stroke-width="2"/>
+<text x="851.5" y="70" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="14" font-weight="bold" font-style="normal" fill="#d98a1c" text-anchor="middle">admissible band  3 s ≤ d ≤ 30 s  →  candidates</text>
+<path d="M1124,84 v-8 h393 v8" fill="none" stroke="#2f6fd6" stroke-width="2"/>
+<text x="1320.5" y="70" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="14" font-weight="bold" font-style="normal" fill="#2f6fd6" text-anchor="middle">exact Recent-6 context  R₆ = K₀</text>
+<line x1="52" y1="156" x2="1535" y2="156" stroke="#1f2433" stroke-width="1.6" marker-end="url(#head)"/>
+<line x1="52" y1="151" x2="52" y2="161" stroke="#1f2433" stroke-width="1.6"/>
+<text x="52" y="178" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="13.5" font-weight="normal" font-style="normal" fill="#5b6275" text-anchor="middle">t = 0</text>
+<line x1="588" y1="151" x2="588" y2="161" stroke="#1f2433" stroke-width="1.6"/>
+<text x="588" y="178" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="13.5" font-weight="normal" font-style="normal" fill="#5b6275" text-anchor="middle">t_q − 30 s</text>
+<line x1="1124" y1="151" x2="1124" y2="161" stroke="#1f2433" stroke-width="1.6"/>
+<text x="1124" y="178" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="13.5" font-weight="normal" font-style="normal" fill="#5b6275" text-anchor="middle">t_q − 6 s</text>
+<line x1="1517" y1="151" x2="1517" y2="161" stroke="#1f2433" stroke-width="1.6"/>
+<text x="1517" y="178" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="13.5" font-weight="normal" font-style="normal" fill="#5b6275" text-anchor="middle">t_q</text>
+<rect x="1560" y="70" width="220" height="118" rx="12" fill="#ffffff" stroke="#1f2433" stroke-width="1.6" opacity="1"/>
+<path d="M1580,188 l-14,18 l34,-18 z" fill="#ffffff" stroke="#1f2433" stroke-width="1.6"/>
+<rect x="1581" y="184" width="18" height="6" fill="#ffffff"/>
+<text x="1574" y="96" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="14.5" font-weight="bold" font-style="normal" fill="#1f2433" text-anchor="start">Question q at t_q</text>
+<text x="1574" y="120" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="13.5" font-weight="normal" font-style="normal" fill="#1f2433" text-anchor="start">“What did the person put</text>
+<text x="1574" y="138" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="13.5" font-weight="normal" font-style="normal" fill="#1f2433" text-anchor="start"> on the table?”</text>
+<text x="1574" y="162" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="12.5" font-weight="normal" font-style="italic" fill="#5b6275" text-anchor="start">open-ended or multiple-choice:</text>
+<text x="1574" y="178" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="12.5" font-weight="normal" font-style="italic" fill="#5b6275" text-anchor="start">one controller, no option scores</text>
+<rect x="28" y="262" width="236" height="360" rx="12" fill="#ffffff" stroke="#d98a1c" stroke-width="1.8" opacity="1"/>
+<path d="M40,262 h212 a12,12 0 0 1 12,12 v26 h-236 v-26 a12,12 0 0 1 12,-12 z" fill="#fbecd3" stroke="#d98a1c" stroke-width="1.8"/>
+<circle cx="50" cy="281" r="11" fill="#d98a1c"/>
+<text x="50" y="286" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="13" font-weight="bold" font-style="normal" fill="#ffffff" text-anchor="middle">1</text>
+<text x="68" y="287" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="15.5" font-weight="bold" font-style="normal" fill="#1f2433" text-anchor="start">Temporal pre-filter</text>
+<rect x="46" y="324" width="46" height="34" rx="4" fill="#d9dde6" stroke="#9aa1b2" stroke-width="1.6"/>
+<rect x="47" y="345.08" width="44" height="11.92" rx="3" fill="#b9bfcc"/>
+<circle cx="61.64" cy="341.0" r="5.78" fill="#8a5bd6"/>
+<line x1="46" y1="324" x2="92" y2="358" stroke="#c8473f" stroke-width="2"/>
+<rect x="98" y="324" width="46" height="34" rx="4" fill="#d9dde6" stroke="#9aa1b2" stroke-width="1.6"/>
+<rect x="99" y="345.08" width="44" height="11.92" rx="3" fill="#b9bfcc"/>
+<rect x="121.08" y="335.56" width="10.88" height="10.2" rx="2" fill="#e0553f"/>
+<line x1="98" y1="324" x2="144" y2="358" stroke="#c8473f" stroke-width="2"/>
+<rect x="150" y="324" width="46" height="34" rx="4" fill="#f6dcb0" stroke="#d98a1c" stroke-width="1.6"/>
+<rect x="151" y="345.08" width="44" height="11.92" rx="3" fill="#e8b46a"/>
+<circle cx="173.0" cy="341.0" r="5.78" fill="#3f7fe0"/>
+<rect x="202" y="324" width="46" height="34" rx="4" fill="#f6dcb0" stroke="#d98a1c" stroke-width="1.6"/>
+<rect x="203" y="345.08" width="44" height="11.92" rx="3" fill="#e8b46a"/>
+<rect x="214.04" y="335.56" width="10.88" height="10.2" rx="2" fill="#2f9a5c"/>
+<rect x="46" y="368" width="46" height="34" rx="4" fill="#f6dcb0" stroke="#d98a1c" stroke-width="1.6"/>
+<rect x="47" y="389.08" width="44" height="11.92" rx="3" fill="#e8b46a"/>
+<circle cx="76.36" cy="385.0" r="5.78" fill="#8a5bd6"/>
+<rect x="98" y="368" width="46" height="34" rx="4" fill="#f6dcb0" stroke="#d98a1c" stroke-width="1.6"/>
+<rect x="99" y="389.08" width="44" height="11.92" rx="3" fill="#e8b46a"/>
+<rect x="117.4" y="379.56" width="10.88" height="10.2" rx="2" fill="#e0553f"/>
+<rect x="150" y="368" width="46" height="34" rx="4" fill="#f6dcb0" stroke="#d98a1c" stroke-width="1.6"/>
+<rect x="151" y="389.08" width="44" height="11.92" rx="3" fill="#e8b46a"/>
+<circle cx="169.32" cy="385.0" r="5.78" fill="#3f7fe0"/>
+<rect x="202" y="368" width="46" height="34" rx="4" fill="#d9dde6" stroke="#9aa1b2" stroke-width="1.6"/>
+<rect x="203" y="389.08" width="44" height="11.92" rx="3" fill="#b9bfcc"/>
+<rect x="210.36" y="379.56" width="10.88" height="10.2" rx="2" fill="#2f9a5c"/>
+<line x1="202" y1="368" x2="248" y2="402" stroke="#c8473f" stroke-width="2"/>
+<text x="46" y="440" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="14" font-weight="normal" font-style="normal" fill="#1f2433" text-anchor="start">keep h only if</text>
+<text x="46" y="462" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="14" font-weight="normal" font-style="italic" fill="#1f2433" text-anchor="start">d_min ≤ t_s(R₆) − t_e(h)</text>
+<text x="86" y="482" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="14" font-weight="normal" font-style="italic" fill="#1f2433" text-anchor="start">≤ d_max</text>
+<text x="46" y="504" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="13.5" font-weight="normal" font-style="normal" fill="#5b6275" text-anchor="start">(3 s, 30 s); horizon 64</text>
+<text x="46" y="532" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="13.5" font-weight="normal" font-style="normal" fill="#5b6275" text-anchor="start">drops near-duplicates of R₆</text>
+<text x="46" y="552" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="13.5" font-weight="normal" font-style="normal" fill="#5b6275" text-anchor="start">and stale evidence before</text>
+<text x="46" y="572" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="13.5" font-weight="normal" font-style="normal" fill="#5b6275" text-anchor="start">any retrieval cost is paid</text>
+<text x="46" y="600" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="14.5" font-weight="bold" font-style="normal" fill="#d98a1c" text-anchor="start">→ candidate set H_t</text>
+<rect x="290" y="262" width="262" height="360" rx="12" fill="#ffffff" stroke="#16897f" stroke-width="1.8" opacity="1"/>
+<path d="M302,262 h238 a12,12 0 0 1 12,12 v26 h-262 v-26 a12,12 0 0 1 12,-12 z" fill="#d7f1ee" stroke="#16897f" stroke-width="1.8"/>
+<circle cx="312" cy="281" r="11" fill="#16897f"/>
+<text x="312" y="286" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="13" font-weight="bold" font-style="normal" fill="#ffffff" text-anchor="middle">2</text>
+<text x="330" y="287" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="15.5" font-weight="bold" font-style="normal" fill="#1f2433" text-anchor="start">CLIP-MMR retrieval</text>
+<rect x="308" y="314" width="44" height="30" rx="4" fill="#f6dcb0" stroke="#d98a1c" stroke-width="1.6"/>
+<rect x="309" y="332.6" width="42" height="10.4" rx="3" fill="#e8b46a"/>
+<circle cx="326.48" cy="329.0" r="5.1000000000000005" fill="#3f7fe0"/>
+<rect x="362" y="323" width="129.0" height="13" rx="3" fill="#16897f" opacity=".75"/>
+<text x="497.0" y="335" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="12.5" font-weight="normal" font-style="normal" fill="#5b6275" text-anchor="start">0.86</text>
+<rect x="308" y="350" width="44" height="30" rx="4" fill="#f6dcb0" stroke="#d98a1c" stroke-width="1.6"/>
+<rect x="309" y="368.6" width="42" height="10.4" rx="3" fill="#e8b46a"/>
+<rect x="316.4" y="360.2" width="9.6" height="9.0" rx="2" fill="#2f9a5c"/>
+<rect x="362" y="359" width="93.0" height="13" rx="3" fill="#16897f" opacity=".75"/>
+<text x="461.0" y="371" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="12.5" font-weight="normal" font-style="normal" fill="#5b6275" text-anchor="start">0.62</text>
+<rect x="308" y="386" width="44" height="30" rx="4" fill="#f6dcb0" stroke="#d98a1c" stroke-width="1.6"/>
+<rect x="309" y="404.6" width="42" height="10.4" rx="3" fill="#e8b46a"/>
+<circle cx="333.52" cy="401.0" r="5.1000000000000005" fill="#8a5bd6"/>
+<rect x="362" y="395" width="106.5" height="13" rx="3" fill="#16897f" opacity=".75"/>
+<text x="474.5" y="407" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="12.5" font-weight="normal" font-style="normal" fill="#5b6275" text-anchor="start">0.71</text>
+<rect x="308" y="422" width="44" height="30" rx="4" fill="#f6dcb0" stroke="#d98a1c" stroke-width="1.6"/>
+<rect x="309" y="440.6" width="42" height="10.4" rx="3" fill="#e8b46a"/>
+<rect x="323.44" y="432.2" width="9.6" height="9.0" rx="2" fill="#e0553f"/>
+<rect x="362" y="431" width="60.0" height="13" rx="3" fill="#16897f" opacity=".75"/>
+<text x="428.0" y="443" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="12.5" font-weight="normal" font-style="normal" fill="#5b6275" text-anchor="start">0.40</text>
+<text x="532" y="287" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="16" font-weight="normal" font-style="normal" fill="#4a90c8" text-anchor="middle">❄</text>
+<text x="308" y="476" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="12.5" font-weight="normal" font-style="italic" fill="#5b6275" text-anchor="start">query = question text only</text>
+<text x="308" y="498" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="14" font-weight="normal" font-style="italic" fill="#1f2433" text-anchor="start">r_i = cos(E_v(h_i), E_t(q))</text>
+<text x="308" y="524" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="12.5" font-weight="normal" font-style="italic" fill="#1f2433" text-anchor="start">MMR: λ r_i − (1−λ) max_s sim(h_i, h_s)</text>
+<text x="308" y="548" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="13.5" font-weight="normal" font-style="normal" fill="#5b6275" text-anchor="start">λ = 0.8 → diverse, relevant queue</text>
+<rect x="308" y="570" width="48" height="36" rx="8" fill="#fbecd3" stroke="#d98a1c" stroke-width="1.6" opacity="1"/>
+<text x="332" y="594" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="15" font-weight="bold" font-style="normal" fill="#d98a1c" text-anchor="middle">h₁</text>
+<rect x="366" y="570" width="48" height="36" rx="8" fill="#fbecd3" stroke="#d98a1c" stroke-width="1.6" opacity="1"/>
+<text x="390" y="594" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="15" font-weight="bold" font-style="normal" fill="#d98a1c" text-anchor="middle">h₂</text>
+<rect x="424" y="570" width="48" height="36" rx="8" fill="#fbecd3" stroke="#d98a1c" stroke-width="1.6" opacity="1"/>
+<text x="448" y="594" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="15" font-weight="bold" font-style="normal" fill="#d98a1c" text-anchor="middle">h₃</text>
+<text x="486" y="594" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="13.5" font-weight="normal" font-style="normal" fill="#5b6275" text-anchor="start">ranked</text>
+<rect x="578" y="262" width="300" height="360" rx="12" fill="#ffffff" stroke="#6b4fbf" stroke-width="1.8" opacity="1"/>
+<path d="M590,262 h276 a12,12 0 0 1 12,12 v26 h-300 v-26 a12,12 0 0 1 12,-12 z" fill="#e9e3f8" stroke="#6b4fbf" stroke-width="1.8"/>
+<circle cx="600" cy="281" r="11" fill="#6b4fbf"/>
+<text x="600" y="286" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="13" font-weight="bold" font-style="normal" fill="#ffffff" text-anchor="middle">3</text>
+<text x="618" y="287" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="15.5" font-weight="bold" font-style="normal" fill="#1f2433" text-anchor="start">Recent sufficiency (K₀ = R₆)</text>
+<rect x="594" y="318" width="40" height="30" rx="4" fill="#c9dbf7" stroke="#2f6fd6" stroke-width="1.6"/>
+<rect x="595" y="336.6" width="38" height="10.4" rx="3" fill="#8fb3ea"/>
+<rect x="604.4000000000001" y="328.2" width="9.6" height="9.0" rx="2" fill="#e0553f"/>
+<rect x="639" y="318" width="40" height="30" rx="4" fill="#c9dbf7" stroke="#2f6fd6" stroke-width="1.6"/>
+<rect x="640" y="336.6" width="38" height="10.4" rx="3" fill="#8fb3ea"/>
+<circle cx="665.4" cy="333.0" r="5.1000000000000005" fill="#3f7fe0"/>
+<rect x="684" y="318" width="40" height="30" rx="4" fill="#c9dbf7" stroke="#2f6fd6" stroke-width="1.6"/>
+<rect x="685" y="336.6" width="38" height="10.4" rx="3" fill="#8fb3ea"/>
+<rect x="700.8000000000001" y="328.2" width="9.6" height="9.0" rx="2" fill="#2f9a5c"/>
+<rect x="729" y="318" width="40" height="30" rx="4" fill="#c9dbf7" stroke="#2f6fd6" stroke-width="1.6"/>
+<rect x="730" y="336.6" width="38" height="10.4" rx="3" fill="#8fb3ea"/>
+<circle cx="745.8" cy="333.0" r="5.1000000000000005" fill="#8a5bd6"/>
+<rect x="774" y="318" width="40" height="30" rx="4" fill="#c9dbf7" stroke="#2f6fd6" stroke-width="1.6"/>
+<rect x="775" y="336.6" width="38" height="10.4" rx="3" fill="#8fb3ea"/>
+<rect x="781.2" y="328.2" width="9.6" height="9.0" rx="2" fill="#e0553f"/>
+<rect x="819" y="318" width="40" height="30" rx="4" fill="#c9dbf7" stroke="#2f6fd6" stroke-width="1.6"/>
+<rect x="820" y="336.6" width="38" height="10.4" rx="3" fill="#8fb3ea"/>
+<circle cx="842.2" cy="333.0" r="5.1000000000000005" fill="#3f7fe0"/>
+<rect x="648" y="362" width="160" height="40" rx="10" fill="#e9e3f8" stroke="#6b4fbf" stroke-width="1.8" opacity="1"/>
+<text x="728" y="387" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="14.5" font-weight="bold" font-style="normal" fill="#6b4fbf" text-anchor="middle">frozen VLM</text>
+<text x="796" y="378" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="14" font-weight="normal" font-style="normal" fill="#4a90c8" text-anchor="middle">❄</text>
+<line x1="728" y1="350" x2="728" y2="360" stroke="#6b4fbf" stroke-width="1.8" marker-end="url(#head)"/>
+<text x="594" y="428" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="13.5" font-weight="normal" font-style="normal" fill="#5b6275" text-anchor="start">generates â₀ with token probabilities</text>
+<rect x="600" y="441.68" width="18" height="42.32" fill="#6b4fbf" opacity=".85"/>
+<rect x="621" y="482.16" width="18" height="1.84" fill="#6b4fbf" opacity=".35"/>
+<rect x="666" y="451.34000000000003" width="18" height="32.66" fill="#6b4fbf" opacity=".85"/>
+<rect x="687" y="476.18" width="18" height="7.82" fill="#6b4fbf" opacity=".35"/>
+<rect x="732" y="443.52" width="18" height="40.48" fill="#6b4fbf" opacity=".85"/>
+<rect x="753" y="481.24" width="18" height="2.76" fill="#6b4fbf" opacity=".35"/>
+<rect x="798" y="458.7" width="18" height="25.3" fill="#6b4fbf" opacity=".85"/>
+<rect x="819" y="470.2" width="18" height="13.799999999999999" fill="#6b4fbf" opacity=".35"/>
+<line x1="594" y1="485" x2="862" y2="485" stroke="#c9cedb" stroke-width="1.4"/>
+<text x="594" y="516" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="15" font-weight="bold" font-style="normal" fill="#1f2433" text-anchor="start">S₀ = α M₀ + β E₀ + γ V₀</text>
+<text x="594" y="542" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="13.5" font-weight="normal" font-style="normal" fill="#5b6275" text-anchor="start">M: top-2 token margin</text>
+<text x="594" y="562" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="13.5" font-weight="normal" font-style="normal" fill="#5b6275" text-anchor="start">E: 1 − normalized token entropy</text>
+<text x="594" y="582" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="13.5" font-weight="normal" font-style="normal" fill="#5b6275" text-anchor="start">V: CLIP support of (q ⊕ â₀)</text>
+<text x="594" y="604" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="13.5" font-weight="normal" font-style="normal" fill="#5b6275" text-anchor="start">(α, β, γ) = (0.5, 0.2, 0.3)</text>
+<rect x="904" y="262" width="214" height="360" rx="12" fill="#ffffff" stroke="#1f2433" stroke-width="1.8" opacity="1"/>
+<path d="M916,262 h190 a12,12 0 0 1 12,12 v26 h-214 v-26 a12,12 0 0 1 12,-12 z" fill="#eef0f5" stroke="#1f2433" stroke-width="1.8"/>
+<circle cx="926" cy="281" r="11" fill="#1f2433"/>
+<text x="926" y="286" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="13" font-weight="bold" font-style="normal" fill="#ffffff" text-anchor="middle">4</text>
+<text x="944" y="287" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="15.5" font-weight="bold" font-style="normal" fill="#1f2433" text-anchor="start">Admission gate</text>
+<path d="M1011.0,332 L1089.0,390 L1011.0,448 L933.0,390 z" fill="#ffffff" stroke="#1f2433" stroke-width="1.8"/>
+<text x="1011.0" y="384" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="15" font-weight="bold" font-style="normal" fill="#1f2433" text-anchor="middle">admit</text>
+<text x="1011.0" y="404" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="15" font-weight="bold" font-style="normal" fill="#1f2433" text-anchor="middle">history?</text>
+<text x="920" y="484" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="13.5" font-weight="normal" font-style="italic" fill="#1f2433" text-anchor="start">S₀ &lt; τ_S  (recent unsure)</text>
+<text x="920" y="506" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="14" font-weight="bold" font-style="normal" fill="#1f2433" text-anchor="start">  ∨</text>
+<text x="920" y="528" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="13.5" font-weight="normal" font-style="italic" fill="#1f2433" text-anchor="start">r₁ ≥ τ_R ∧ h₁ supports</text>
+<text x="920" y="548" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="13.5" font-weight="normal" font-style="italic" fill="#1f2433" text-anchor="start">â₀ less than R₆ does</text>
+<text x="920" y="588" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="14" font-weight="bold" font-style="normal" fill="#2f6fd6" text-anchor="start">no → answer â₀</text>
+<text x="920" y="608" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="13" font-weight="normal" font-style="normal" fill="#5b6275" text-anchor="start">(identical to Recent-6)</text>
+<rect x="1144" y="262" width="404" height="360" rx="12" fill="#ffffff" stroke="#2f9a5c" stroke-width="1.8" opacity="1"/>
+<path d="M1156,262 h380 a12,12 0 0 1 12,12 v26 h-404 v-26 a12,12 0 0 1 12,-12 z" fill="#dcf2e4" stroke="#2f9a5c" stroke-width="1.8"/>
+<circle cx="1166" cy="281" r="11" fill="#2f9a5c"/>
+<text x="1166" y="286" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="13" font-weight="bold" font-style="normal" fill="#ffffff" text-anchor="middle">5</text>
+<text x="1184" y="287" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="15.5" font-weight="bold" font-style="normal" fill="#1f2433" text-anchor="start">Progressive arbitration (B_mem = 3)</text>
+<text x="1162" y="346" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="16" font-weight="bold" font-style="normal" fill="#1f2433" text-anchor="start">K₁</text>
+<rect x="1196" y="326" width="34" height="26" rx="4" fill="#f6dcb0" stroke="#2f9a5c" stroke-width="1.6"/>
+<rect x="1197" y="342.12" width="32" height="8.88" rx="3" fill="#e8b46a"/>
+<circle cx="1210.28" cy="339.0" r="4.42" fill="#3f7fe0"/>
+<rect x="1242" y="326" width="25" height="26" rx="4" fill="#c9dbf7" stroke="#2f6fd6" stroke-width="1.6"/>
+<rect x="1243" y="342.12" width="23" height="8.88" rx="3" fill="#8fb3ea"/>
+<rect x="1247.34" y="334.84" width="8.32" height="7.8" rx="2" fill="#e0553f"/>
+<rect x="1270" y="326" width="25" height="26" rx="4" fill="#c9dbf7" stroke="#2f6fd6" stroke-width="1.6"/>
+<rect x="1271" y="342.12" width="23" height="8.88" rx="3" fill="#8fb3ea"/>
+<circle cx="1286.5" cy="339.0" r="4.42" fill="#3f7fe0"/>
+<rect x="1298" y="326" width="25" height="26" rx="4" fill="#c9dbf7" stroke="#2f6fd6" stroke-width="1.6"/>
+<rect x="1299" y="342.12" width="23" height="8.88" rx="3" fill="#8fb3ea"/>
+<rect x="1307.34" y="334.84" width="8.32" height="7.8" rx="2" fill="#2f9a5c"/>
+<rect x="1326" y="326" width="25" height="26" rx="4" fill="#c9dbf7" stroke="#2f6fd6" stroke-width="1.6"/>
+<rect x="1327" y="342.12" width="23" height="8.88" rx="3" fill="#8fb3ea"/>
+<circle cx="1336.5" cy="339.0" r="4.42" fill="#8a5bd6"/>
+<rect x="1354" y="326" width="25" height="26" rx="4" fill="#c9dbf7" stroke="#2f6fd6" stroke-width="1.6"/>
+<rect x="1355" y="342.12" width="23" height="8.88" rx="3" fill="#8fb3ea"/>
+<rect x="1357.34" y="334.84" width="8.32" height="7.8" rx="2" fill="#e0553f"/>
+<rect x="1382" y="326" width="25" height="26" rx="4" fill="#c9dbf7" stroke="#2f6fd6" stroke-width="1.6"/>
+<rect x="1383" y="342.12" width="23" height="8.88" rx="3" fill="#8fb3ea"/>
+<circle cx="1396.5" cy="339.0" r="4.42" fill="#3f7fe0"/>
+<circle cx="1518" cy="336" r="12" fill="#2f9a5c"/>
+<text x="1518" y="341" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="15" font-weight="bold" font-style="normal" fill="#ffffff" text-anchor="middle">✓</text>
+<text x="1518" y="364" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="11.5" font-weight="bold" font-style="normal" fill="#2f9a5c" text-anchor="middle">accept</text>
+<text x="1162" y="410" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="16" font-weight="bold" font-style="normal" fill="#1f2433" text-anchor="start">K₂</text>
+<rect x="1196" y="390" width="34" height="26" rx="4" fill="#f6dcb0" stroke="#2f9a5c" stroke-width="1.6"/>
+<rect x="1197" y="406.12" width="32" height="8.88" rx="3" fill="#e8b46a"/>
+<circle cx="1210.28" cy="403.0" r="4.42" fill="#3f7fe0"/>
+<rect x="1234" y="390" width="34" height="26" rx="4" fill="#f6dcb0" stroke="#2f9a5c" stroke-width="1.6"/>
+<rect x="1235" y="406.12" width="32" height="8.88" rx="3" fill="#e8b46a"/>
+<rect x="1240.04" y="398.84" width="8.32" height="7.8" rx="2" fill="#2f9a5c"/>
+<rect x="1280" y="390" width="25" height="26" rx="4" fill="#c9dbf7" stroke="#2f6fd6" stroke-width="1.6"/>
+<rect x="1281" y="406.12" width="23" height="8.88" rx="3" fill="#8fb3ea"/>
+<rect x="1285.34" y="398.84" width="8.32" height="7.8" rx="2" fill="#e0553f"/>
+<rect x="1308" y="390" width="25" height="26" rx="4" fill="#c9dbf7" stroke="#2f6fd6" stroke-width="1.6"/>
+<rect x="1309" y="406.12" width="23" height="8.88" rx="3" fill="#8fb3ea"/>
+<circle cx="1324.5" cy="403.0" r="4.42" fill="#3f7fe0"/>
+<rect x="1336" y="390" width="25" height="26" rx="4" fill="#c9dbf7" stroke="#2f6fd6" stroke-width="1.6"/>
+<rect x="1337" y="406.12" width="23" height="8.88" rx="3" fill="#8fb3ea"/>
+<rect x="1345.34" y="398.84" width="8.32" height="7.8" rx="2" fill="#2f9a5c"/>
+<rect x="1364" y="390" width="25" height="26" rx="4" fill="#c9dbf7" stroke="#2f6fd6" stroke-width="1.6"/>
+<rect x="1365" y="406.12" width="23" height="8.88" rx="3" fill="#8fb3ea"/>
+<circle cx="1374.5" cy="403.0" r="4.42" fill="#8a5bd6"/>
+<rect x="1392" y="390" width="25" height="26" rx="4" fill="#c9dbf7" stroke="#2f6fd6" stroke-width="1.6"/>
+<rect x="1393" y="406.12" width="23" height="8.88" rx="3" fill="#8fb3ea"/>
+<rect x="1395.34" y="398.84" width="8.32" height="7.8" rx="2" fill="#e0553f"/>
+<rect x="1420" y="390" width="25" height="26" rx="4" fill="#c9dbf7" stroke="#2f6fd6" stroke-width="1.6"/>
+<rect x="1421" y="406.12" width="23" height="8.88" rx="3" fill="#8fb3ea"/>
+<circle cx="1434.5" cy="403.0" r="4.42" fill="#3f7fe0"/>
+<circle cx="1518" cy="400" r="12" fill="#2f9a5c"/>
+<text x="1518" y="405" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="15" font-weight="bold" font-style="normal" fill="#ffffff" text-anchor="middle">✓</text>
+<text x="1518" y="428" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="11.5" font-weight="bold" font-style="normal" fill="#2f9a5c" text-anchor="middle">accept</text>
+<text x="1162" y="474" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="16" font-weight="bold" font-style="normal" fill="#1f2433" text-anchor="start">K₃</text>
+<rect x="1196" y="454" width="34" height="26" rx="4" fill="#f6dcb0" stroke="#2f9a5c" stroke-width="1.6"/>
+<rect x="1197" y="470.12" width="32" height="8.88" rx="3" fill="#e8b46a"/>
+<circle cx="1210.28" cy="467.0" r="4.42" fill="#3f7fe0"/>
+<rect x="1234" y="454" width="34" height="26" rx="4" fill="#f6dcb0" stroke="#2f9a5c" stroke-width="1.6"/>
+<rect x="1235" y="470.12" width="32" height="8.88" rx="3" fill="#e8b46a"/>
+<rect x="1240.04" y="462.84" width="8.32" height="7.8" rx="2" fill="#2f9a5c"/>
+<rect x="1272" y="454" width="34" height="26" rx="4" fill="#f6dcb0" stroke="#c8473f" stroke-width="1.6"/>
+<rect x="1273" y="470.12" width="32" height="8.88" rx="3" fill="#e8b46a"/>
+<circle cx="1291.72" cy="467.0" r="4.42" fill="#8a5bd6"/>
+<rect x="1318" y="454" width="25" height="26" rx="4" fill="#c9dbf7" stroke="#2f6fd6" stroke-width="1.6"/>
+<rect x="1319" y="470.12" width="23" height="8.88" rx="3" fill="#8fb3ea"/>
+<rect x="1323.34" y="462.84" width="8.32" height="7.8" rx="2" fill="#e0553f"/>
+<rect x="1346" y="454" width="25" height="26" rx="4" fill="#c9dbf7" stroke="#2f6fd6" stroke-width="1.6"/>
+<rect x="1347" y="470.12" width="23" height="8.88" rx="3" fill="#8fb3ea"/>
+<circle cx="1362.5" cy="467.0" r="4.42" fill="#3f7fe0"/>
+<rect x="1374" y="454" width="25" height="26" rx="4" fill="#c9dbf7" stroke="#2f6fd6" stroke-width="1.6"/>
+<rect x="1375" y="470.12" width="23" height="8.88" rx="3" fill="#8fb3ea"/>
+<rect x="1383.34" y="462.84" width="8.32" height="7.8" rx="2" fill="#2f9a5c"/>
+<rect x="1402" y="454" width="25" height="26" rx="4" fill="#c9dbf7" stroke="#2f6fd6" stroke-width="1.6"/>
+<rect x="1403" y="470.12" width="23" height="8.88" rx="3" fill="#8fb3ea"/>
+<circle cx="1412.5" cy="467.0" r="4.42" fill="#8a5bd6"/>
+<rect x="1430" y="454" width="25" height="26" rx="4" fill="#c9dbf7" stroke="#2f6fd6" stroke-width="1.6"/>
+<rect x="1431" y="470.12" width="23" height="8.88" rx="3" fill="#8fb3ea"/>
+<rect x="1433.34" y="462.84" width="8.32" height="7.8" rx="2" fill="#e0553f"/>
+<rect x="1458" y="454" width="25" height="26" rx="4" fill="#c9dbf7" stroke="#2f6fd6" stroke-width="1.6"/>
+<rect x="1459" y="470.12" width="23" height="8.88" rx="3" fill="#8fb3ea"/>
+<circle cx="1472.5" cy="467.0" r="4.42" fill="#3f7fe0"/>
+<circle cx="1518" cy="464" r="12" fill="#c8473f"/>
+<text x="1518" y="469" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="15" font-weight="bold" font-style="normal" fill="#ffffff" text-anchor="middle">✗</text>
+<text x="1518" y="492" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="11.5" font-weight="bold" font-style="normal" fill="#c8473f" text-anchor="middle">reject</text>
+<path d="M1504,466 C1478,454 1478,424 1504,406" fill="none" stroke="#c8473f" stroke-width="2" stroke-dasharray="5 4" marker-end="url(#headred)"/>
+<text x="1530" y="530" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="13.5" font-weight="bold" font-style="normal" fill="#c8473f" text-anchor="end">prefix rollback: K* = K₂</text>
+<text x="1162" y="568" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="14" font-weight="normal" font-style="italic" fill="#1f2433" text-anchor="start">A_j = [M_j ≥ τ_M]·[S_(j−1) − S_j ≤ δ_S]·C_j·P_j</text>
+<text x="1162" y="592" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="13.5" font-weight="normal" font-style="normal" fill="#5b6275" text-anchor="start">C_j: a close frame must support the new answer</text>
+<text x="1162" y="612" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="13.5" font-weight="normal" font-style="normal" fill="#5b6275" text-anchor="start">P_j: answer changes, or S_j rises by ε</text>
+<rect x="1574" y="262" width="198" height="360" rx="12" fill="#ffffff" stroke="#2f6fd6" stroke-width="1.8" opacity="1"/>
+<path d="M1586,262 h174 a12,12 0 0 1 12,12 v26 h-198 v-26 a12,12 0 0 1 12,-12 z" fill="#dce8fb" stroke="#2f6fd6" stroke-width="1.8"/>
+<circle cx="1596" cy="281" r="11" fill="#2f6fd6"/>
+<text x="1596" y="286" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="13" font-weight="bold" font-style="normal" fill="#ffffff" text-anchor="middle">6</text>
+<text x="1614" y="287" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="15.5" font-weight="bold" font-style="normal" fill="#1f2433" text-anchor="start">Answer</text>
+<rect x="1592" y="324" width="32" height="26" rx="4" fill="#f6dcb0" stroke="#2f9a5c" stroke-width="1.6"/>
+<rect x="1593" y="340.12" width="30" height="8.88" rx="3" fill="#e8b46a"/>
+<circle cx="1605.44" cy="337.0" r="4.42" fill="#3f7fe0"/>
+<rect x="1628" y="324" width="32" height="26" rx="4" fill="#f6dcb0" stroke="#2f9a5c" stroke-width="1.6"/>
+<rect x="1629" y="340.12" width="30" height="8.88" rx="3" fill="#e8b46a"/>
+<rect x="1633.4399999999998" y="332.84" width="8.32" height="7.8" rx="2" fill="#2f9a5c"/>
+<rect x="1668" y="324" width="30" height="26" rx="4" fill="#c9dbf7" stroke="#2f6fd6" stroke-width="1.6"/>
+<rect x="1669" y="340.12" width="28" height="8.88" rx="3" fill="#8fb3ea"/>
+<rect x="1675.24" y="332.84" width="8.32" height="7.8" rx="2" fill="#e0553f"/>
+<rect x="1702" y="324" width="30" height="26" rx="4" fill="#c9dbf7" stroke="#2f6fd6" stroke-width="1.6"/>
+<rect x="1703" y="340.12" width="28" height="8.88" rx="3" fill="#8fb3ea"/>
+<circle cx="1721.8" cy="337.0" r="4.42" fill="#3f7fe0"/>
+<rect x="1736" y="324" width="30" height="26" rx="4" fill="#c9dbf7" stroke="#2f6fd6" stroke-width="1.6"/>
+<rect x="1737" y="340.12" width="28" height="8.88" rx="3" fill="#8fb3ea"/>
+<rect x="1748.04" y="332.84" width="8.32" height="7.8" rx="2" fill="#2f9a5c"/>
+<rect x="1668" y="354" width="30" height="26" rx="4" fill="#c9dbf7" stroke="#2f6fd6" stroke-width="1.6"/>
+<rect x="1669" y="370.12" width="28" height="8.88" rx="3" fill="#8fb3ea"/>
+<circle cx="1680.6" cy="367.0" r="4.42" fill="#8a5bd6"/>
+<rect x="1702" y="354" width="30" height="26" rx="4" fill="#c9dbf7" stroke="#2f6fd6" stroke-width="1.6"/>
+<rect x="1703" y="370.12" width="28" height="8.88" rx="3" fill="#8fb3ea"/>
+<rect x="1706.84" y="362.84" width="8.32" height="7.8" rx="2" fill="#e0553f"/>
+<rect x="1736" y="354" width="30" height="26" rx="4" fill="#c9dbf7" stroke="#2f6fd6" stroke-width="1.6"/>
+<rect x="1737" y="370.12" width="28" height="8.88" rx="3" fill="#8fb3ea"/>
+<circle cx="1753.4" cy="367.0" r="4.42" fill="#3f7fe0"/>
+<text x="1592" y="414" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="15" font-weight="bold" font-style="normal" fill="#1f2433" text-anchor="start">â = â_(j*) from K*</text>
+<text x="1592" y="442" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="13.5" font-weight="normal" font-style="normal" fill="#5b6275" text-anchor="start">deepest accepted state;</text>
+<text x="1592" y="462" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="13.5" font-weight="normal" font-style="normal" fill="#5b6275" text-anchor="start">no extra generation</text>
+<text x="1592" y="498" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="14" font-weight="normal" font-style="italic" fill="#1f2433" text-anchor="start">|K*| ≤ 6 + 3 frames</text>
+<text x="1592" y="524" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="14" font-weight="normal" font-style="italic" fill="#1f2433" text-anchor="start">j* ∈ {0, 1, 2, 3}</text>
+<text x="1592" y="562" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="13.5" font-weight="bold" font-style="normal" fill="#1f2433" text-anchor="start">no memory upkeep:</text>
+<text x="1592" y="582" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="13.5" font-weight="normal" font-style="normal" fill="#5b6275" text-anchor="start">only CLIP image</text>
+<text x="1592" y="602" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="13.5" font-weight="normal" font-style="normal" fill="#5b6275" text-anchor="start">embeddings are cached</text>
+<line x1="268" y1="442.0" x2="284" y2="442.0" stroke="#1f2433" stroke-width="2.2" marker-end="url(#head)"/>
+<line x1="556" y1="442.0" x2="572" y2="442.0" stroke="#1f2433" stroke-width="2.2" marker-end="url(#head)"/>
+<line x1="882" y1="442.0" x2="898" y2="442.0" stroke="#1f2433" stroke-width="2.2" marker-end="url(#head)"/>
+<line x1="1122" y1="442.0" x2="1138" y2="442.0" stroke="#1f2433" stroke-width="2.2" marker-end="url(#head)"/>
+<line x1="1552" y1="442.0" x2="1568" y2="442.0" stroke="#1f2433" stroke-width="2.2" marker-end="url(#head)"/>
+<line x1="856" y1="186" x2="146.0" y2="256" stroke="#d98a1c" stroke-width="1.8" stroke-dasharray="6 4" marker-end="url(#head)"/>
+<line x1="1278" y1="186" x2="728.0" y2="256" stroke="#2f6fd6" stroke-width="1.8" stroke-dasharray="6 4" marker-end="url(#head)"/>
+<line x1="1590" y1="210" x2="522" y2="256" stroke="#1f2433" stroke-width="1.8" stroke-dasharray="6 4" marker-end="url(#head)"/>
+<rect x="20" y="652" width="1760" height="112" rx="14" fill="#fafbfd" stroke="#c9cedb" stroke-width="1.4" opacity="1"/>
+<rect x="44" y="676" width="28" height="20" rx="5" fill="#dce8fb" stroke="#2f6fd6" stroke-width="1.8" opacity="1"/>
+<text x="84" y="691" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="14.5" font-weight="normal" font-style="normal" fill="#1f2433" text-anchor="start">exact Recent-6 frames (always kept, hash-identical)</text>
+<rect x="604" y="676" width="28" height="20" rx="5" fill="#fbecd3" stroke="#d98a1c" stroke-width="1.8" opacity="1"/>
+<text x="644" y="691" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="14.5" font-weight="normal" font-style="normal" fill="#1f2433" text-anchor="start">historical candidate frames (3–30 s band)</text>
+<rect x="44" y="710" width="28" height="20" rx="5" fill="#dcf2e4" stroke="#2f9a5c" stroke-width="1.8" opacity="1"/>
+<text x="84" y="725" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="14.5" font-weight="normal" font-style="normal" fill="#1f2433" text-anchor="start">accepted memory state</text>
+<rect x="604" y="710" width="28" height="20" rx="5" fill="#f9dedc" stroke="#c8473f" stroke-width="1.8" opacity="1"/>
+<text x="644" y="725" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="14.5" font-weight="normal" font-style="normal" fill="#1f2433" text-anchor="start">rejected state → rollback to last accepted prefix</text>
+<text x="1186" y="692" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="18" font-weight="normal" font-style="normal" fill="#4a90c8" text-anchor="middle">❄</text>
+<text x="1204" y="692" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="14.5" font-weight="normal" font-style="normal" fill="#1f2433" text-anchor="start">frozen, training-free: MiniCPM-V-4.6 + CLIP</text>
+<text x="1172" y="726" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="13.5" font-weight="normal" font-style="italic" fill="#5b6275" text-anchor="start">MCQ and open-ended questions share one controller;</text>
+<text x="1172" y="746" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="13.5" font-weight="normal" font-style="italic" fill="#5b6275" text-anchor="start">all signals come from the generated answer, never from options</text>
+</svg>

@@ -85,6 +85,41 @@ def specification(bench, limit=0):
     return mod.__name__,args+['--recent-frames-only','6','--max-samples',str(limit),'--max-qa-tokens','256'],tasks
 
 
+def run_shards(command, env, output, shards):
+    """StreamBench split by video across GPUs (one process each), merged into one results file for the judge."""
+    visible = [d for d in env.get('CUDA_VISIBLE_DEVICES','').split(',') if d] or [str(i) for i in range(shards)]
+    if len(visible) < shards:
+        raise ValueError(f'STREAMBENCH_SHARDS={shards} needs {shards} visible GPUs, got {visible}')
+    base = command[:command.index('--output-dir')]
+    workers = []
+    for i in range(shards):
+        shard_env = dict(env, CUDA_VISIBLE_DEVICES=visible[i], HIP_VISIBLE_DEVICES=visible[i])
+        shard_dir = output/f'shard_{i}'
+        log = (output/f'shard_{i}.log').open('w')
+        cmd = base + ['--output-dir',str(shard_dir),'--num-shards',str(shards),'--shard-index',str(i)]
+        workers.append((subprocess.Popen(cmd,cwd=ROOT,env=shard_env,stdout=log,stderr=subprocess.STDOUT,text=True),log))
+    print(f'Launched {shards} StreamBench shards; logs in {output}/shard_*.log',flush=True)
+    codes = [p.wait() for p,_log in workers]
+    for _p,log in workers:
+        log.close()
+    with (output/'run.log').open('w') as merged_log:
+        for i in range(shards):
+            merged_log.write((output/f'shard_{i}.log').read_text())
+    rows, config = [], None
+    for i in range(shards):
+        part = output/f'shard_{i}'/'streambench_v0_3_smoke_results.json'
+        if not part.exists():
+            raise SystemExit(f'Shard {i} wrote no results; see {output}/shard_{i}.log')
+        payload = json.loads(part.read_text())
+        config = config or payload.get('config')
+        rows += payload['results']
+    rows.sort(key=lambda r:(r['video_index'],r['breakpoint_index']))
+    (output/'streambench_v0_3_smoke_results.json').write_text(json.dumps(
+        dict(config=config,shards=shards,shard_exit_codes=codes,results=rows),indent=2,ensure_ascii=False))
+    print(f'Merged {len(rows)} StreamBench questions from {shards} shards (exit codes {codes})',flush=True)
+    return max(codes)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('benchmark',choices=BENCHMARKS)
@@ -101,8 +136,8 @@ def main():
     shallowstream = args.shallowstream or os.environ.get('PRISM_SHALLOWSTREAM') == '1'
     oasis_paper = args.oasis_paper or os.environ.get('PRISM_OASIS') == 'paper'
     oasis = oasis_paper or args.oasis or os.environ.get('PRISM_OASIS') == '1'
-    if oasis and (baseline or args.benchmark not in ('ovo','streamingbench','egoschema')):
-        raise ValueError('OASIS is wired for ovo, streamingbench and egoschema only, and excludes the Recent-6 control')
+    if oasis and (baseline or args.benchmark not in ('ovo','streamingbench','egoschema','streambench_v03')):
+        raise ValueError('OASIS is wired for ovo, streamingbench, egoschema and streambench_v03 only, and excludes the Recent-6 control')
     module, extra, tasks = specification(args.benchmark,args.max_samples)
     if not tasks:
         raise ValueError('Empty dataset')
@@ -162,13 +197,17 @@ def main():
     (output/'run_config.json').write_text(json.dumps(manifest,indent=2))
     print('RESULT_DIR='+str(output),flush=True)
     start = time.perf_counter()
-    with (output/'run.log').open('w') as log:
-        process = subprocess.Popen(command,cwd=ROOT,env=env,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True)
-        for line in process.stdout:
-            print(line,end='',flush=True)
-            log.write(line)
-            log.flush()
-        status = process.wait()
+    shards = int(env.get('STREAMBENCH_SHARDS','1')) if args.benchmark=='streambench_v03' else 1
+    if shards > 1:
+        status = run_shards(command, env, output, shards)
+    else:
+        with (output/'run.log').open('w') as log:
+            process = subprocess.Popen(command,cwd=ROOT,env=env,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True)
+            for line in process.stdout:
+                print(line,end='',flush=True)
+                log.write(line)
+                log.flush()
+            status = process.wait()
     (output/'job_timing.json').write_text(json.dumps(dict(evaluator_wall_seconds=time.perf_counter()-start,exit_code=status)))
     if status:
         raise SystemExit(status)

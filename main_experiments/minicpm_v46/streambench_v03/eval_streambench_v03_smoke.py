@@ -321,6 +321,8 @@ def main() -> None:
     parser.add_argument("--start-video", type=int, default=0, help="Skip videos before this raw annotation index.")
     parser.add_argument("--methods", nargs="+", choices=["recent6", "prism"], default=["recent6", "prism"])
     parser.add_argument("--max-new-tokens", type=int, default=64)
+    parser.add_argument("--num-shards", type=int, default=1, help="Split videos across parallel workers.")
+    parser.add_argument("--shard-index", type=int, default=0, help="Videos with video_index %% num_shards == shard_index.")
     args = parser.parse_args()
 
     os.environ.setdefault("MINICPM_SEED", str(SEED))
@@ -352,6 +354,9 @@ def main() -> None:
         args.class_1,
         args.start_video,
     )
+    if args.num_shards > 1:
+        # Whole videos per shard, so streaming memory sees every question of a video in time order.
+        tasks = [task for task in tasks if task["video_index"] % args.num_shards == args.shard_index]
     if not tasks:
         raise ValueError("No StreamBench tasks loaded")
 

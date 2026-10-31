@@ -160,6 +160,7 @@ class Config:
     recent: int = 6
     samples: int = 5          # sampled answers for open-ended semantic entropy (estimation budget)
     horizon: int = 64         # frames kept in the memory store
+    trace: bool = False       # evaluate every candidate context so any lambda can be replayed offline
 
 
 def config_from_env():
@@ -168,7 +169,7 @@ def config_from_env():
     for f in fields(Config):
         raw = os.environ.get('PRISM_VOI_' + f.name.upper())
         if raw is not None:
-            values[f.name] = type(f.default)(raw)
+            values[f.name] = raw.strip().lower() in ('1', 'true', 'yes') if isinstance(f.default, bool) else type(f.default)(raw)
     return Config(**values)
 
 
@@ -248,33 +249,51 @@ def select(qa, chunks, recent, prompt, clip, stats, config):
     options = extract_options(prompt)
     ev = Evaluator(qa, prompt, question, options, config)
     contexts = {0: list(recent.frames)}
+    start = time.perf_counter()
     with ptimed(stats, 'reference_uncertainty_ms'):
         se0, info0 = ev.se(0, contexts[0])
-    trace = [dict(depth=0, se=se0, **info0)]
+    trace = [dict(depth=0, se=se0, ms=(time.perf_counter() - start) * 1000, **info0)]
     accepted, current, se_current, stop = [], 0, se0, 'confident'
-    if se0 > config.lam:  # Otherwise no single frame could pay for itself.
+    chain, chain_se = [], se0  # Trace mode: every candidate is added cumulatively, the decision is replayed after.
+    if se0 > config.lam or config.trace:  # Otherwise no single frame could pay for itself.
         with ptimed(stats, 'retrieval_total_ms'):
             eligible = memory_candidates(chunks, recent, config)
             rank_config = replace(pu.config_from_env(), pool=max(config.max_frames, 1))
             candidates = pu.rank(eligible, question, clip, stats, rank_config)[:config.max_frames]
         stop = 'no_candidates' if not candidates else 'cap_reached'
+        base_depth = 0
         for j, cand in enumerate(candidates, 1):
+            start = time.perf_counter()
             frame = cand['frame'] if cand['frame'].size == recent.frames[0].size else cand['frame'].resize(recent.frames[0].size)
-            trial = sorted(accepted + [(cand['end'], frame, cand)], key=lambda x: x[0])
+            previous = chain if config.trace else accepted
+            trial = sorted(previous + [(cand['end'], frame, cand)], key=lambda x: x[0])
             contexts[j] = [f for _t, f, _c in trial] + list(recent.frames)
             if not options:  # The hypothesis set may grow under the new context; re-score the current one on it.
                 ev.answer(j, contexts[j])
             with ptimed(stats, 'context_uncertainty_ms'):
                 se_trial, info = ev.se(j, contexts[j])
                 if not options:
-                    se_current, _ = ev.se(current, contexts[current])
-            gain = se_current - se_trial
+                    chain_se, _ = ev.se(j - 1 if config.trace else current, contexts[j - 1 if config.trace else current])
+                    se_current = chain_se
+            reference = chain_se if config.trace else se_current
+            gain = reference - se_trial
             ok = gain > config.lam
-            trace.append(dict(depth=j, se=se_trial, gain=gain, accepted=ok, distance=cand['distance'], **info))
+            trace.append(dict(depth=j, se=se_trial, gain=gain, accepted=ok, distance=cand['distance'],
+                              ms=(time.perf_counter() - start) * 1000, **info))
+            if config.trace:
+                chain, chain_se = trial, se_trial
+                if ok and base_depth == j - 1:  # Replay the greedy rule: accept while every step so far passed.
+                    accepted, current, se_current, base_depth = trial, j, se_trial, j
+                continue
             if not ok:
                 stop = 'gain_below_lambda'
                 break
             accepted, current, se_current = trial, j, se_trial
+        if config.trace and current < len(candidates):
+            stop = 'gain_below_lambda'
+    if not options:  # Record each tried context's own answer for offline replay at any lambda.
+        for row in trace:
+            row['answer'] = ev.greedy.get(row['depth'], {}).get('text')
     final_frames = contexts[current]
     if options or current not in ev.greedy:
         start = time.perf_counter()

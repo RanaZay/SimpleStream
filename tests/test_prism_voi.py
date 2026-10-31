@@ -96,6 +96,15 @@ class Controller(unittest.TestCase):
         generated = qa.generated
         self.assertEqual(generated, 3)  # R, R+h1, R+h1+h2: the chosen context's answer is reused, not regenerated.
 
+    def test_trace_evaluates_every_candidate_but_answers_like_a_normal_run(self):
+        by_frames = {6: dist(0.4), 7: dist(0.8), 8: dist(0.82), 9: dist(0.99)}
+        normal, _f, meta_n = self.run_select(QA({7: 'A'}), MCQ, by_frames, pv.Config(lam=0.1))
+        traced, _f, meta_t = self.run_select(QA({7: 'A'}), MCQ, by_frames, pv.Config(lam=0.1, trace=True))
+        self.assertEqual(len(traced), len(normal))  # Same decision: greedy stops at the first step below lambda.
+        self.assertEqual(len(meta_n['trace']), 3)   # Normal run stops after the rejected step.
+        self.assertEqual(len(meta_t['trace']), 4)   # Trace keeps going so later lambdas can be replayed.
+        self.assertTrue(all('prediction' in row and 'ms' in row for row in meta_t['trace']))
+
     def test_env_overrides(self):
         import os
         with patch.dict(os.environ, {'PRISM_VOI_LAM': '0.3', 'PRISM_VOI_REACH': '120'}):

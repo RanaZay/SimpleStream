@@ -244,8 +244,9 @@ def index_incremental(qa, video, frames, stamps, stats, config=CONFIG):
     shallow layers. The state resets when the video changes or time goes backwards.
     """
     state = getattr(qa, '_shallowstream_stream', None)
-    keys = [round(t, 3) for t in stamps]
-    if state is None or state['video'] != video or (state['cache'] and keys and keys[-1] < max(state['cache'])):
+    # The decoder's resolution depends on clip length, so a timestamp can come back at a new size: key by both.
+    keys = [(round(t, 3), getattr(frame, 'size', None)) for t, frame in zip(stamps, frames)]
+    if state is None or state['video'] != video or (state['cache'] and keys and keys[-1][0] < max(k[0] for k in state['cache'])):
         state = qa._shallowstream_stream = dict(video=video, cache={})
     cache = state['cache']
     new = [i for i, k in enumerate(keys) if k not in cache]

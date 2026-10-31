@@ -76,6 +76,11 @@ class Incremental(unittest.TestCase):
             self.assertEqual(calls[-1], 3)  # A new video resets the stream.
             ss.index_incremental(qa, 'other.mp4', list(range(2)), [0., 1.], {})
             self.assertEqual(calls[-1], 2)  # Time going backwards resets it too.
+            small = [SimpleNamespace(size=(8, 8)) for _ in range(2)]
+            large = [SimpleNamespace(size=(16, 16)) for _ in range(2)]
+            ss.index_incremental(qa, 'third.mp4', small, [0., 1.], {})
+            ss.index_incremental(qa, 'third.mp4', large, [0., 1.], {})
+            self.assertEqual(calls[-1], 2)  # Same timestamps at a new resolution are re-indexed, never reused.
 
 
 if __name__ == '__main__':

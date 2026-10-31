@@ -458,6 +458,32 @@ def decode_video_to_chunks_qwen(
     video_start: float | None = None,
     video_end: float | None = None,
 ) -> tuple[list[EvalChunk], str]:
+    """Decode [video_start, video_end]; a long window that keeps failing on decoder resources is split in halves."""
+    try:
+        return _decode_video_to_chunks_qwen_once(video_path, chunk_duration, fps, recent_frames_only, video_start, video_end)
+    except Exception as exc:
+        exact = os.environ.get("QWEN_EXACT_RECENT_DECODE", "").strip().lower() in {"1", "true", "yes", "on"}
+        start = max(0.0, float(video_start or 0.0))
+        if exact or video_end is None or float(video_end) - start < 30.0 or not _is_transient_decode_error(exc):
+            raise
+    middle = round((start + float(video_end)) / 2.0)  # Whole seconds keep 1 fps sampling aligned across halves.
+    left, backend = decode_video_to_chunks_qwen(video_path, chunk_duration, fps, recent_frames_only,
+                                                start if start > 0 else None, middle)
+    right, _ = decode_video_to_chunks_qwen(video_path, chunk_duration, fps, recent_frames_only, middle, video_end)
+    merged = {chunk.chunk_index: chunk for chunk in left}
+    for chunk in right:
+        merged.setdefault(chunk.chunk_index, chunk)
+    return [merged[i] for i in sorted(merged)], f"{backend}_split"
+
+
+def _decode_video_to_chunks_qwen_once(
+    video_path: str,
+    chunk_duration: float,
+    fps: float,
+    recent_frames_only: int | None = None,
+    video_start: float | None = None,
+    video_end: float | None = None,
+) -> tuple[list[EvalChunk], str]:
     use_exact_recent = os.environ.get("QWEN_EXACT_RECENT_DECODE", "").strip().lower() in {
         "1",
         "true",

@@ -425,6 +425,31 @@ def print_ovo_results(model_label: str, backward_results: list[dict], realtime_r
         print("=" * 60)
 
 
+def _is_transient_decode_error(exc: BaseException) -> bool:
+    """ffmpeg/swscale failing to get a resource on a busy node (EAGAIN), not a property of the video."""
+    seen: set[int] = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        if isinstance(exc, BlockingIOError) or getattr(exc, "errno", None) == 11:
+            return True
+        if "Resource temporarily unavailable" in str(exc):
+            return True
+        exc = exc.__cause__ or exc.__context__
+    return False
+
+
+def _retry_transient_decode(fn: Any, *args: Any, attempts: int = 4, **kwargs: Any) -> Any:
+    """Retry decoder calls that fail with transient resource errors, so infrastructure never scores a question."""
+    for attempt in range(attempts):
+        try:
+            return fn(*args, **kwargs)
+        except Exception as exc:
+            if attempt == attempts - 1 or not _is_transient_decode_error(exc):
+                raise
+            time.sleep(2.0 * (attempt + 1))
+    raise RuntimeError("unreachable")
+
+
 def decode_video_to_chunks_qwen(
     video_path: str,
     chunk_duration: float,
@@ -467,13 +492,14 @@ def decode_video_to_chunks_qwen(
                 "QWEN_EXACT_RECENT_DECODE currently requires chunk_duration * fps == 1.0 "
                 "so that the last N decoded frames match the last N recent-window chunks exactly."
             )
-        video, metadata = fetch_recent_video_exact(
+        video, metadata = _retry_transient_decode(
+            fetch_recent_video_exact,
             video_req,
             last_nframes=int(recent_frames_only),
             return_video_metadata=True,
         )
     else:
-        video, metadata = fetch_video(video_req, return_video_metadata=True)
+        video, metadata = _retry_transient_decode(fetch_video, video_req, return_video_metadata=True)
 
     if not isinstance(video, torch.Tensor) or video.ndim != 4:
         raise ValueError(f"Unexpected qwen_vl_utils output for video={video_path!r}")

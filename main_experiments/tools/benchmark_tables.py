@@ -134,6 +134,63 @@ def latency(rows):
     return out
 
 
+def per_question(rows, benchmark):
+    """{question key: (task, correct)} for paired tests; inference errors count as wrong."""
+    out = {}
+    for r in rows:
+        if benchmark == 'ovo':
+            out[str(r['pair_key'])] = (r.get('task'), bool(correctness(r, 'ovo')))
+        else:
+            key = str(r['_index']) if isinstance(r.get('_index'), int) else str(r['pair_key'])
+            out[key] = (r.get('task_type'), bool(r.get('correct')) and not r.get('error'))
+    return out
+
+
+def per_question_judged(judged_dir):
+    out = {}
+    for row in json.loads((judged_dir / 'judge' / 'judged.json').read_text()):
+        out[str(row['id'])] = (row['class'], row.get('llama_pred') == 'yes')
+    for failure in json.loads((judged_dir / 'coverage.json').read_text()).get('failures', []):
+        out[str(failure['id'])] = (failure['subtask'], False)
+    return out
+
+
+def headline(items, benchmark):
+    """Benchmark metric on a list of (task, correct): OVO uses the mean of category averages."""
+    if benchmark != 'ovo':
+        return 100 * statistics.mean(c for _t, c in items)
+    tasks = {}
+    for task, c in items:
+        tasks.setdefault(task, []).append(c)
+    groups = [statistics.mean(statistics.mean(tasks[t]) for t in members if t in tasks)
+              for _name, members in OVO_GROUPS if any(t in tasks for t in members)]
+    return 100 * statistics.mean(groups)
+
+
+def paired_test(base, other, benchmark, resamples=2000, seed=0):
+    """Accuracy difference (other - base) on shared questions: paired bootstrap 95% CI and exact McNemar p."""
+    import math
+    import random
+    keys = sorted(set(base) & set(other))
+    if not keys:
+        return None
+    a = [base[k] for k in keys]
+    b = [other[k] for k in keys]
+    delta = headline(b, benchmark) - headline(a, benchmark)
+    rng = random.Random(seed)
+    diffs = []
+    for _ in range(resamples):
+        idx = [rng.randrange(len(keys)) for _ in keys]
+        diffs.append(headline([b[i] for i in idx], benchmark) - headline([a[i] for i in idx], benchmark))
+    diffs.sort()
+    gained = sum(1 for x, y in zip(a, b) if not x[1] and y[1])
+    lost = sum(1 for x, y in zip(a, b) if x[1] and not y[1])
+    n = gained + lost
+    tail = sum(math.comb(n, i) for i in range(0, min(gained, lost) + 1)) / 2 ** n if n else 1.0
+    return dict(n=len(keys), delta=delta, low=diffs[int(0.025 * resamples)], high=diffs[int(0.975 * resamples) - 1],
+                gained=gained, lost=lost, p=min(1.0, 2 * tail))
+
+
 def fmt(value, digits=2, scale=1.0):
     return '—' if value is None else f'{value / scale:.{digits}f}'
 
@@ -150,10 +207,11 @@ def main():
     p.add_argument('--run', action='append', default=[], help='Label=inference result dir (accuracy and latency)')
     p.add_argument('--judged', action='append', default=[], help='Label=StreamBench judging dir (accuracy)')
     p.add_argument('--output', help='Also write markdown and JSON here (directory)')
+    p.add_argument('--baseline', default='Recent-6', help='Label every other method is paired against')
     args = p.parse_args()
     runs, judged = pairs(args.run), dict(pairs(args.judged))
 
-    accuracy, timing = {}, {}
+    accuracy, timing, answers = {}, {}, {}
     for label, directory in runs:
         rows = records(directory)
         timing[label] = latency(rows)
@@ -161,10 +219,13 @@ def main():
             continue
         score = ovo_scores if args.benchmark == 'ovo' else streamingbench_scores
         accuracy[label] = score(rows)
+        answers[label] = per_question(rows, args.benchmark)
         if is_oasis(rows):
             accuracy[label + ' (lenient parse)'] = score(lenient_rows(rows, args.benchmark))
+            answers[label + ' (lenient parse)'] = per_question(lenient_rows(rows, args.benchmark), args.benchmark)
     for label, directory in judged.items():
         accuracy[label] = streambench_scores(directory)
+        answers[label] = per_question_judged(directory)
 
     if args.benchmark == 'ovo':
         columns = [t for _g, members in OVO_GROUPS for t in members] + [g for g, _m in OVO_GROUPS] + ['Real-Time + Backward', 'Total']
@@ -174,6 +235,18 @@ def main():
         columns = list(STREAMBENCH_TASKS) + ['Overall']
     out = [f'## {args.benchmark}: accuracy (%)', '',
            table(['Method'] + columns, [[label] + [fmt(s.get(c)) for c in columns] for label, s in accuracy.items()])]
+    tests = {}
+    if args.baseline in answers:
+        for label, values in answers.items():
+            if label != args.baseline:
+                tests[label] = paired_test(answers[args.baseline], values, args.benchmark)
+        metric = 'mean of category averages' if args.benchmark == 'ovo' else 'overall accuracy'
+        sig_rows = [[label, str(t['n']), f"{t['delta']:+.2f}", f"[{t['low']:+.2f}, {t['high']:+.2f}]",
+                     f"{t['gained']} / {t['lost']}", f"{t['p']:.3f}"] for label, t in tests.items() if t]
+        out += ['', f'## {args.benchmark}: paired comparison with {args.baseline} ({metric}, shared questions)', '',
+                table(['Method', 'Questions', 'Δ (pts)', '95% CI (paired bootstrap)', 'Fixed / broken', 'McNemar p'], sig_rows),
+                '', 'A difference is statistically supported when the CI excludes 0 (and p < 0.05). '
+                '“Fixed / broken” counts questions the method gets right where the baseline is wrong, and vice versa.']
     labels = list(timing)
     lat_rows = [[name] + [fmt(timing[l].get(key), 3, 1000) for l in labels] for name, key in LATENCY_ROWS]
     lat_rows += [['Algorithmic E2E p50 / p90'] + [f"{fmt(timing[l]['p50'], 2, 1000)} / {fmt(timing[l]['p90'], 2, 1000)}" for l in labels],
@@ -188,7 +261,7 @@ def main():
         target = Path(args.output)
         target.mkdir(parents=True, exist_ok=True)
         (target / f'{args.benchmark}_tables.md').write_text(text)
-        (target / f'{args.benchmark}_tables.json').write_text(json.dumps(dict(accuracy=accuracy, latency=timing), indent=2))
+        (target / f'{args.benchmark}_tables.json').write_text(json.dumps(dict(accuracy=accuracy, latency=timing, paired_tests=tests), indent=2))
 
 
 if __name__ == '__main__':

@@ -161,13 +161,28 @@ def main():
         'recent6_' if mode==BASELINE_MODE else 'oasis_paper_' if oasis_paper else 'recent6_oasis_' if oasis
         else 'shallowstream_' if shallowstream else 'prism_unified_' if unified else 'prism_')
     output = output.with_name(output.name+job)
-    output.mkdir(parents=True,exist_ok=False)
+    resume = os.environ.get('RESUME_DIR')
+    if resume:
+        # Continue an interrupted or error-pruned run in place: evaluators skip questions already in their checkpoints.
+        output = Path(resume) if Path(resume).is_absolute() else ROOT/resume
+        if not output.is_dir():
+            raise FileNotFoundError(f'RESUME_DIR {output} does not exist')
+        if args.benchmark == 'streambench_v03':
+            raise ValueError('StreamBench rewrites its single results file; rerun failed questions with '
+                             'STREAMBENCH_ONLY_KEYS into a new run and merge it with merge_streambench_rerun.py')
+        previous = json.loads((output/'run_config.json').read_text()).get('mode')
+        if previous != mode:
+            raise ValueError(f'RESUME_DIR was run with mode {previous!r}, not {mode!r}')
+    else:
+        output.mkdir(parents=True,exist_ok=False)
     env = dict(os.environ)
     env.update(MINICPM_ADAPTIVE_MODE=mode, STREAMBENCH_PRISM_MODE=mode,
         MINICPM_ADAPTIVE_MIN_WINDOW='6',MINICPM_ADAPTIVE_MID_WINDOW='6',MINICPM_ADAPTIVE_MAX_WINDOW='6',
         MINICPM_EXACT_RECENT_CANDIDATE_FPS='4.0',MINICPM_PSM_EXACT_RECENT_PRESERVE_SOURCE_IDS='1',
         QWEN_EXACT_RECENT_DECODE='0',MINICPM_DOWNSAMPLE_MODE='16x',MINICPM_MAX_SLICE_NUMS='1',
         MINICPM_SEED='42',PYTHONHASHSEED='42',ATTN_IMPLEMENTATION='sdpa')
+    if args.benchmark == 'streambench_v03' and env.get('STREAMBENCH_ONLY_KEYS'):
+        extra += ['--only-keys', env['STREAMBENCH_ONLY_KEYS']]
     if args.benchmark in ('ovo','streamingbench'):
         extra += ['--adaptive-mode',mode,'--adaptive-min-window','6','--adaptive-mid-window','6','--adaptive-max-window','6']
     elif args.benchmark != 'streambench_v03':
@@ -194,14 +209,15 @@ def main():
         manifest.update(config=asdict(oasis_memory.config_from_env(paper=oasis_paper)),latency_definition=oasis_memory.DEFINITION,
                         system_definition=oasis_memory.SYSTEM_DEFINITION,
                         method_source='OASIS arXiv:2604.17052; github.com/Solus-sano/OASIS@dbd342c')
-    (output/'run_config.json').write_text(json.dumps(manifest,indent=2))
+    manifest_name = f'run_config_resume_{job}.json' if resume else 'run_config.json'
+    (output/manifest_name).write_text(json.dumps(manifest,indent=2))
     print('RESULT_DIR='+str(output),flush=True)
     start = time.perf_counter()
     shards = int(env.get('STREAMBENCH_SHARDS','1')) if args.benchmark=='streambench_v03' else 1
     if shards > 1:
         status = run_shards(command, env, output, shards)
     else:
-        with (output/'run.log').open('w') as log:
+        with (output/'run.log').open('a' if resume else 'w') as log:
             process = subprocess.Popen(command,cwd=ROOT,env=env,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True)
             for line in process.stdout:
                 print(line,end='',flush=True)

@@ -335,8 +335,16 @@ def query(qa, video_path, prompt, chunk_duration, fps, recent_frames_only, video
     saved = os.environ.pop('QWEN_EXACT_RECENT_DECODE', None)
     try:
         with timed(stats, 'broad_history_decode_ms'):
+            # Only the admissible band can ever be scored: decode [t_q - (d_max + recent + 1), t_q], not the whole past.
+            end = video_end
+            if end is None:
+                from lib.minicpm.oasis_memory import video_duration
+                end = video_duration(video_path)
+            band_start = max(0.0, float(end) - (config.d_max + config.recent + 1.0))
+            decode_start = max(band_start, float(video_start or 0.0))
             chunks, backend = decode_video_to_chunks_qwen(video_path, chunk_duration, fps, config.horizon + 6,
-                                                          video_start=video_start, video_end=video_end)
+                                                          video_start=decode_start, video_end=video_end)
+        stats['history_decode_window_s'] = float(end) - decode_start
         start = max(0., video_end - 6.) if video_end is not None else video_start
         with timed(stats, 'recent6_decode_ms'):
             recent = select_exact_current_recent_frames(qa, video_path, chunk_duration, fps, 6,

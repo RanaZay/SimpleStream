@@ -68,8 +68,11 @@ def judged_correct(judged_dir):
     return {str(r['id']): (r.get('llama_pred') == 'yes', r.get('predict')) for r in rows}
 
 
-def contexts(qa, item, clip, k):
-    """Exact Recent-6 plus the top-k band candidates (question-conditioned CLIP-MMR), as frame lists K0..Kk."""
+def contexts(qa, item, clip, k, window=None):
+    """Exact Recent-6 plus the top-k memory candidates (question-conditioned CLIP-MMR), as frame lists K0..Kk.
+
+    window: memory store reach in seconds before the recent window (default: the controller's 30 s band).
+    """
     from main_experiments.minicpm_v46.streamingbench.eval_prism_exact_recent_dist import select_exact_current_recent_frames
     from lib.shared.recent_window import decode_video_to_chunks_qwen
     from lib.minicpm.progressive_arbitration import initial_stats, prefilter
@@ -77,6 +80,11 @@ def contexts(qa, item, clip, k):
     end = item['end']
     recent = select_exact_current_recent_frames(qa, item['video'], 1.0, 1.0, 6, video_start=max(0.0, end - 6.0), video_end=end)
     config = pu.config_from_env()
+    if window is not None:
+        import dataclasses
+        from lib.minicpm import progressive_arbitration as pa
+        pa.CONFIG = dataclasses.replace(pa.CONFIG, d_max=float(window), horizon=max(pa.CONFIG.horizon, int(window) + 8))
+        config = dataclasses.replace(config, d_max=float(window))
     chunks, _ = decode_video_to_chunks_qwen(item['video'], 1.0, 1.0, None,
                                             video_start=max(0.0, end - (config.d_max + config.recent + 1.0)) or None, video_end=end)
     stats = pu.initial_stats()
@@ -90,10 +98,10 @@ def contexts(qa, item, clip, k):
     return out
 
 
-def run_question(qa, clip, item, benchmark, samples, k, judged):
+def run_question(qa, clip, item, benchmark, samples, k, judged, window=None):
     from lib.minicpm import prism_voi as pv
     from lib.minicpm.progressive_arbitration import extract_options
-    ctxs = contexts(qa, item, clip, k)
+    ctxs = contexts(qa, item, clip, k, window)
     row = dict(key=item['key'], task=item['task'], gt=item['gt'], candidates=len(ctxs) - 1, states=[])
     if benchmark == 'streamingbench':
         options = extract_options(item['prompt'])
@@ -156,7 +164,12 @@ def summarize(rows, benchmark):
             acc = 100 * statistics.mean(correct)
             lines.append(f"| {lam:g} | {acc:.2f}% | {acc - base_acc:+.2f} | {fixed} / {broken} | {statistics.mean(added):.2f} | {used} |")
         oracle = 100 * statistics.mean(any(s['correct'] for s in r['states']) for r in rows)
-        lines += ['', f"Oracle (best of K0..K3 per question): {oracle:.2f}%: the ceiling for any acceptance rule on these candidates."]
+        fixable = [r for r in rows if not r['states'][0]['correct'] and any(s['correct'] for s in r['states'])]
+        lowered = sum(any(r['states'][j]['correct'] and r['states'][j]['se'] < r['states'][0]['se']
+                          for j in range(1, len(r['states']))) for r in fixable)
+        lines += ['', f"Oracle (best of K0..K3 per question): {oracle:.2f}%: the ceiling for any acceptance rule on these candidates.",
+                  f"Questions Recent-6 gets wrong that some memory state fixes: {len(fixable)}; "
+                  f"in {lowered} of them a fixing state also has lower SE than Recent-6."]
     else:
         judged = [r for r in rows if r.get('recent6_correct') is not None]
         errors = [not r['recent6_correct'] for r in judged]
@@ -184,6 +197,7 @@ def main():
     p.add_argument('--recent6-judged', default='reports/streambench_judging/recent6_193879')
     p.add_argument('--output', required=True)
     p.add_argument('--summarize-only', action='store_true')
+    p.add_argument('--window', type=float, default=None, help='memory reach in seconds (default: 30 s band)')
     args = p.parse_args()
     out = Path(args.output)
     out.mkdir(parents=True, exist_ok=True)
@@ -205,15 +219,19 @@ def main():
                     continue
                 start = time.perf_counter()
                 try:
-                    row = run_question(qa, clip, item, args.benchmark, args.samples, args.candidates, judged)
+                    row = run_question(qa, clip, item, args.benchmark, args.samples, args.candidates, judged, args.window)
                 except Exception as exc:
                     row = dict(key=item['key'], error=repr(exc))
                 row['seconds'] = time.perf_counter() - start
                 handle.write(json.dumps(row) + '\n')
                 handle.flush()
                 print(f"[{i}/{len(items)}] {item['key']} {row.get('error') or ''}", flush=True)
-    rows = [json.loads(l) for l in rows_path.read_text().splitlines() if l.strip()]
-    rows = [r for r in rows if not r.get('error') and r.get('states')]
+    rows, seen = [], set()
+    for line in rows_path.read_text().splitlines():  # Keep the first answer per question if two jobs overlapped.
+        row = json.loads(line) if line.strip() else None
+        if row and row['key'] not in seen and not row.get('error') and row.get('states'):
+            seen.add(row['key'])
+            rows.append(row)
     text = summarize(rows, args.benchmark)
     (out / f'{args.benchmark}_summary.md').write_text(text)
     print(text)

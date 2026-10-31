@@ -148,7 +148,9 @@ def per_question(rows, benchmark):
 
 def per_question_judged(judged_dir):
     out = {}
-    for row in json.loads((judged_dir / 'judge' / 'judged.json').read_text()):
+    text = (judged_dir / 'judge' / 'judged.json').read_text().strip()
+    rows = json.loads(text) if text.startswith('[') else [json.loads(line) for line in text.splitlines() if line.strip()]
+    for row in rows:
         out[str(row['id'])] = (row['class'], row.get('llama_pred') == 'yes')
     for failure in json.loads((judged_dir / 'coverage.json').read_text()).get('failures', []):
         out[str(failure['id'])] = (failure['subtask'], False)

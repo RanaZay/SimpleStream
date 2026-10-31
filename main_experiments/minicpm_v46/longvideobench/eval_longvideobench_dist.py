@@ -337,6 +337,7 @@ def main() -> None:
             "progressive_sufficiency_memory_clip_mmr_progressive_arbitration_exact_recent",
             "prism_unified_format_agnostic_exact_recent",
             "shallowstream_minicpm_port",
+            "prism_voi_semantic_entropy",
             "progressive_arbitration_exact_recent6_control",
         ],
         default="recent6",

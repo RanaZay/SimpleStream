@@ -121,6 +121,7 @@ def _task_key(task):
         'progressive_sufficiency_memory_clip_mmr_progressive_arbitration_exact_recent',
         'prism_unified_format_agnostic_exact_recent',
         'shallowstream_minicpm_port',
+        'prism_voi_semantic_entropy',
     }:
         return f"streamingbench::{task['_index']}"
     return make_key(task['video_basename'], task['question'], question_limit=80)
@@ -354,6 +355,7 @@ def main() -> None:
                             'progressive_sufficiency_memory_clip_mmr_progressive_arbitration_exact_recent',
                             'prism_unified_format_agnostic_exact_recent',
                             'shallowstream_minicpm_port',
+                            'prism_voi_semantic_entropy',
                             'progressive_arbitration_exact_recent6_control',
                         }:
                             # The new controller independently decodes its exact recent window.

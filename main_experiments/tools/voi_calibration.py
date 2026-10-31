@@ -38,8 +38,8 @@ def env_defaults():
 
 def load_streamingbench(n, seed):
     from main_experiments.minicpm_v46.streamingbench.eval_baseline_dist import _load_tasks
-    from main_experiments.minicpm_v46.streamingbench.eval_baseline import build_prompt
-    from lib.shared.recent_window import extract_mcq_answer, timestamp_to_seconds
+    from main_experiments.minicpm_v46.streamingbench.eval_baseline import build_prompt, timestamp_to_seconds
+    from lib.shared.recent_window import extract_mcq_answer
     tasks, _ = _load_tasks(os.environ.get('STREAMINGBENCH_ANNO_PATH', 'data/streamingbench/questions_real.json'),
                            os.environ.get('STREAMINGBENCH_VIDEO_DIR', 'data/streamingbench/videos'))
     picked = random.Random(seed).sample(tasks, min(n, len(tasks)))

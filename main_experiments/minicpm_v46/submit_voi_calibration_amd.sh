@@ -21,4 +21,4 @@ export TMPDIR="/tmp/$USER/voi_calibration_${SLURM_JOB_ID:-local}_$BENCH"
 export MIOPEN_USER_DB_PATH="$TMPDIR/miopen" MIOPEN_CUSTOM_CACHE_DIR="$TMPDIR/miopen" PYTORCH_KERNEL_CACHE_PATH="$TMPDIR/torch_kernels"
 mkdir -p logs "$TMPDIR/miopen" "$TMPDIR/torch_kernels"
 exec "$PY" main_experiments/tools/voi_calibration.py --benchmark "$BENCH" --n "${N:-300}" \
-    --output "reports/voi_calibration/${BENCH}_${SLURM_JOB_ID:-local}"
+    --output "${OUT_DIR:-reports/voi_calibration/${BENCH}_${SLURM_JOB_ID:-local}}"   # OUT_DIR=<earlier dir> resumes it

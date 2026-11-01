@@ -526,7 +526,32 @@ def _decode_video_to_chunks_qwen_once(
         )
     else:
         video, metadata = _retry_transient_decode(fetch_video, video_req, return_video_metadata=True)
+    return _chunks_from_video(video, metadata, video_path, chunk_duration, fps, video_start, video_end)
 
+
+def decode_recent_tail_exact(
+    video_path: str,
+    chunk_duration: float,
+    fps: float,
+    last_nframes: int,
+) -> tuple[list[EvalChunk], str]:
+    """The last `last_nframes` frames of the whole-video sampling at `fps`, with the same frame indices and resize as
+    fetch_video, decoding only those frames (lib/qwen/exact_recent_decoder.py)."""
+    from lib.qwen.exact_recent_decoder import fetch_recent_video_exact
+    video, metadata = _retry_transient_decode(fetch_recent_video_exact, {"video": video_path, "fps": float(fps)},
+                                              last_nframes=int(last_nframes), return_video_metadata=True)
+    return _chunks_from_video(video, metadata, video_path, chunk_duration, fps, None, None)
+
+
+def _chunks_from_video(
+    video: Any,
+    metadata: Any,
+    video_path: str,
+    chunk_duration: float,
+    fps: float,
+    video_start: float | None,
+    video_end: float | None,
+) -> tuple[list[EvalChunk], str]:
     if not isinstance(video, torch.Tensor) or video.ndim != 4:
         raise ValueError(f"Unexpected qwen_vl_utils output for video={video_path!r}")
 

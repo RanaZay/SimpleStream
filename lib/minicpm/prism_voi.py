@@ -354,7 +354,7 @@ def query(qa, video_path, prompt, chunk_duration, fps, recent_frames_only, video
             # Same R as the Recent-6 baseline: without a question time the baseline anchors on the decoded video's end.
             recent_start = max(0.0, float(video_end) - config.recent) if video_end is not None else video_start
             recent = select_exact_current_recent_frames(qa, video_path, 1.0, 1.0, config.recent,
-                                                        video_start=recent_start, video_end=video_end)
+                                                        video_start=recent_start, video_end=video_end, tail_decode=True)
     finally:
         if saved is not None:
             os.environ['QWEN_EXACT_RECENT_DECODE'] = saved

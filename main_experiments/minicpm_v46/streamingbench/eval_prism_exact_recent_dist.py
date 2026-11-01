@@ -24,7 +24,7 @@ SEED = configure_determinism()
 
 import lib.minicpm.adaptive as adaptive_mod  # noqa: E402
 from lib.minicpm.baseline import RecentFrameSelection  # noqa: E402
-from lib.shared.recent_window import decode_video_to_chunks_qwen  # noqa: E402
+from lib.shared.recent_window import decode_recent_tail_exact, decode_video_to_chunks_qwen  # noqa: E402
 from main_experiments.minicpm_v46.streamingbench import eval_adaptive_dist as adaptive_eval  # noqa: E402
 from main_experiments.minicpm_v46.streamingbench import eval_baseline_dist as dist_sb  # noqa: E402
 from main_experiments.minicpm_v46.streamingbench.eval_recent_sampler_dist import (  # noqa: E402
@@ -65,8 +65,13 @@ def select_exact_current_recent_frames(
     video_start: float | None = None,
     video_end: float | None = None,
     cdas_config: Any | None = None,
+    tail_decode: bool = False,
 ) -> RecentFrameSelection:
-    """Select exact-six frame-level current_recent6 context for PRISM baseline_recent."""
+    """Select exact-six frame-level current_recent6 context for PRISM baseline_recent.
+
+    tail_decode: when the question is at the video end (no start/end), decode only the tail of the whole-video
+    sampling; frame indices and resize are identical to the full decode, so the selected frames are the same.
+    """
 
     del qa, cdas_config
     count = max(1, int(recent_frames_only))
@@ -80,16 +85,23 @@ def select_exact_current_recent_frames(
         decode_hint = max(count, int(math.ceil((end - start) * max(candidate_fps, 1.0))))
 
     decode_t0 = time.perf_counter()
+    chunks = None
+    if tail_decode and start is None and end is None:
+        try:  # The window's frames plus a margin: nearest-to-target selection only uses frames near the end.
+            chunks, decode_backend = decode_recent_tail_exact(video_path, chunk_duration, candidate_fps, decode_hint + 4)
+        except Exception:
+            chunks = None  # e.g. a backend fallback inside fetch_video; the full decode reproduces it.
     saved_exact_recent = os.environ.pop("QWEN_EXACT_RECENT_DECODE", None)
     try:
-        chunks, decode_backend = decode_video_to_chunks_qwen(
-            video_path=video_path,
-            chunk_duration=chunk_duration,
-            fps=candidate_fps,
-            recent_frames_only=decode_hint,
-            video_start=start,
-            video_end=end,
-        )
+        if chunks is None:
+            chunks, decode_backend = decode_video_to_chunks_qwen(
+                video_path=video_path,
+                chunk_duration=chunk_duration,
+                fps=candidate_fps,
+                recent_frames_only=decode_hint,
+                video_start=start,
+                video_end=end,
+            )
     finally:
         if saved_exact_recent is not None:
             os.environ["QWEN_EXACT_RECENT_DECODE"] = saved_exact_recent

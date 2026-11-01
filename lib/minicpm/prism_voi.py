@@ -306,7 +306,7 @@ def select(qa, chunks, recent, prompt, clip, stats, config):
                 stop_reason=stop, trace=trace, se_reference=se0, se_final=se_current,
                 selected_memory_depth=len(accepted), memory_triggered=len(trace) > 1, memory_accepted=bool(accepted),
                 memory_distances=[c['distance'] for _t, _f, c in accepted], vlm_scoring_calls=ev.calls,
-                recent_frame_hashes=None, baseline_control=False)
+                recent_frame_hashes=None, baseline_control=False, _contexts=contexts)
     return final_frames, final, meta
 
 
@@ -351,8 +351,10 @@ def query(qa, video_path, prompt, chunk_duration, fps, recent_frames_only, video
             chunks, backend = decode_video_to_chunks_qwen(video_path, 1.0, 1.0, None,
                                                           video_start=decode_start or None, video_end=video_end)
         with ptimed(stats, 'recent6_decode_ms'):
+            # Same R as the Recent-6 baseline: without a question time the baseline anchors on the decoded video's end.
+            recent_start = max(0.0, float(video_end) - config.recent) if video_end is not None else video_start
             recent = select_exact_current_recent_frames(qa, video_path, 1.0, 1.0, config.recent,
-                                                        video_start=max(0.0, float(end) - config.recent), video_end=video_end)
+                                                        video_start=recent_start, video_end=video_end)
     finally:
         if saved is not None:
             os.environ['QWEN_EXACT_RECENT_DECODE'] = saved
@@ -398,4 +400,11 @@ def query(qa, video_path, prompt, chunk_duration, fps, recent_frames_only, video
                                      num_vision_tokens_after=qa._last_num_vision_tokens, num_frames=len(frames))
     result.profile_metadata = profile
     result.adaptive_metadata = meta
+    contexts = meta.pop('_contexts')
+    if config.trace and meta['format'] == 'mcq':
+        # After all timing: each traced context's own generated answer, so a lambda replay scores exactly what that
+        # lambda would have answered (the trace's `prediction` is the option-logit argmax used for SE).
+        for row in meta['trace']:
+            row['answer'] = (final['text'] if row['depth'] == meta['selected_memory_depth']
+                             else qa.generate_from_frames(contexts[row['depth']], prompt))
     return result, backend

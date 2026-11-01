@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 from main_experiments.tools.benchmark_tables import headline, paired_test, table
 from main_experiments.tools.summarize_progressive_arbitration import correctness, profile, records
+from lib.shared.recent_window import extract_mcq_answer
 
 LAMBDAS = (float('inf'), 1.0, 0.5, 0.3, 0.2, 0.1, 0.05, 0.02, 0.0)
 
@@ -33,7 +34,11 @@ def depth_for(trace, lam):
 
 
 def correct_at(row, record, benchmark):
-    pred = row.get('prediction')
+    if row.get('answer') is not None:  # Generated answer of that context, scored like the benchmark scores answers.
+        if benchmark == 'ovo':
+            return bool(correctness({**record, 'response': row['answer'], 'correct': None, 'error': None}, 'ovo'))
+        return extract_mcq_answer(row['answer']) == str(record.get('answer_gt', '')).strip().upper()[:1]
+    pred = row.get('prediction')  # Older traces: option-logit argmax only.
     if benchmark == 'ovo':
         return bool(correctness({**record, 'response': pred, 'correct': None, 'error': None}, 'ovo'))
     return pred is not None and pred == str(record.get('answer_gt', '')).strip().upper()[:1]
@@ -58,6 +63,14 @@ def main():
     if not items:
         raise SystemExit('No traced multiple-choice questions found (was the run made with PRISM_VOI_TRACE=1?)')
     bench = 'ovo' if args.benchmark == 'ovo' else 'streamingbench'
+    # Check: at the lambda the run was made with, the replay must reproduce the run's own decisions and scores.
+    depth_off = score_off = 0
+    for _task, record, trace, _ms in items:
+        meta = profile(record)[1]
+        depth, _n = depth_for(trace, float(meta['config']['lam']))
+        depth_off += depth != meta.get('selected_memory_depth')
+        actual = correctness(record, 'ovo') if args.benchmark == 'ovo' else record.get('correct')
+        score_off += isinstance(actual, bool) and correct_at(trace[depth], record, args.benchmark) != actual
     rows = []
     for lam in LAMBDAS:
         answers, frames, used, cost = {}, [], 0, []
@@ -78,6 +91,8 @@ def main():
     print(f'## {args.benchmark}: PRISM-VoI accuracy-cost curve from one trace run ({len(items)} questions{scope})\n')
     print(table(['λ (nats/frame)', 'Accuracy', 'Δ vs Recent-6', '95% CI (paired bootstrap)', 'Fixed / broken',
                  'McNemar p', 'Memory frames (mean)', 'Questions using memory', 'Cost per question (s)'], rows))
+    print(f'\nReplay check at the run lambda: {depth_off} memory-depth and {score_off} correctness mismatches '
+          f'with the recorded answers (both 0 for a trace made with per-context answers).')
     print('\nCost: semantic-entropy evaluations the rule would have run, plus the final answer; decoding excluded.')
 
 

@@ -95,7 +95,7 @@ def run_shards(command, env, output, shards):
     for i in range(shards):
         shard_env = dict(env, CUDA_VISIBLE_DEVICES=visible[i], HIP_VISIBLE_DEVICES=visible[i])
         shard_dir = output/f'shard_{i}'
-        log = (output/f'shard_{i}.log').open('w')
+        log = (output/f'shard_{i}.log').open('a')  # appended when a timed-out run is resumed
         cmd = base + ['--output-dir',str(shard_dir),'--num-shards',str(shards),'--shard-index',str(i)]
         workers.append((subprocess.Popen(cmd,cwd=ROOT,env=shard_env,stdout=log,stderr=subprocess.STDOUT,text=True),log))
     print(f'Launched {shards} StreamBench shards; logs in {output}/shard_*.log',flush=True)
@@ -172,9 +172,6 @@ def main():
         output = Path(resume) if Path(resume).is_absolute() else ROOT/resume
         if not output.is_dir():
             raise FileNotFoundError(f'RESUME_DIR {output} does not exist')
-        if args.benchmark == 'streambench_v03':
-            raise ValueError('StreamBench rewrites its single results file; rerun failed questions with '
-                             'STREAMBENCH_ONLY_KEYS into a new run and merge it with merge_streambench_rerun.py')
         previous = json.loads((output/'run_config.json').read_text()).get('mode')
         if previous != mode:
             raise ValueError(f'RESUME_DIR was run with mode {previous!r}, not {mode!r}')

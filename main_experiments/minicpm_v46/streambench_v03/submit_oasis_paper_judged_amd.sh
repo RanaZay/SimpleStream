@@ -10,6 +10,7 @@
 #SBATCH --time=10:00:00
 #SBATCH --output=logs/%x-%j.out
 # Full StreamBench v0.3 run of OASIS (paper NowWindow, sharded by video), then the author LLaMA-3-8B judge in the same job.
+#   RESUME_DIR  continue a timed-out run in place (questions in its shard checkpoints are skipped)
 # Judge prerequisites are checked before any inference, so a missing judge cannot waste the run.
 #   JUDGE_MODEL        local Meta-Llama-3-8B-Instruct snapshot (default: first snapshot under $HF_HOME)
 #   STREAMCHAT_SOURCE  pinned hmxiong/StreamChat checkout (default: $REPO_ROOT/.cache/streamchat_judge)
@@ -38,7 +39,8 @@ echo "STREAMCHAT_SOURCE=$STREAMCHAT_SOURCE"
 export PRISM_OASIS=paper STREAMBENCH_SHARDS="${STREAMBENCH_SHARDS:-8}"
 if [[ ! -d "${OASIS_EMBEDDING_MODEL:-}" ]]; then echo "Set OASIS_EMBEDDING_MODEL to a local Qwen3-Embedding-0.6B snapshot" >&2; exit 2; fi
 bash main_experiments/minicpm_v46/streambench_v03/submit_progressive_arbitration_exact_recent_amd.sh || echo "Inference exited nonzero; judging saved answers anyway"
-RESULTS="reports/progressive_arbitration/streambench_v03/oasis_paper_${SLURM_JOB_ID}/streambench_v0_3_smoke_results.json"
+RUN_DIR="${RESUME_DIR:-reports/progressive_arbitration/streambench_v03/oasis_paper_${SLURM_JOB_ID}}"
+RESULTS="$RUN_DIR/streambench_v0_3_smoke_results.json"
 if [[ ! -f "$RESULTS" ]]; then
     echo "Inference finished without $RESULTS" >&2
     exit 1
@@ -47,7 +49,7 @@ fi
 # 2) Judge. Offline evaluation only; it never enters the latency tables.
 export TMPDIR="/tmp/$USER/streambench_judge_${SLURM_JOB_ID}"
 mkdir -p "$TMPDIR"
-OUT="reports/streambench_judging/oasis_paper_${SLURM_JOB_ID}"
+OUT="reports/streambench_judging/$(basename "$RUN_DIR")"
 bash main_experiments/minicpm_v46/streambench_v03/submit_author_judge_amd.sh \
     --results "$RESULTS" --method prism --source "$STREAMCHAT_SOURCE" \
     --judge-model "$JUDGE_MODEL" --output-dir "$OUT" --allow-inference-errors

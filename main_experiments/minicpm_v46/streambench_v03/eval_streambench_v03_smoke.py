@@ -379,8 +379,22 @@ def main() -> None:
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    # Per-question checkpoint: a resumed run (same output dir) skips questions answered without error.
+    checkpoint = output_dir / "results_incremental.jsonl"
+    done: dict[str, dict[str, Any]] = {}
+    if checkpoint.exists():
+        for line in checkpoint.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                row = json.loads(line)
+                if not any(m.get("error") for m in row.get("methods", [])):
+                    done[f"{row['video_index']}:{row['breakpoint_index']}"] = row
+        print(f"Resuming: {len(done)} questions already answered in {checkpoint}", flush=True)
     rows: list[dict[str, Any]] = []
     for task_index, task in enumerate(tasks, start=1):
+        key = f"{task['video_index']}:{task['breakpoint_index']}"
+        if key in done:
+            rows.append(done[key])
+            continue
         print(
             f"[{task_index}/{len(tasks)}] video={task['video_name']} "
             f"time={task['time']:.1f}s subtask={task['subtask']}",
@@ -408,6 +422,8 @@ def main() -> None:
                 print(f"  {method}: ERROR {exc!r}", flush=True)
             row["methods"].append(result)
         rows.append(row)
+        with checkpoint.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
 
     summary = _summarize(rows)
     payload = {

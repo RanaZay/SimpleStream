@@ -24,3 +24,5 @@ offload/
 *.mp4
 *.mov
 *.avi
+node_queue/
+.pydeps/

@@ -106,11 +106,66 @@ def arbitrate(previous, current, candidate, depth, config=CONFIG):
                 progress_condition=progress)
 
 
-class ClipCache:
-    """Bounded, per-video image cache. Hash includes geometry; no option scores cached."""
+class OpenClipEncoder:
+    """open_clip image/text encoder, e.g. MobileCLIP for on-device ranking.
+
+    MINICPM_PSM_CLIP_MODEL=open_clip:<arch>:<pretrained>, where <pretrained> is an open_clip tag (e.g. datacompdr)
+    or a local checkpoint file; arch may also be hf-hub:<repo> with an empty pretrained part.
+    """
+    def __init__(self, spec, device):
+        import open_clip
+        import torch
+        arch, _, pretrained = spec.partition(':')
+        model, _, preprocess = open_clip.create_model_and_transforms(arch, pretrained=pretrained or None)
+        try:  # MobileOne blocks fold into single convolutions for inference.
+            from timm.utils.model import reparameterize_model
+            model = reparameterize_model(model.eval())
+        except ImportError:
+            pass
+        self.model = model.to(device).eval()
+        self.preprocess, self.tokenizer, self.device, self.name = preprocess, open_clip.get_tokenizer(arch), device, spec
+        self.torch = torch
+
+    def images(self, frames):
+        batch = self.torch.stack([self.preprocess(f.convert('RGB')) for f in frames]).to(self.device)
+        return self.model.encode_image(batch).float()
+
+    def texts(self, texts):
+        return self.model.encode_text(self.tokenizer(texts).to(self.device)).float()
+
+
+class HFClipEncoder:
+    """Hugging Face CLIP (default openai/clip-vit-base-patch32), shared with the earlier PRISM scorers."""
     def __init__(self, qa):
         from lib.minicpm.progressive_sufficiency import _get_clip_scorer
         self.scorer = _get_clip_scorer(qa)
+        self.name = getattr(self.scorer, 'model_name', None) or os.environ.get('MINICPM_PSM_CLIP_MODEL', 'openai/clip-vit-base-patch32')
+
+    def images(self, frames):
+        from lib.minicpm.prism_retrieval_variants import _as_feature_tensor
+        inp = self.scorer.processor(images=frames, return_tensors='pt')
+        inp = {k:v.to(self.scorer.device) for k,v in inp.items()}
+        return _as_feature_tensor(self.scorer.model.get_image_features(**inp)).float()
+
+    def texts(self, texts):
+        from lib.minicpm.prism_retrieval_variants import _as_feature_tensor
+        inp = self.scorer.processor(text=texts, padding=True, truncation=True, return_tensors='pt')
+        inp = {k:v.to(self.scorer.device) for k,v in inp.items()}
+        return _as_feature_tensor(self.scorer.model.get_text_features(**inp)).float()
+
+
+def clip_encoder(qa):
+    spec = os.environ.get('MINICPM_PSM_CLIP_MODEL', '')
+    if spec.startswith('open_clip:'):
+        device = os.environ.get('MINICPM_PSM_CLIP_DEVICE', '').strip() or str(qa.model.device)
+        return OpenClipEncoder(spec[len('open_clip:'):], device)
+    return HFClipEncoder(qa)
+
+
+class ClipCache:
+    """Bounded, per-video image cache. Hash includes geometry; no option scores cached."""
+    def __init__(self, qa):
+        self.encoder = clip_encoder(qa)
         self.video = None
         self.images = OrderedDict()
         self.texts = OrderedDict()
@@ -123,7 +178,6 @@ class ClipCache:
 
     def image_vectors(self, frames, stats, prefix='clip'):
         import torch
-        from lib.minicpm.prism_retrieval_variants import _as_feature_tensor
         with timed(stats, prefix + '_image_cache_lookup_ms'):
             keys = [image_key(f) for f in frames]
             unique = dict(zip(keys, frames))
@@ -133,10 +187,7 @@ class ClipCache:
         with timed(stats, prefix + '_image_encode_uncached_ms'):
             if missing:
                 with torch.inference_mode():
-                    inp = self.scorer.processor(images=[unique[k] for k in missing], return_tensors='pt')
-                    inp = {k:v.to(self.scorer.device) for k,v in inp.items()}
-                    vec = _as_feature_tensor(self.scorer.model.get_image_features(**inp)).float()
-                    vec = torch.nn.functional.normalize(vec, dim=-1)
+                    vec = torch.nn.functional.normalize(self.encoder.images([unique[k] for k in missing]), dim=-1)
                 for key, value in zip(missing, vec):
                     self.images[key] = value.detach()
             result = torch.stack([self.images[k] for k in keys])
@@ -151,14 +202,10 @@ class ClipCache:
 
     def text_vectors(self, texts):
         import torch
-        from lib.minicpm.prism_retrieval_variants import _as_feature_tensor
         missing = list(dict.fromkeys(t for t in texts if t not in self.texts))
         if missing:
             with torch.inference_mode():
-                inp = self.scorer.processor(text=missing, padding=True, truncation=True, return_tensors='pt')
-                inp = {k:v.to(self.scorer.device) for k,v in inp.items()}
-                vec = _as_feature_tensor(self.scorer.model.get_text_features(**inp)).float()
-                vec = torch.nn.functional.normalize(vec, dim=-1)
+                vec = torch.nn.functional.normalize(self.encoder.texts(missing), dim=-1)
             self.texts.update(zip(missing, vec.detach()))
         result = torch.stack([self.texts[t] for t in texts])
         while len(self.texts) > CONFIG.clip_cache_size:

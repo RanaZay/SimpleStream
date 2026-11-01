@@ -14,7 +14,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-from main_experiments.tools.benchmark_tables import headline, table
+from main_experiments.tools.benchmark_tables import headline, paired_test, table
 from main_experiments.tools.summarize_progressive_arbitration import correctness, profile, records
 
 LAMBDAS = (float('inf'), 1.0, 0.5, 0.3, 0.2, 0.1, 0.05, 0.02, 0.0)
@@ -43,6 +43,7 @@ def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('--benchmark', required=True, choices=['ovo', 'streamingbench', 'videomme'])
     p.add_argument('--run', required=True, type=Path)
+    p.add_argument('--tasks', nargs='+', help='only these task types, e.g. EPM ASI HLD for OVO Backward')
     args = p.parse_args()
     items = []
     for record in records(args.run):
@@ -51,27 +52,32 @@ def main():
         if not trace or meta.get('format') != 'mcq':
             continue
         task = record.get('task') or record.get('task_type') or 'all'
+        if args.tasks and task not in args.tasks:
+            continue
         items.append((task, record, trace, timing.get('final_generation_ms') or 0.0))
     if not items:
         raise SystemExit('No traced multiple-choice questions found (was the run made with PRISM_VOI_TRACE=1?)')
     bench = 'ovo' if args.benchmark == 'ovo' else 'streamingbench'
     rows = []
     for lam in LAMBDAS:
-        answers, frames, used, cost = [], [], 0, []
+        answers, frames, used, cost = {}, [], 0, []
         for task, record, trace, final_ms in items:
             depth, evaluated = depth_for(trace, lam)
-            answers.append((task, correct_at(trace[depth], record, args.benchmark)))
+            answers[len(answers)] = (task, correct_at(trace[depth], record, args.benchmark))
             frames.append(depth)
             used += depth > 0
             cost.append(sum(r.get('ms', 0.0) for r in trace[:evaluated]) + final_ms)
-        rows.append([('∞ (= Recent-6)' if lam == float('inf') else f'{lam:g}'), f"{headline(answers, bench):.2f}",
+        if lam == float('inf'):
+            recent = answers
+        test = paired_test(recent, answers, bench)
+        rows.append([('∞ (= Recent-6)' if lam == float('inf') else f'{lam:g}'), f"{headline(list(answers.values()), bench):.2f}",
+                     f"{test['delta']:+.2f}", f"[{test['low']:+.2f}, {test['high']:+.2f}]",
+                     f"{test['gained']} / {test['lost']}", f"{test['p']:.3f}",
                      f"{statistics.mean(frames):.2f}", str(used), f"{statistics.mean(cost) / 1000:.3f}"])
-    base = float(rows[0][1])
-    for r in rows:
-        r.insert(2, f"{float(r[1]) - base:+.2f}")
-    print(f'## {args.benchmark}: PRISM-VoI accuracy-cost curve from one trace run ({len(items)} questions)\n')
-    print(table(['λ (nats/frame)', 'Accuracy', 'Δ vs Recent-6', 'Memory frames (mean)', 'Questions using memory',
-                 'Cost per question (s)'], rows))
+    scope = f", tasks {' '.join(args.tasks)}" if args.tasks else ''
+    print(f'## {args.benchmark}: PRISM-VoI accuracy-cost curve from one trace run ({len(items)} questions{scope})\n')
+    print(table(['λ (nats/frame)', 'Accuracy', 'Δ vs Recent-6', '95% CI (paired bootstrap)', 'Fixed / broken',
+                 'McNemar p', 'Memory frames (mean)', 'Questions using memory', 'Cost per question (s)'], rows))
     print('\nCost: semantic-entropy evaluations the rule would have run, plus the final answer; decoding excluded.')
 
 

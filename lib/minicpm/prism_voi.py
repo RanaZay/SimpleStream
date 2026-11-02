@@ -33,23 +33,74 @@ def answer_logprob(qa, frames, prompt, answer):
     while prefix < limit and int(base[prefix]) == int(ids[prefix]):
         prefix += 1
     # Locate the answer's own tokens after the shared prefix (the template may add e.g. an empty think block first).
-    seq = ids.tolist()
-    start = end = None
-    for variant in (answer, ' ' + answer, answer.strip()):
-        target_ids = qa.processor.tokenizer.encode(variant, add_special_tokens=False)
-        for j in range(max(prefix, 1), len(seq) - len(target_ids) + 1):
-            if target_ids and seq[j:j + len(target_ids)] == target_ids:
-                start, end = j, j + len(target_ids)
-                break
-        if start is not None:
-            break
-    if start is None:
-        raise RuntimeError(f'Could not locate the answer tokens of {answer!r} in the templated sequence')
+    start, end = _answer_span(qa, ids, prefix, answer)
     with torch.inference_mode():
         logits = qa.model(**inputs, use_cache=False, return_dict=True).logits[0].float()
     logp = torch.log_softmax(logits[start - 1:end - 1], dim=-1)
     target = ids[start:end].to(logp.device)
     return float(logp.gather(1, target[:, None]).mean())
+
+
+def _answer_span(qa, ids, prefix, answer):
+    """Token positions [start, end) of `answer` in a templated sequence, after the prompt's shared prefix."""
+    seq = ids.tolist()
+    for variant in (answer, ' ' + answer, answer.strip()):
+        target = qa.processor.tokenizer.encode(variant, add_special_tokens=False)
+        for j in range(max(prefix, 1), len(seq) - len(target) + 1):
+            if target and seq[j:j + len(target)] == target:
+                return j, j + len(target)
+    raise RuntimeError(f'Could not locate the answer tokens of {answer!r} in the templated sequence')
+
+
+def answer_logprobs(qa, frames, prompt, answers):
+    """answer_logprob for several answers under one context, encoding the frames and prompt once.
+
+    The prompt's key/value cache is computed once and cropped back before each answer, so every answer is scored
+    exactly as by its own forward. PRISM_VOI_CHECK_PREFIX=1 also scores each answer the old way, prints the
+    difference and fails on a real mismatch. Falls back to one forward per answer if the cache cannot be cropped.
+    """
+    import torch
+    from lib.minicpm.progressive_sufficiency import _build_minicpm_inputs
+    answers = list(dict.fromkeys(answers))
+    if len(answers) < 2:
+        return {a: answer_logprob(qa, frames, prompt, a) for a in answers}
+    base = _build_minicpm_inputs(qa, frames, prompt)
+    base_ids = base.input_ids[0]
+    full = {a: _build_minicpm_inputs(qa, frames, prompt, assistant_text=a).input_ids[0] for a in answers}
+    spans, shared = {}, int(base_ids.numel())
+    for a, ids in full.items():
+        prefix = 0
+        limit = min(int(base_ids.numel()), int(ids.numel()))
+        while prefix < limit and int(base_ids[prefix]) == int(ids[prefix]):
+            prefix += 1
+        spans[a] = _answer_span(qa, ids, prefix, a)
+        shared = min(shared, prefix, spans[a][0] - 1)
+    if shared < 1:
+        return {a: answer_logprob(qa, frames, prompt, a) for a in answers}
+    keep = {k: v[:, :shared] if torch.is_tensor(v) and v.dim() == 2 and v.shape[1] == base_ids.numel() else v
+            for k, v in base.items()}
+    with torch.inference_mode():
+        cache = qa.model(**keep, use_cache=True, return_dict=True).past_key_values
+        if not hasattr(cache, 'crop'):
+            return {a: answer_logprob(qa, frames, prompt, a) for a in answers}
+        out = {}
+        device = base_ids.device
+        for a in answers:
+            start, end = spans[a]
+            cache.crop(shared)
+            tail = full[a][shared:end].to(device)[None]
+            mask = torch.ones(1, shared + tail.shape[1], dtype=torch.long, device=device)
+            logits = qa.model(input_ids=tail, past_key_values=cache, attention_mask=mask, use_cache=True,
+                              return_dict=True).logits[0].float()
+            logp = torch.log_softmax(logits[start - 1 - shared:end - 1 - shared], dim=-1)
+            out[a] = float(logp.gather(1, full[a][start:end].to(logp.device)[:, None]).mean())
+    if os.environ.get('PRISM_VOI_CHECK_PREFIX', '').strip().lower() in ('1', 'true', 'yes'):
+        for a in answers:  # bf16 kernels differ slightly between the two paths; a real bug is far larger.
+            reference = answer_logprob(qa, frames, prompt, a)
+            print(f'[prefix-check] {abs(reference - out[a]):.5f} cached={out[a]:.4f} single={reference:.4f}', flush=True)
+            if abs(reference - out[a]) > 0.1:
+                raise AssertionError(f'Prefix-cached log-probability {out[a]:.4f} != {reference:.4f} for {a!r}')
+    return out
 
 
 def sample_answers(qa, frames, prompt, m, max_new_tokens=32, temperature=1.0):
@@ -161,6 +212,7 @@ class Config:
     samples: int = 5          # sampled answers for open-ended semantic entropy (estimation budget)
     horizon: int = 64         # frames kept in the memory store
     trace: bool = False       # evaluate every candidate context so any lambda can be replayed offline
+    ranking: str = 'clip'     # candidate order: 'clip' (relevance + diversity), 'recency' (nearest first), 'random'
 
 
 def config_from_env():
@@ -227,18 +279,29 @@ class Evaluator:
             new = self.answer(key, frames)  # An answer that only appears under added evidence joins the hypotheses.
             if all(new not in members for members in self.clusters):
                 self.clusters = cluster_answers([a for c in self.clusters for a in c] + [new], self.qa, self.question)
-        weights = []
-        for members in self.clusters:
-            total = 0.0
-            for a in dict.fromkeys(members):
-                if (key, a) not in self.scores:
-                    self.scores[(key, a)] = answer_logprob(self.qa, frames, self.prompt, a)
-                    self.calls += 1
-                total += math.exp(self.scores[(key, a)])
-            weights.append(total)
+        missing = [a for c in self.clusters for a in dict.fromkeys(c) if (key, a) not in self.scores]
+        for a, value in answer_logprobs(self.qa, frames, self.prompt, missing).items():
+            self.scores[(key, a)] = value
+            self.calls += 1
+        weights = [sum(math.exp(self.scores[(key, a)]) for a in dict.fromkeys(members)) for members in self.clusters]
         norm = sum(weights) or 1.0
         probs = [w / norm for w in weights]
         return entropy(probs), dict(clusters=[len(c) for c in self.clusters], probabilities=probs)
+
+
+def order_candidates(eligible, question, clip, stats, config):
+    """The memory frames to try, best first; the non-CLIP orders are ablations of the ranking."""
+    from lib.minicpm import prism_unified as pu
+    if config.ranking == 'clip':
+        rank_config = replace(pu.config_from_env(), pool=max(config.max_frames, 1))
+        return pu.rank(eligible, question, clip, stats, rank_config)[:config.max_frames]
+    if config.ranking == 'recency':
+        return sorted(eligible, key=lambda c: -c['end'])[:config.max_frames]
+    if config.ranking == 'random':  # Seeded by the question, so reruns pick the same frames.
+        import random
+        import zlib
+        return random.Random(zlib.crc32(question.encode())).sample(eligible, min(config.max_frames, len(eligible)))
+    raise ValueError(f'Unknown PRISM_VOI_RANKING {config.ranking!r}')
 
 
 def select(qa, chunks, recent, prompt, clip, stats, config):
@@ -258,8 +321,7 @@ def select(qa, chunks, recent, prompt, clip, stats, config):
     if se0 > config.lam or config.trace:  # Otherwise no single frame could pay for itself.
         with ptimed(stats, 'retrieval_total_ms'):
             eligible = memory_candidates(chunks() if callable(chunks) else chunks, recent, config)
-            rank_config = replace(pu.config_from_env(), pool=max(config.max_frames, 1))
-            candidates = pu.rank(eligible, question, clip, stats, rank_config)[:config.max_frames]
+            candidates = order_candidates(eligible, question, clip, stats, config)
         stop = 'no_candidates' if not candidates else 'cap_reached'
         base_depth = 0
         for j, cand in enumerate(candidates, 1):
@@ -278,7 +340,7 @@ def select(qa, chunks, recent, prompt, clip, stats, config):
             reference = chain_se if config.trace else se_current
             gain = reference - se_trial
             ok = gain > config.lam
-            trace.append(dict(depth=j, se=se_trial, gain=gain, accepted=ok, distance=cand['distance'],
+            trace.append(dict(depth=j, se=se_trial, gain=gain, accepted=ok, distance=cand['distance'], time=cand['end'],
                               ms=(time.perf_counter() - start) * 1000, **info))
             if config.trace:
                 chain, chain_se = trial, se_trial
@@ -305,7 +367,8 @@ def select(qa, chunks, recent, prompt, clip, stats, config):
     meta = dict(mode=MODE, config=asdict(config), format='mcq' if options else 'open', question_text=question,
                 stop_reason=stop, trace=trace, se_reference=se0, se_final=se_current,
                 selected_memory_depth=len(accepted), memory_triggered=len(trace) > 1, memory_accepted=bool(accepted),
-                memory_distances=[c['distance'] for _t, _f, c in accepted], vlm_scoring_calls=ev.calls,
+                memory_distances=[c['distance'] for _t, _f, c in accepted],
+                memory_times=[c['end'] for _t, _f, c in accepted], vlm_scoring_calls=ev.calls,
                 recent_frame_hashes=None, baseline_control=False, _contexts=contexts)
     return final_frames, final, meta
 
@@ -395,7 +458,8 @@ def query(qa, video_path, prompt, chunk_duration, fps, recent_frames_only, video
     stats['memory_maintenance_total_ms'] = 0.0
     stats['final_frame_count'] = len(frames)
     stats['num_vision_tokens'] = qa._last_num_vision_tokens
-    meta.update(timing=stats, latency_definition=DEFINITION, recent_chunk_ids=list(recent.final_chunk_ids))
+    meta.update(timing=stats, latency_definition=DEFINITION, recent_chunk_ids=list(recent.final_chunk_ids),
+                recent_times=list((getattr(recent, 'cdas_metadata', None) or {}).get('selected_timestamps') or []))
     profile = base._build_profile(mode=MODE, decode_time=stats['total_visual_preparation_ms'] / 1000,
                                   selection_time=stats['PRISM_selection_latency_ms'] / 1000,
                                   generate_time=final['generate_ms'] / 1000, before_memory=before,

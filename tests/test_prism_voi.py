@@ -98,7 +98,7 @@ class Controller(unittest.TestCase):
             qa, OPEN, {}, pv.Config(lam=0.1, samples=2),
             sample_answers=lambda qa_, frames, prompt, m: ('a cup', ['a mug', 'a cup']),
             cluster_answers=lambda answers, qa_=None, q=None: [[a] for a in dict.fromkeys(answers)],
-            answer_logprob=lambda qa_, frames, prompt, a: logp[(len(frames), a)])
+            answer_logprobs=lambda qa_, frames, prompt, answers: {a: logp[(len(frames), a)] for a in answers})
         self.assertEqual(meta['format'], 'open')
         self.assertEqual((len(frames), final['text']), (7, 'a red cup'))
         generated = qa.generated
@@ -113,10 +113,22 @@ class Controller(unittest.TestCase):
         self.assertEqual(len(meta_t['trace']), 4)   # Trace keeps going so later lambdas can be replayed.
         self.assertTrue(all('prediction' in row and 'ms' in row for row in meta_t['trace']))
 
+    def test_ranking_ablations_order_candidates_without_clip(self):
+        eligible = [dict(frame=frame(i), end=float(10 + i), distance=10.0 - i) for i in range(5)]
+        recency = pv.order_candidates(list(eligible), 'q', None, {}, pv.Config(ranking='recency'))
+        self.assertEqual([c['end'] for c in recency], [14.0, 13.0, 12.0])
+        first = pv.order_candidates(list(eligible), 'q', None, {}, pv.Config(ranking='random'))
+        again = pv.order_candidates(list(eligible), 'q', None, {}, pv.Config(ranking='random'))
+        self.assertEqual([c['end'] for c in first], [c['end'] for c in again])  # Same question, same frames.
+        self.assertEqual(len(first), 3)
+        with self.assertRaises(ValueError):
+            pv.order_candidates(eligible, 'q', None, {}, pv.Config(ranking='nearest'))
+
     def test_env_overrides(self):
         import os
-        with patch.dict(os.environ, {'PRISM_VOI_LAM': '0.3', 'PRISM_VOI_REACH': '120'}):
+        with patch.dict(os.environ, {'PRISM_VOI_LAM': '0.3', 'PRISM_VOI_REACH': '120', 'PRISM_VOI_RANKING': 'recency'}):
             self.assertEqual((pv.config_from_env().lam, pv.config_from_env().reach), (0.3, 120.0))
+            self.assertEqual(pv.config_from_env().ranking, 'recency')
 
 
 if __name__ == '__main__':

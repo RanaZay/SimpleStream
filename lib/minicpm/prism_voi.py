@@ -257,7 +257,7 @@ def select(qa, chunks, recent, prompt, clip, stats, config):
     chain, chain_se = [], se0  # Trace mode: every candidate is added cumulatively, the decision is replayed after.
     if se0 > config.lam or config.trace:  # Otherwise no single frame could pay for itself.
         with ptimed(stats, 'retrieval_total_ms'):
-            eligible = memory_candidates(chunks, recent, config)
+            eligible = memory_candidates(chunks() if callable(chunks) else chunks, recent, config)
             rank_config = replace(pu.config_from_env(), pool=max(config.max_frames, 1))
             candidates = pu.rank(eligible, question, clip, stats, rank_config)[:config.max_frames]
         stop = 'no_candidates' if not candidates else 'cap_reached'
@@ -346,10 +346,6 @@ def query(qa, video_path, prompt, chunk_duration, fps, recent_frames_only, video
         if end is None:
             from lib.minicpm.oasis_memory import video_duration
             end = video_duration(video_path)
-        with ptimed(stats, 'broad_history_decode_ms'):  # Only the memory store's reach is decoded.
-            decode_start = max(0.0, float(end) - (config.reach + config.recent + 1.0), float(video_start or 0.0))
-            chunks, backend = decode_video_to_chunks_qwen(video_path, 1.0, 1.0, None,
-                                                          video_start=decode_start or None, video_end=video_end)
         with ptimed(stats, 'recent6_decode_ms'):
             # Same R as the Recent-6 baseline: without a question time the baseline anchors on the decoded video's end.
             recent_start = max(0.0, float(video_end) - config.recent) if video_end is not None else video_start
@@ -360,15 +356,31 @@ def query(qa, video_path, prompt, chunk_duration, fps, recent_frames_only, video
             os.environ['QWEN_EXACT_RECENT_DECODE'] = saved
     stats['total_visual_preparation_ms'] = (time.perf_counter() - system_start) * 1000
     stats['video_io_ms'] = None
+    history = {}
+
+    def history_chunks():
+        # Decoded only when retrieval runs (a stream would hold these frames already); timed as visual preparation.
+        if 'chunks' not in history:
+            start = time.perf_counter()
+            decode_start = max(0.0, float(end) - (config.reach + config.recent + 1.0), float(video_start or 0.0))
+            history['chunks'], history['backend'] = decode_video_to_chunks_qwen(
+                video_path, 1.0, 1.0, None, video_start=decode_start or None, video_end=video_end)
+            history['ms'] = (time.perf_counter() - start) * 1000
+        return history['chunks']
+
     before = base._reset_gpu_memory_peaks()
     sync()
     algorithm_start = time.perf_counter()
     clip.begin(os.path.realpath(video_path))
     import torch
     with torch.inference_mode():
-        frames, final, meta = select(qa, chunks, recent, prompt, clip, stats, config)
+        frames, final, meta = select(qa, history_chunks, recent, prompt, clip, stats, config)
     sync()
-    stats['PRISM_algorithmic_latency_ms'] = (time.perf_counter() - algorithm_start) * 1000
+    decode_ms = history.get('ms', 0.0)  # Moved from the algorithm's time to visual preparation.
+    stats['broad_history_decode_ms'] = decode_ms
+    stats['retrieval_total_ms'] = stats.get('retrieval_total_ms', 0.0) - decode_ms
+    stats['total_visual_preparation_ms'] += decode_ms
+    stats['PRISM_algorithmic_latency_ms'] = (time.perf_counter() - algorithm_start) * 1000 - decode_ms
     stats['full_system_latency_ms'] = (time.perf_counter() - system_start) * 1000
     stats['final_generation_ms'] = final['generate_ms']
     stats['final_ttft_ms'] = final['ttft_ms']
@@ -407,4 +419,4 @@ def query(qa, video_path, prompt, chunk_duration, fps, recent_frames_only, video
         for row in meta['trace']:
             row['answer'] = (final['text'] if row['depth'] == meta['selected_memory_depth']
                              else qa.generate_from_frames(contexts[row['depth']], prompt))
-    return result, backend
+    return result, history.get('backend', 'history_not_decoded')

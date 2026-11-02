@@ -41,7 +41,7 @@ def dist(p_top):
 
 
 class Controller(unittest.TestCase):
-    def run_select(self, qa, prompt, by_frames, config, **patches):
+    def run_select(self, qa, prompt, by_frames, config, chunks=(), **patches):
         def option_distribution(qa_, frames, prompt_, options):
             probs = by_frames[len(frames)]
             return probs, max(probs, key=probs.get)
@@ -53,7 +53,7 @@ class Controller(unittest.TestCase):
             for name, value in patches.items():
                 patch.object(pv, name, value).start()
             try:
-                return pv.select(qa, [], RECENT, prompt, None, stats, config)
+                return pv.select(qa, chunks, RECENT, prompt, None, stats, config)
             finally:
                 patch.stopall()
 
@@ -73,6 +73,14 @@ class Controller(unittest.TestCase):
         frames, final, meta = self.run_select(QA({6: 'A'}), MCQ, {6: dist(0.999)}, pv.Config(lam=0.1),
                                               memory_candidates=lambda *a: ranked.append(1) or [])
         self.assertEqual((len(frames), meta['stop_reason'], ranked), (6, 'confident', []))
+
+    def test_history_is_decoded_only_when_retrieval_runs(self):
+        decoded = []
+        history = lambda: decoded.append(1) or []
+        self.run_select(QA({6: 'A'}), MCQ, {6: dist(0.999)}, pv.Config(lam=0.1), chunks=history)
+        self.assertEqual(decoded, [])
+        self.run_select(QA({6: 'A', 7: 'A'}), MCQ, {6: dist(0.4), 7: dist(0.41)}, pv.Config(lam=0.1), chunks=history)
+        self.assertEqual(decoded, [1])
 
     def test_lambda_infinity_is_recent6_and_zero_takes_every_improving_frame(self):
         by_frames = {6: dist(0.4), 7: dist(0.5), 8: dist(0.6), 9: dist(0.7)}

@@ -8,6 +8,7 @@ SE(C) = -sum_k p(c_k | C) log p(c_k | C) over meaning clusters c_k (Kuhn et al.,
 """
 from __future__ import annotations
 
+import copy
 import math
 import time
 
@@ -55,9 +56,9 @@ def _answer_span(qa, ids, prefix, answer):
 def answer_logprobs(qa, frames, prompt, answers):
     """answer_logprob for several answers under one context, encoding the frames and prompt once.
 
-    The prompt's key/value cache is computed once and cropped back before each answer, so every answer is scored
-    exactly as by its own forward. PRISM_VOI_CHECK_PREFIX=1 also scores each answer the old way, prints the
-    difference and fails on a real mismatch. Falls back to one forward per answer if the cache cannot be cropped.
+    The prompt's key/value cache is computed once and each answer continues from its own copy, so every answer is
+    scored exactly as by its own forward. PRISM_VOI_CHECK_PREFIX=1 also scores each answer the old way, prints the
+    difference and fails on a real mismatch.
     """
     import torch
     from lib.minicpm.progressive_sufficiency import _build_minicpm_inputs
@@ -80,20 +81,20 @@ def answer_logprobs(qa, frames, prompt, answers):
     keep = {k: v[:, :shared] if torch.is_tensor(v) and v.dim() == 2 and v.shape[1] == base_ids.numel() else v
             for k, v in base.items()}
     with torch.inference_mode():
-        cache = qa.model(**keep, use_cache=True, return_dict=True).past_key_values
-        if not hasattr(cache, 'crop'):
-            return {a: answer_logprob(qa, frames, prompt, a) for a in answers}
+        prefix_cache = qa.model(**keep, use_cache=True, return_dict=True).past_key_values
         out = {}
         device = base_ids.device
         for a in answers:
             start, end = spans[a]
-            cache.crop(shared)
+            # A copy per answer: crop() is not supported by every cache layer type (e.g. MiniCPM-V-4.6's).
+            cache = copy.deepcopy(prefix_cache)
             tail = full[a][shared:end].to(device)[None]
             mask = torch.ones(1, shared + tail.shape[1], dtype=torch.long, device=device)
             logits = qa.model(input_ids=tail, past_key_values=cache, attention_mask=mask, use_cache=True,
                               return_dict=True).logits[0].float()
             logp = torch.log_softmax(logits[start - 1 - shared:end - 1 - shared], dim=-1)
             out[a] = float(logp.gather(1, full[a][start:end].to(logp.device)[:, None]).mean())
+            del cache, logits, logp
     if os.environ.get('PRISM_VOI_CHECK_PREFIX', '').strip().lower() in ('1', 'true', 'yes'):
         for a in answers:  # bf16 kernels differ slightly between the two paths; a real bug is far larger.
             reference = answer_logprob(qa, frames, prompt, a)

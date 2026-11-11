@@ -357,24 +357,8 @@ def _build_minicpm_inputs(
         "return_dict": True,
         "return_tensors": "pt",
     }
-    processor_kwargs: dict[str, Any] = {
-        "downsample_mode": qa.downsample_mode,
-        "max_slice_nums": qa.max_slice_nums,
-        "use_image_id": False,
-    }
-    try:
-        inputs = qa.processor.apply_chat_template(
-            messages,
-            **template_kwargs,
-            processor_kwargs=processor_kwargs,
-        )
-    except TypeError:
-        inputs = qa.processor.apply_chat_template(
-            messages,
-            **template_kwargs,
-            **processor_kwargs,
-        )
-    return inputs.to(qa.model.device)
+    from lib.minicpm.baseline import apply_template
+    return apply_template(qa, messages, **template_kwargs).to(qa.model.device)
 
 
 def _sequence_option_logits(
@@ -415,11 +399,12 @@ def _minimal_decode_option_logits(
     options: list[dict[str, str]],
     fallback_error: Exception,
 ) -> tuple[torch.Tensor, float, str]:
+    from lib.minicpm.baseline import generation_options
     inputs = _build_minicpm_inputs(qa, frames, prompt)
     forward_t0 = time.perf_counter()
     generated = qa.model.generate(
         **inputs,
-        downsample_mode=qa.downsample_mode,
+        **generation_options(qa),
         max_new_tokens=1,
         do_sample=False,
         pad_token_id=getattr(qa.processor.tokenizer, "eos_token_id", None),

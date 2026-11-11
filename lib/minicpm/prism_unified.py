@@ -114,8 +114,9 @@ def generate_state(qa, frames, prompt, config):
                                        else tokenizer.eos_token_id)
     start = time.perf_counter()
     streamer = _GeneratedTokenTTFTStreamer(start, prompt_length=prompt_length)
+    from lib.minicpm.baseline import generation_options
     with qa._profile_model_generate_components():
-        out = qa.model.generate(**inputs, downsample_mode=qa.downsample_mode, max_new_tokens=qa.max_new_tokens,
+        out = qa.model.generate(**inputs, **generation_options(qa), max_new_tokens=qa.max_new_tokens,
                                 do_sample=False, pad_token_id=pad, streamer=streamer,
                                 output_scores=True, return_dict_in_generate=True)
     _synchronize_gpu_devices()

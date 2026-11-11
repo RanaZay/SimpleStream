@@ -100,14 +100,10 @@ def woven_content(captions, frames, prompt):
 
 def generate(qa, content):
     """qa.generate_from_frames with an interleaved message (same template, processor options and decoding)."""
+    from lib.minicpm.baseline import apply_template
     messages = [{'role': 'user', 'content': content}]
-    template = dict(tokenize=True, add_generation_prompt=True, return_dict=True, return_tensors='pt')
-    options = dict(downsample_mode=qa.downsample_mode, max_slice_nums=qa.max_slice_nums, use_image_id=False)
-    try:
-        inputs = qa.processor.apply_chat_template(messages, **template, processor_kwargs=options)
-    except TypeError:
-        inputs = qa.processor.apply_chat_template(messages, **template, **options)
-    inputs = inputs.to(qa.model.device)
+    inputs = apply_template(qa, messages, tokenize=True, add_generation_prompt=True, return_dict=True,
+                            return_tensors='pt').to(qa.model.device)
     qa._last_num_vision_frames = sum(c['type'] == 'image' for c in content)
     qa._last_num_vision_tokens = qa._estimate_vision_tokens(inputs)
     return qa._generate_from_model_inputs(prompt_length=int(inputs['input_ids'].shape[1]), **inputs)

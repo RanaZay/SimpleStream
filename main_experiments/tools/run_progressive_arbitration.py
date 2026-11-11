@@ -190,6 +190,10 @@ def main():
     elif args.benchmark != 'streambench_v03':
         extra += ['--mode',mode]
     extra += ['--result_dir' if args.benchmark=='ovo' else '--output-dir',str(output)]
+    if env.get('QA_MODEL'):  # Second backbone, e.g. Qwen/Qwen3-VL-8B-Instruct (default: each evaluator's MiniCPM-V-4.6).
+        if args.benchmark not in ('ovo','streamingbench','streambench_v03'):
+            raise ValueError('QA_MODEL is wired for ovo, streamingbench and streambench_v03 only')
+        extra += ['--model_path' if args.benchmark=='ovo' else '--qa-model',env['QA_MODEL']]
     processes = 1 if args.benchmark=='streambench_v03' else int(env.get('NUM_PROCESSES','4'))
     if processes > 1:
         command = [sys.executable,'-m','accelerate.commands.launch','--num_processes',str(processes),

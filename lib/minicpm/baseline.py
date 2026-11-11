@@ -401,7 +401,9 @@ class RecentWindowQAModel:
         self.model_name = model_name
         self.device = device
         self.max_new_tokens = int(max_new_tokens)
-        self.downsample_mode = os.environ.get("MINICPM_DOWNSAMPLE_MODE", "16x")
+        # Second backbone (e.g. Qwen/Qwen3-VL-8B-Instruct): same HF interface, no MiniCPM image options.
+        self.backbone = "minicpm" if "minicpm" in model_name.lower() else "hf"
+        self.downsample_mode = os.environ.get("MINICPM_DOWNSAMPLE_MODE", "16x") if self.backbone == "minicpm" else None
         self.max_slice_nums = int(os.environ.get("MINICPM_MAX_SLICE_NUMS", "1"))
         self._last_ttft_seconds: float = 0.0
         self._last_num_vision_tokens: int = 0
@@ -423,7 +425,12 @@ class RecentWindowQAModel:
         }
         self._last_component_times: dict[str, Any] = {}
 
-        self.processor = AutoProcessor.from_pretrained(model_name)
+        processor_kwargs: dict[str, Any] = {}
+        if self.backbone != "minicpm":  # Qwen-VL image resolution, as in SimpleStream's Qwen runs.
+            for key in ("min_pixels", "max_pixels"):
+                if os.environ.get(key.upper()):
+                    processor_kwargs[key] = int(os.environ[key.upper()])
+        self.processor = AutoProcessor.from_pretrained(model_name, **processor_kwargs)
 
         model_kwargs: dict[str, Any] = {
             "dtype": torch.bfloat16,
@@ -568,7 +575,7 @@ class RecentWindowQAModel:
         with self._profile_model_generate_components():
             generated_ids = self.model.generate(
                 **generate_kwargs,
-                downsample_mode=effective_downsample_mode,
+                **generation_options(self, effective_downsample_mode),
                 max_new_tokens=self.max_new_tokens,
                 do_sample=False,
                 streamer=streamer,
@@ -616,26 +623,8 @@ class RecentWindowQAModel:
             "return_dict": True,
             "return_tensors": "pt",
         }
-        processor_kwargs: dict[str, Any] = {
-            "downsample_mode": effective_downsample_mode,
-            "max_slice_nums": self.max_slice_nums,
-            "use_image_id": False,
-        }
         preprocess_t0 = time.perf_counter()
-        try:
-            inputs = self.processor.apply_chat_template(
-                messages,
-                **template_kwargs,
-                processor_kwargs=processor_kwargs,
-            )
-        except TypeError:
-            # Older processor versions accepted MiniCPM image/video options
-            # directly instead of through the nested processor_kwargs argument.
-            inputs = self.processor.apply_chat_template(
-                messages,
-                **template_kwargs,
-                **processor_kwargs,
-            )
+        inputs = apply_template(self, messages, effective_downsample_mode, **template_kwargs)
         inputs = inputs.to(self.model.device)
         self._last_preprocess_seconds = time.perf_counter() - preprocess_t0
 
@@ -648,6 +637,34 @@ class RecentWindowQAModel:
             downsample_mode=effective_downsample_mode,
             **inputs,
         )
+
+
+def is_minicpm(qa: Any) -> bool:
+    """MiniCPM-V takes its own image options (downsample mode, slices); other HF backbones (Qwen-VL) do not."""
+    return getattr(qa, "backbone", "minicpm") == "minicpm"
+
+
+def processor_options(qa: Any, downsample_mode: str | None = None) -> dict[str, Any]:
+    if not is_minicpm(qa):
+        return {}
+    return {"downsample_mode": downsample_mode or qa.downsample_mode, "max_slice_nums": qa.max_slice_nums,
+            "use_image_id": False}
+
+
+def generation_options(qa: Any, downsample_mode: str | None = None) -> dict[str, Any]:
+    return {"downsample_mode": downsample_mode or qa.downsample_mode} if is_minicpm(qa) else {}
+
+
+def apply_template(qa: Any, messages: list[dict[str, Any]], downsample_mode: str | None = None,
+                   **template_kwargs: Any) -> Any:
+    options = processor_options(qa, downsample_mode)
+    if not options:
+        return qa.processor.apply_chat_template(messages, **template_kwargs)
+    try:
+        return qa.processor.apply_chat_template(messages, **template_kwargs, processor_kwargs=options)
+    except TypeError:
+        # Older processor versions accepted MiniCPM image/video options directly.
+        return qa.processor.apply_chat_template(messages, **template_kwargs, **options)
 
 
 def _chunks_from_selected_frames(frames: list[Image.Image], chunk_ids: list[int]) -> list[Any]:

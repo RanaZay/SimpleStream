@@ -115,8 +115,9 @@ def sample_answers(qa, frames, prompt, m, max_new_tokens=32, temperature=1.0):
     inputs = _build_minicpm_inputs(qa, frames, prompt)
     length = int(inputs['input_ids'].shape[1])
     tokenizer = qa.processor.tokenizer
+    from lib.minicpm.baseline import generation_options
     with torch.inference_mode():
-        out = qa.model.generate(**inputs, downsample_mode=qa.downsample_mode, max_new_tokens=max_new_tokens,
+        out = qa.model.generate(**inputs, **generation_options(qa), max_new_tokens=max_new_tokens,
                                 do_sample=True, temperature=temperature, top_p=1.0, num_return_sequences=m,
                                 pad_token_id=tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id)
     samples = []

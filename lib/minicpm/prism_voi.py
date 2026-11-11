@@ -214,6 +214,10 @@ class Config:
     horizon: int = 64         # frames kept in the memory store
     trace: bool = False       # evaluate every candidate context so any lambda can be replayed offline
     ranking: str = 'clip'     # candidate order: 'clip' (relevance + diversity), 'recency' (nearest first), 'random'
+    stop: str = 'first'       # 'first': stop at the first frame that does not pay; 'scan': skip it and try the next
+    pool: int = 0             # memory frames tried per question (0 = max_frames); 'scan' keeps at most max_frames
+    signals: bool = False     # trace mode: also record competing decision signals for offline replay
+    method: str = 'voi'       # 'voi' (PRISM-VoI) or 'wrws' (When to Retrieve, When to Stay, reimplemented)
 
 
 def config_from_env():
@@ -293,15 +297,16 @@ class Evaluator:
 def order_candidates(eligible, question, clip, stats, config):
     """The memory frames to try, best first; the non-CLIP orders are ablations of the ranking."""
     from lib.minicpm import prism_unified as pu
+    count = max(config.pool or config.max_frames, 1)
     if config.ranking == 'clip':
-        rank_config = replace(pu.config_from_env(), pool=max(config.max_frames, 1))
-        return pu.rank(eligible, question, clip, stats, rank_config)[:config.max_frames]
+        rank_config = replace(pu.config_from_env(), pool=count)
+        return pu.rank(eligible, question, clip, stats, rank_config)[:count]
     if config.ranking == 'recency':
-        return sorted(eligible, key=lambda c: -c['end'])[:config.max_frames]
+        return sorted(eligible, key=lambda c: -c['end'])[:count]
     if config.ranking == 'random':  # Seeded by the question, so reruns pick the same frames.
         import random
         import zlib
-        return random.Random(zlib.crc32(question.encode())).sample(eligible, min(config.max_frames, len(eligible)))
+        return random.Random(zlib.crc32(question.encode())).sample(eligible, min(count, len(eligible)))
     raise ValueError(f'Unknown PRISM_VOI_RANKING {config.ranking!r}')
 
 
@@ -318,6 +323,7 @@ def select(qa, chunks, recent, prompt, clip, stats, config):
         se0, info0 = ev.se(0, contexts[0])
     trace = [dict(depth=0, se=se0, ms=(time.perf_counter() - start) * 1000, **info0)]
     accepted, current, se_current, stop = [], 0, se0, 'confident'
+    retrieval_entropy = None
     chain, chain_se = [], se0  # Trace mode: every candidate is added cumulatively, the decision is replayed after.
     if se0 > config.lam or config.trace:  # Otherwise no single frame could pay for itself.
         with ptimed(stats, 'retrieval_total_ms'):
@@ -349,14 +355,22 @@ def select(qa, chunks, recent, prompt, clip, stats, config):
                     accepted, current, se_current, base_depth = trial, j, se_trial, j
                 continue
             if not ok:
+                if config.stop == 'scan':  # A lower-ranked frame may still pay; this one is left out.
+                    continue
                 stop = 'gain_below_lambda'
                 break
             accepted, current, se_current = trial, j, se_trial
+            if len(accepted) >= config.max_frames:
+                break
         if config.trace and current < len(candidates):
             stop = 'gain_below_lambda'
+        if config.signals and config.trace:  # WRWS's retrieval uncertainty over the same memory and R (offline gate).
+            alpha, _fused = wrws_fusion(*_pool_scores(eligible, recent, question, clip, {}))
+            retrieval_entropy = alpha
     if not options:  # Record each tried context's own answer for offline replay at any lambda.
         for row in trace:
             row['answer'] = ev.greedy.get(row['depth'], {}).get('text')
+            row['answer_logprob'] = ev.scores.get((row['depth'], row['answer']))  # token-confidence signal
     final_frames = contexts[current]
     if options or current not in ev.greedy:
         start = time.perf_counter()
@@ -370,6 +384,7 @@ def select(qa, chunks, recent, prompt, clip, stats, config):
                 selected_memory_depth=len(accepted), memory_triggered=len(trace) > 1, memory_accepted=bool(accepted),
                 memory_distances=[c['distance'] for _t, _f, c in accepted],
                 memory_times=[c['end'] for _t, _f, c in accepted], vlm_scoring_calls=ev.calls,
+                retrieval_entropy=retrieval_entropy,
                 recent_frame_hashes=None, baseline_control=False, _contexts=contexts)
     return final_frames, final, meta
 
@@ -438,7 +453,8 @@ def query(qa, video_path, prompt, chunk_duration, fps, recent_frames_only, video
     clip.begin(os.path.realpath(video_path))
     import torch
     with torch.inference_mode():
-        frames, final, meta = select(qa, history_chunks, recent, prompt, clip, stats, config)
+        chooser = wrws_select if config.method == 'wrws' else select
+        frames, final, meta = chooser(qa, history_chunks, recent, prompt, clip, stats, config)
     sync()
     decode_ms = history.get('ms', 0.0)  # Moved from the algorithm's time to visual preparation.
     stats['broad_history_decode_ms'] = decode_ms
@@ -461,7 +477,7 @@ def query(qa, video_path, prompt, chunk_duration, fps, recent_frames_only, video
     stats['num_vision_tokens'] = qa._last_num_vision_tokens
     meta.update(timing=stats, latency_definition=DEFINITION, recent_chunk_ids=list(recent.final_chunk_ids),
                 recent_times=list((getattr(recent, 'cdas_metadata', None) or {}).get('selected_timestamps') or []))
-    profile = base._build_profile(mode=MODE, decode_time=stats['total_visual_preparation_ms'] / 1000,
+    profile = base._build_profile(mode=meta['mode'], decode_time=stats['total_visual_preparation_ms'] / 1000,
                                   selection_time=stats['PRISM_selection_latency_ms'] / 1000,
                                   generate_time=final['generate_ms'] / 1000, before_memory=before,
                                   after_memory=base._capture_gpu_memory(), qa=qa)
@@ -478,6 +494,9 @@ def query(qa, video_path, prompt, chunk_duration, fps, recent_frames_only, video
     result.profile_metadata = profile
     result.adaptive_metadata = meta
     contexts = meta.pop('_contexts')
+    if config.trace and config.signals:  # After all timing: StreamScout-style self-assessment of every traced context.
+        for row in meta['trace']:
+            row['p_insufficient'] = insufficiency(qa, contexts[row['depth']], prompt)
     if config.trace and meta['format'] == 'mcq':
         # After all timing: each traced context's own generated answer, so a lambda replay scores exactly what that
         # lambda would have answered (the trace's `prediction` is the option-logit argmax used for SE).
@@ -485,3 +504,94 @@ def query(qa, video_path, prompt, chunk_duration, fps, recent_frames_only, video
             row['answer'] = (final['text'] if row['depth'] == meta['selected_memory_depth']
                              else qa.generate_from_frames(contexts[row['depth']], prompt))
     return result, history.get('backend', 'history_not_decoded')
+
+
+# --------------------------------------------------------------------------------------- competing decision signals
+SUFFICIENCY_PROMPT = ("{prompt}\n\nDo not answer yet. Do the frames shown contain enough visual evidence to answer "
+                      "this question? Reply with only yes or no.")
+
+
+def insufficiency(qa, frames, prompt):
+    """StreamScout-style self-assessment: the frozen VLM's P(no) to "is the evidence enough?" (yes/no renormalised)."""
+    import torch
+    from lib.minicpm.progressive_sufficiency import _build_minicpm_inputs
+    tokenizer = qa.processor.tokenizer
+    yes = tokenizer.encode('yes', add_special_tokens=False)[0]
+    no = tokenizer.encode('no', add_special_tokens=False)[0]
+    inputs = _build_minicpm_inputs(qa, frames, SUFFICIENCY_PROMPT.format(prompt=prompt))
+    with torch.inference_mode():
+        logits = qa.model(**inputs, use_cache=False, return_dict=True).logits[0, -1].float()
+    pair = torch.softmax(torch.stack([logits[yes], logits[no]]), dim=0)
+    return float(pair[1])
+
+
+def wrws_fusion(similarities, times, eps=1e-6):
+    """WRWS (Eqs. 2-7): normalised entropy alpha of the calibrated relevance distribution, and the fused scores
+    F_i = (1 - alpha) * calibrated relevance + alpha * linear recency prior."""
+    import statistics
+    n = len(similarities)
+    if n == 0:
+        return 0.0, []
+    if n == 1:
+        return 0.0, [1.0]
+    mu, sigma = statistics.fmean(similarities), statistics.pstdev(similarities)
+    cal = [1 / (1 + math.exp(-(s - mu) / (sigma + eps))) for s in similarities]
+    ordered = sorted(cal)
+
+    def quantile(q):  # Linear interpolation, as numpy's default.
+        pos = q * (n - 1)
+        low = int(math.floor(pos))
+        high = min(low + 1, n - 1)
+        return ordered[low] + (ordered[high] - ordered[low]) * (pos - low)
+    iqr, std = quantile(0.75) - quantile(0.25), statistics.pstdev(cal)
+    tau = iqr if iqr > eps else std if std > eps else None
+    if tau is None:
+        probs = [1 / n] * n
+    else:
+        top = max(cal)
+        weights = [math.exp((c - top) / tau) for c in cal]
+        total = sum(weights)
+        probs = [w / total for w in weights]
+    alpha = entropy(probs) / math.log(n)
+    rank = {i: r for r, i in enumerate(sorted(range(n), key=lambda i: times[i]))}
+    recency = [rank[i] / (n - 1) for i in range(n)]
+    return alpha, [(1 - alpha) * c + alpha * r for c, r in zip(cal, recency)]
+
+
+def _pool_scores(eligible, recent, question, clip, stats):
+    """Relevance of every frame WRWS chooses from (memory candidates and R) to the question, with its time."""
+    from lib.minicpm.progressive_sufficiency import _chunk_temporal_bounds
+    pool = [(c['frame'], c['end']) for c in eligible]
+    pool += [(f, _chunk_temporal_bounds(c)[1]) for f, c in zip(recent.frames, recent.selected_chunks)]
+    images = clip.image_vectors([f for f, _t in pool], stats)
+    text = clip.text_vectors([question])[0]
+    return (images @ text).detach().float().cpu().tolist(), [t for _f, t in pool]
+
+
+def wrws_select(qa, chunks, recent, prompt, clip, stats, config):
+    """WRWS reimplemented on our backbone: always answer from the top `recent` frames of history + R by the fused
+    score (no retrieve/stay gate and no check of the chosen frames by the VLM). Run with a long reach, min_gap 0."""
+    from lib.minicpm import prism_unified as pu
+    from lib.minicpm.progressive_arbitration import extract_options, timed as ptimed
+    question = pu.question_text(prompt)
+    with ptimed(stats, 'retrieval_total_ms'):
+        eligible = memory_candidates(chunks() if callable(chunks) else chunks, recent, config)
+        similarities, times = _pool_scores(eligible, recent, question, clip, stats)
+        alpha, fused = wrws_fusion(similarities, times)
+        frames = [c['frame'] for c in eligible] + list(recent.frames)
+        keep = sorted(sorted(range(len(frames)), key=lambda i: -fused[i])[:config.recent], key=lambda i: times[i])
+        size = recent.frames[0].size
+        final_frames = [frames[i] if frames[i].size == size else frames[i].resize(size) for i in keep]
+    start = time.perf_counter()
+    answer = qa.generate_from_frames(final_frames, prompt)
+    final = dict(text=answer, ms=(time.perf_counter() - start) * 1000,
+                 generate_ms=qa._last_model_generate_seconds * 1000, ttft_ms=qa._last_ttft_seconds * 1000)
+    n_recent = len(recent.frames)
+    from_memory = [i for i in keep if i < len(frames) - n_recent]
+    meta = dict(mode='wrws_reimplementation', config=asdict(config), format='mcq' if extract_options(prompt) else 'open',
+                question_text=question, retrieval_entropy=alpha, pool_size=len(frames),
+                selected_memory_depth=len(from_memory), memory_triggered=bool(from_memory),
+                memory_accepted=bool(from_memory), memory_times=[times[i] for i in from_memory],
+                selected_times=[times[i] for i in keep], trace=[], vlm_scoring_calls=0, recent_frame_hashes=None,
+                baseline_control=False, _contexts={0: final_frames})
+    return final_frames, final, meta

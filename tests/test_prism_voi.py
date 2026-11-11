@@ -124,6 +124,43 @@ class Controller(unittest.TestCase):
         with self.assertRaises(ValueError):
             pv.order_candidates(eligible, 'q', None, {}, pv.Config(ranking='nearest'))
 
+    def test_scan_skips_a_frame_that_does_not_pay_and_tries_the_next(self):
+        def by_content(frames):  # h1 (red 0) pays, h2 (red 1) does not, h3 (red 2) pays on top of h1.
+            reds = {f.getpixel((0, 0))[0] for f in frames}
+            return dist(0.4 + 0.3 * (0 in reds) + 0.25 * (2 in reds) + 0.01 * (1 in reds))
+        frames, _f, meta = self.run_select(
+            QA({7: 'A', 8: 'A'}), MCQ, {}, pv.Config(lam=0.1, stop='scan'),
+            option_distribution=lambda qa_, frames, prompt, options: (by_content(frames), 'A'))
+        reds = sorted(f.getpixel((0, 0))[0] for f in frames[:-6])
+        self.assertEqual((reds, meta['selected_memory_depth']), ([0, 2], 2))
+        frames, _f, meta = self.run_select(
+            QA({7: 'A', 8: 'A'}), MCQ, {}, pv.Config(lam=0.1),
+            option_distribution=lambda qa_, frames, prompt, options: (by_content(frames), 'A'))
+        self.assertEqual((len(frames), meta['stop_reason']), (7, 'gain_below_lambda'))  # 'first' stops at h2.
+
+    def test_wrws_entropy_follows_the_shape_of_the_relevance_distribution(self):
+        times = [float(i) for i in range(10)]
+        peaked, fused = pv.wrws_fusion([0.1] * 9 + [0.9], times)
+        flat, _ = pv.wrws_fusion([0.2 + 0.001 * (i % 2) for i in range(10)], times)
+        self.assertLess(peaked, flat)
+        self.assertTrue(0.0 <= peaked <= 1.0 and 0.0 <= flat <= 1.0)
+        self.assertEqual(max(range(10), key=lambda i: fused[i]), 9)
+        self.assertEqual(pv.wrws_fusion([0.5], [0.0]), (0.0, [1.0]))
+        uniform, scores = pv.wrws_fusion([0.3] * 4, [0.0, 1.0, 2.0, 3.0])
+        self.assertAlmostEqual(uniform, 1.0)  # No relevance signal: WRWS falls back to recency.
+        self.assertEqual(scores, sorted(scores))
+
+    def test_wrws_answers_from_a_fixed_budget_chosen_by_the_fused_score(self):
+        sims = [0.9, 0.1, 0.1] + [0.1] * 6  # One very relevant memory frame, the rest flat.
+        times = [10.0, 11.0, 12.0] + [20.0 + i for i in range(6)]
+        with patch.object(pv, 'memory_candidates', lambda chunks, recent, cfg: list(CANDIDATES)), \
+             patch.object(pv, '_pool_scores', lambda *a: (sims, times)):
+            frames, final, meta = pv.wrws_select(QA({6: 'A'}), [], RECENT, MCQ, None, {}, pv.Config(method='wrws'))
+        self.assertEqual(len(frames), 6)  # Always the recent-window budget: WRWS never stays with R alone by rule.
+        self.assertEqual(meta['memory_times'], [10.0])
+        self.assertEqual(meta['selected_times'], sorted(meta['selected_times']))
+        self.assertEqual((final['text'], meta['format']), ('A', 'mcq'))
+
     def test_env_overrides(self):
         import os
         with patch.dict(os.environ, {'PRISM_VOI_LAM': '0.3', 'PRISM_VOI_REACH': '120', 'PRISM_VOI_RANKING': 'recency'}):

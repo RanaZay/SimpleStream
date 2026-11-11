@@ -56,14 +56,15 @@ def _answer_span(qa, ids, prefix, answer):
 def answer_logprobs(qa, frames, prompt, answers):
     """answer_logprob for several answers under one context, encoding the frames and prompt once.
 
-    The prompt's key/value cache is computed once and each answer continues from its own copy, so every answer is
-    scored exactly as by its own forward. PRISM_VOI_CHECK_PREFIX=1 also scores each answer the old way, prints the
-    difference and fails on a real mismatch.
+    PRISM_VOI_PREFIX_CACHE=1 computes the prompt's key/value cache once and continues each answer from its own copy.
+    It is off by default: on MiniCPM-V-4.6 the cached scores differ from one forward per answer by 0.1-0.2 nats
+    (job 354395), so every answer gets its own forward. PRISM_VOI_CHECK_PREFIX=1 also scores each answer the
+    single-forward way, prints the difference and fails on a real mismatch.
     """
     import torch
     from lib.minicpm.progressive_sufficiency import _build_minicpm_inputs
     answers = list(dict.fromkeys(answers))
-    if len(answers) < 2:
+    if len(answers) < 2 or os.environ.get('PRISM_VOI_PREFIX_CACHE', '').strip().lower() not in ('1', 'true', 'yes'):
         return {a: answer_logprob(qa, frames, prompt, a) for a in answers}
     base = _build_minicpm_inputs(qa, frames, prompt)
     base_ids = base.input_ids[0]

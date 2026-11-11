@@ -41,7 +41,8 @@ class PrefixScoring(unittest.TestCase):
 
     def test_cached_scores_match_one_forward_per_answer(self):
         answers = ['a cup', 'a red cup', 'two pens', 'a cup']
-        with patch('lib.minicpm.progressive_sufficiency._build_minicpm_inputs', build):
+        with patch('lib.minicpm.progressive_sufficiency._build_minicpm_inputs', build), \
+             patch.dict('os.environ', {'PRISM_VOI_PREFIX_CACHE': '1'}):
             cached = pv.answer_logprobs(self.qa, [None] * 3, 'What is on the table?', answers)
             single = {a: pv.answer_logprob(self.qa, [None] * 3, 'What is on the table?', a) for a in answers}
         self.assertEqual(set(cached), {'a cup', 'a red cup', 'two pens'})

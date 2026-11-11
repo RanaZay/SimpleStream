@@ -13,6 +13,12 @@ import json
 from pathlib import Path
 
 
+def failed(row):
+    """An inference error on the question, or on any of its probes (OVO Forward questions record one per probe)."""
+    children = row.get('test_info') if isinstance(row.get('test_info'), list) else []
+    return bool(row.get('error')) or any(isinstance(c, dict) and c.get('error') for c in children)
+
+
 def prune_checkpoints(directory):
     files = sorted(directory.glob('rank_*/results_incremental.jsonl')) or sorted(directory.glob('results_incremental.jsonl'))
     if not files:
@@ -20,7 +26,7 @@ def prune_checkpoints(directory):
     kept = dropped = 0
     for path in files:
         rows = [line for line in path.read_text().splitlines() if line.strip()]
-        good = [line for line in rows if not json.loads(line).get('error')]
+        good = [line for line in rows if not failed(json.loads(line))]
         backup = path.with_name(path.name + '.before_rerun')
         if not backup.exists():
             backup.write_text(path.read_text())

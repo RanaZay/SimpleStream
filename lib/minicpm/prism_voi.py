@@ -218,7 +218,7 @@ class Config:
     stop: str = 'first'       # 'first': stop at the first frame that does not pay; 'scan': skip it and try the next
     pool: int = 0             # memory frames tried per question (0 = max_frames); 'scan' keeps at most max_frames
     signals: bool = False     # trace mode: also record competing decision signals for offline replay
-    method: str = 'voi'       # 'voi' (PRISM-VoI) or 'wrws' (When to Retrieve, When to Stay, reimplemented)
+    method: str = 'voi'       # 'voi' (PRISM-VoI); reimplemented baselines: 'wrws' (WRWS), 'streamscout' (zero-shot)
 
 
 def config_from_env():
@@ -454,14 +454,18 @@ def query(qa, video_path, prompt, chunk_duration, fps, recent_frames_only, video
     clip.begin(os.path.realpath(video_path))
     import torch
     with torch.inference_mode():
-        chooser = wrws_select if config.method == 'wrws' else select
+        if config.method == 'streamscout':
+            from lib.minicpm.streamscout import select as chooser
+        else:
+            chooser = {'voi': select, 'wrws': wrws_select}[config.method]
         frames, final, meta = chooser(qa, history_chunks, recent, prompt, clip, stats, config)
     sync()
     decode_ms = history.get('ms', 0.0)  # Moved from the algorithm's time to visual preparation.
     stats['broad_history_decode_ms'] = decode_ms
     stats['retrieval_total_ms'] = stats.get('retrieval_total_ms', 0.0) - decode_ms
     stats['total_visual_preparation_ms'] += decode_ms
-    stats['PRISM_algorithmic_latency_ms'] = (time.perf_counter() - algorithm_start) * 1000 - decode_ms
+    upkeep_ms = stats.get('stream_upkeep_ms', 0.0)  # Work a stream does as it arrives (StreamScout's captions).
+    stats['PRISM_algorithmic_latency_ms'] = (time.perf_counter() - algorithm_start) * 1000 - decode_ms - upkeep_ms
     stats['full_system_latency_ms'] = (time.perf_counter() - system_start) * 1000
     stats['final_generation_ms'] = final['generate_ms']
     stats['final_ttft_ms'] = final['ttft_ms']
@@ -473,7 +477,7 @@ def query(qa, video_path, prompt, chunk_duration, fps, recent_frames_only, video
     stats['PRISM_selection_latency_ms'] = stats['PRISM_algorithmic_latency_ms'] - final['generate_ms']
     stats['request_to_answer_first_token_ms'] = stats['PRISM_selection_latency_ms'] + final['ttft_ms']
     stats['latency_accounting_residual_ms'] = 0.0
-    stats['memory_maintenance_total_ms'] = 0.0
+    stats['memory_maintenance_total_ms'] = upkeep_ms
     stats['final_frame_count'] = len(frames)
     stats['num_vision_tokens'] = qa._last_num_vision_tokens
     meta.update(timing=stats, latency_definition=DEFINITION, recent_chunk_ids=list(recent.final_chunk_ids),

@@ -22,9 +22,14 @@ tables() {  # benchmark, then label=job pairs
         else
             d=$(run "$dir" "$job")
         fi
-        [ -n "$d" ] && { args+=(--run "$label=$d"); echo "using $label = $d"; } || echo "missing run $label ($job)"
+        # StreamBench accuracy comes from judging; an inference dir without per-sample rows only loses latency.
+        if [ -n "$d" ] && { [ "$bench" != streambench ] || [ -f "$d/streambench_v0_3_smoke_results.json" ] || ls "$d"/rank_* >/dev/null 2>&1; }; then
+            args+=(--run "$label=$d"); echo "using $label = $d"
+        else
+            echo "missing run $label ($job)"
+        fi
         if [ "$bench" = streambench ]; then
-            d=$(judged "$job"); [ -n "$d" ] && args+=(--judged "$label=$d") || echo "missing judging $label ($job)"
+            d=$(judged "$job"); [ -n "$d" ] && { args+=(--judged "$label=$d"); echo "using judging $label = $d"; } || echo "missing judging $label ($job)"
         fi
     done
     $PY main_experiments/tools/benchmark_tables.py --benchmark "$bench" "${args[@]}" --output "$OUT/tables_$bench"
@@ -40,12 +45,12 @@ for j in 289856 349368 346001 396216 396217 396218 396402 349369 346000 396219 3
 done
 
 echo; echo "# 1. Main comparison"
-tables ovo "Recent-6=289856" "PRISM-VoI λ=0=349368" "PRISM-VoI λ=0.1=346001" "WRWS=396217" "StreamScout=396402" \
+tables ovo "Recent-6=289856" "PRISM-VoI λ0=349368" "PRISM-VoI λ0.1=346001" "WRWS=396217" "StreamScout=396402" \
            "Scan stop=396218"
-tables streamingbench "Recent-6=recent6" "PRISM-VoI λ=0=349369" "PRISM-VoI λ=0.1=346000" "WRWS=396220" \
+tables streamingbench "Recent-6=recent6" "PRISM-VoI λ0=349369" "PRISM-VoI λ0.1=346000" "WRWS=396220" \
            "StreamScout=396403" "Scan stop=396221"
-tables streambench "Recent-6=recent6" "PRISM-VoI λ=0 (M=5)=349370" "PRISM-VoI λ=0.1=342441" "WRWS=396222" \
-           "StreamScout=396404" "M=2=396267" "M=3=396268"
+tables streambench "Recent-6=recent6" "PRISM-VoI λ0 M5=349370" "PRISM-VoI λ0.1=342441" "WRWS=396222" \
+           "StreamScout=396404" "M2=396267" "M3=396268"
 
 [ -n "${ONLY_TABLES:-}" ] && exit 0
 for pair in ovo=396216 streamingbench=396219; do

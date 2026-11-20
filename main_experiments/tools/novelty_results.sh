@@ -16,8 +16,13 @@ tables() {  # benchmark, then label=job pairs
     local dir=$bench; [ "$bench" = streambench ] && dir=streambench_v03
     local args=()
     for pair in "$@"; do
-        local label=${pair%%=*} job=${pair#*=} d
-        d=$(run "$dir" "$job"); [ -n "$d" ] && args+=(--run "$label=$d") || echo "missing run $label ($job)"
+        local label=${pair%=*} job=${pair##*=} d
+        if [ "$job" = recent6 ]; then  # newest complete Recent-6 run of this benchmark
+            d=$(ls -dt reports/progressive_arbitration/"$dir"/recent6_* 2>/dev/null | head -1); job=${d##*_}
+        else
+            d=$(run "$dir" "$job")
+        fi
+        [ -n "$d" ] && { args+=(--run "$label=$d"); echo "using $label = $d"; } || echo "missing run $label ($job)"
         if [ "$bench" = streambench ]; then
             d=$(judged "$job"); [ -n "$d" ] && args+=(--judged "$label=$d") || echo "missing judging $label ($job)"
         fi
@@ -27,21 +32,22 @@ tables() {  # benchmark, then label=job pairs
 
 {
 echo "# Run sizes (result rows per run)"
-for j in 289855 349369 346000 396216 396217 396218 396402 289856 349368 346001 396219 396220 396221 396403 \
-         193879 349370 342441 396222 396267 396268 396404; do
+for j in 289856 349368 346001 396216 396217 396218 396402 349369 346000 396219 396220 396221 396403 \
+         349370 342441 396222 396267 396268 396404; do
     d=$(ls -d reports/progressive_arbitration/*/*_"$j" 2>/dev/null | head -1)
     n=$([ -n "$d" ] && $PY -c 'import sys; from pathlib import Path; sys.path.insert(0, "."); from main_experiments.tools.summarize_progressive_arbitration import records; print(len(records(Path(sys.argv[1]))))' "$d" 2>/dev/null)
     echo "$j ${d:-MISSING} ${n:-?}"
 done
 
 echo; echo "# 1. Main comparison"
-tables ovo "Recent-6=289855" "PRISM-VoI λ=0=349369" "PRISM-VoI λ=0.1=346000" "WRWS=396217" "StreamScout=396402" \
+tables ovo "Recent-6=289856" "PRISM-VoI λ=0=349368" "PRISM-VoI λ=0.1=346001" "WRWS=396217" "StreamScout=396402" \
            "Scan stop=396218"
-tables streamingbench "Recent-6=289856" "PRISM-VoI λ=0=349368" "PRISM-VoI λ=0.1=346001" "WRWS=396220" \
+tables streamingbench "Recent-6=recent6" "PRISM-VoI λ=0=349369" "PRISM-VoI λ=0.1=346000" "WRWS=396220" \
            "StreamScout=396403" "Scan stop=396221"
-tables streambench "Recent-6=193879" "PRISM-VoI λ=0 (M=5)=349370" "PRISM-VoI λ=0.1=342441" "WRWS=396222" \
+tables streambench "Recent-6=recent6" "PRISM-VoI λ=0 (M=5)=349370" "PRISM-VoI λ=0.1=342441" "WRWS=396222" \
            "StreamScout=396404" "M=2=396267" "M=3=396268"
 
+[ -n "${ONLY_TABLES:-}" ] && exit 0
 for pair in ovo=396216 streamingbench=396219; do
     bench=${pair%%=*}; d=$(run "$bench" "${pair#*=}")
     [ -z "$d" ] && { echo "missing trace $pair"; continue; }
